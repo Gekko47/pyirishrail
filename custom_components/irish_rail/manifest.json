@@ -8,6 +8,6 @@
   "integration_type": "service",
   "requirements": ["defusedxml>=0.7.1"],
   "codeowners": ["@Gekko47"],
-  "version": "1.0.0",
+  "version": "0.1.1",
   "min_ha_version": "2026.8.2"
 }
