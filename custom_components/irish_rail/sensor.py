@@ -15,7 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .api import TrainDueTime
-from .coordinator import IrishRailDataUpdateCoordinator
+from .coordinator import IrishRailDataUpdateCoordinator, resolve_num_trains
 from .entity import IrishRailEntity
 from .types import IrishRailRuntimeData
 
@@ -77,12 +77,20 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        """Return extra state attributes if next train exists."""
-        if not self.coordinator.data:
+        """Return extra state attributes if any train data exists."""
+        data = self.coordinator.data
+        if data is None:
+            # Unsuccessful or incomplete refresh — no attributes.
             return None
 
-        next_train: TrainDueTime = self.coordinator.data[0]
-        return {
+        if not data:
+            # Successful refresh with zero trains scheduled. The API is
+            # reachable, so report that explicitly instead of exiting
+            # before the attributes are populated.
+            return {"api_reachable": True, "upcoming_trains": []}
+
+        next_train: TrainDueTime = data[0]
+        attrs: dict[str, Any] = {
             "origin": next_train.origin,
             "origin_time": next_train.origin_time,
             "destination_time": next_train.destination_time,
@@ -93,3 +101,28 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
             "direction": next_train.direction,
             "train_code": next_train.code,
         }
+
+        # Explicitly distinguish "API reachable, zero trains scheduled"
+        # (this attribute is present and True) from an API failure. On a
+        # failed refresh the coordinator marks the entity unavailable, so
+        # this attribute can only be read when the API responded.
+        attrs["api_reachable"] = True
+
+        # Upcoming trains: the next N trains as configured for the entry
+        # (default 3). Read defensively — the list may hold fewer trains
+        # than requested; it simply comes back shorter.
+        num_trains = resolve_num_trains(self.coordinator.config_entry)
+        attrs["upcoming_trains"] = [
+            {
+                "due_in_mins": train.due_in_mins,
+                "destination": train.destination,
+                "late_mins": train.late_mins,
+                "type": train.type,
+                "train_code": train.code,
+                "origin_time": train.origin_time,
+                "destination_time": train.destination_time,
+            }
+            for train in data[:num_trains]
+        ]
+
+        return attrs

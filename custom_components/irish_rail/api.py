@@ -9,6 +9,7 @@ from typing import Final
 from xml.etree.ElementTree import Element
 
 import aiohttp
+from defusedxml.common import DefusedXmlException
 import defusedxml.ElementTree as ET
 
 from .const import DEFAULT_TIMEOUT
@@ -146,7 +147,12 @@ class IrishRailClient:
         try:
             # Safely parse XML via defusedxml
             return ET.fromstring(content)
-        except ET.ParseError as err:
+        except (
+            ET.ParseError,
+            # Security exceptions raised by defusedxml (e.g. DTDForbidden,
+            # EntitiesForbidden, ExternalReferenceForbidden)
+            DefusedXmlException,
+        ) as err:
             raise IrishRailParseError(
                 f"Failed to parse XML response from Irish Rail: {err}"
             ) from err
@@ -166,8 +172,8 @@ class IrishRailClient:
         stations: list[Station] = []
 
         # Elements can be nested under namespaces or directly
-        for obj in (
-            root.findall(f"{{{NAMESPACE}}}objStation") or root.findall("objStation")
+        for obj in root.findall(f"{{{NAMESPACE}}}objStation") or root.findall(
+            "objStation"
         ):
             try:
                 name = _find_tag_text(obj, "StationDesc") or ""
@@ -256,9 +262,8 @@ class IrishRailClient:
         root = await self._request(endpoint, params)
         trains: list[TrainPosition] = []
 
-        for obj in (
-            root.findall(f"{{{NAMESPACE}}}objTrainPositions")
-            or root.findall("objTrainPositions")
+        for obj in root.findall(f"{{{NAMESPACE}}}objTrainPositions") or root.findall(
+            "objTrainPositions"
         ):
             try:
                 status = _find_tag_text(obj, "TrainStatus") or ""
@@ -305,9 +310,8 @@ class IrishRailClient:
         root = await self._request(endpoint, params)
         movements: list[TrainMovement] = []
 
-        for obj in (
-            root.findall(f"{{{NAMESPACE}}}objTrainMovements")
-            or root.findall("objTrainMovements")
+        for obj in root.findall(f"{{{NAMESPACE}}}objTrainMovements") or root.findall(
+            "objTrainMovements"
         ):
             movements.append(
                 TrainMovement(
@@ -379,9 +383,8 @@ def parse_station_data(root: Element) -> list[TrainDueTime]:
     isolation without an HTTP session.
     """
     trains: list[TrainDueTime] = []
-    for obj in (
-        root.findall(f"{{{NAMESPACE}}}objStationData")
-        or root.findall("objStationData")
+    for obj in root.findall(f"{{{NAMESPACE}}}objStationData") or root.findall(
+        "objStationData"
     ):
         try:
             due_str = _find_tag_text(obj, "Duein") or "0"

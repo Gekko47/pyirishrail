@@ -204,9 +204,7 @@ async def test_get_station_by_code_direction_filter(
 
     async with aiohttp.ClientSession() as session:
         client = IrishRailClient(session)
-        trains = await client.async_get_station_by_code(
-            "PEARS", direction="Northbound"
-        )
+        trains = await client.async_get_station_by_code("PEARS", direction="Northbound")
 
         # The fixture train is Southbound, so filtering removes it.
         assert trains == []
@@ -437,9 +435,7 @@ async def test_station_by_code_stops_at_filter(
 
     async with aiohttp.ClientSession() as session:
         client = IrishRailClient(session)
-        trains = await client.async_get_station_by_code(
-            "PEARS", stops_at="Greystones"
-        )
+        trains = await client.async_get_station_by_code("PEARS", stops_at="Greystones")
 
         assert len(trains) == 1
         assert trains[0].code == "E123"
@@ -478,9 +474,7 @@ async def test_get_station_by_code_destination_filter(
 
     async with aiohttp.ClientSession() as session:
         client = IrishRailClient(session)
-        trains = await client.async_get_station_by_code(
-            "PEARS", destination="Howth"
-        )
+        trains = await client.async_get_station_by_code("PEARS", destination="Howth")
 
         # The fixture train is bound for Bray, so filtering removes it.
         assert trains == []
@@ -506,9 +500,7 @@ async def test_stops_at_prune_handles_movement_error(
 
     async with aiohttp.ClientSession() as session:
         client = IrishRailClient(session)
-        trains = await client.async_get_station_by_code(
-            "PEARS", stops_at="Greystones"
-        )
+        trains = await client.async_get_station_by_code("PEARS", stops_at="Greystones")
 
         assert trains == []
 

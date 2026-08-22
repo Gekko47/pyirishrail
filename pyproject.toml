@@ -70,6 +70,19 @@ python_version = "3.14"
 strict = true
 warn_unused_configs = true
 show_error_codes = true
+# Distinguish custom_components/irish_rail from tests/components/irish_rail
+# by their full directory path instead of treating both as top-level "irish_rail".
+explicit_package_bases = true
+exclude = [
+    "^venv/",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "pytest_homeassistant_custom_component.*",
+    "aresponses",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 addopts = "-p win_stubs"

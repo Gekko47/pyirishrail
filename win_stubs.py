@@ -40,13 +40,15 @@ if sys.platform == "win32":
     _REAL_SOCKET_CLS = _socket_mod.socket
     _ORIG_SOCKETPAIR = _socket_mod.socketpair
 
-    def _unguarded_socketpair(*args, **kwargs):
+    def _unguarded_socketpair(
+        *args: object, **kwargs: object
+    ) -> tuple[_socket_mod.socket, _socket_mod.socket]:
         """socketpair that ignores pytest-socket's guarded socket class."""
         _cls_backup = _socket_mod.socket
-        _socket_mod.socket = _REAL_SOCKET_CLS
+        _socket_mod.socket = _REAL_SOCKET_CLS  # type: ignore[misc]
         try:
-            return _ORIG_SOCKETPAIR(*args, **kwargs)
+            return _ORIG_SOCKETPAIR(*args, **kwargs)  # type: ignore[arg-type]
         finally:
-            _socket_mod.socket = _cls_backup
+            _socket_mod.socket = _cls_backup  # type: ignore[misc]
 
     _socket_mod.socketpair = _unguarded_socketpair

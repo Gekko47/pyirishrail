@@ -35,7 +35,11 @@ async def test_setup_unload_entry(
     assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    assert mock_config_entry.state is ConfigEntryState.NOT_LOADED
+    # Read through a fresh variable annotated with the full enum: mypy
+    # narrows ``.state`` to LOADED after the earlier assert and cannot see
+    # the unload mutating it.
+    state_after_unload: ConfigEntryState = mock_config_entry.state
+    assert state_after_unload is ConfigEntryState.NOT_LOADED
 
 
 async def test_setup_config_entry_not_ready(

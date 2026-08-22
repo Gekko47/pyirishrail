@@ -8,6 +8,7 @@ from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irish_rail.diagnostics import (
+    _mask_identifier,
     async_get_config_entry_diagnostics,
 )
 
@@ -22,7 +23,7 @@ async def test_config_entry_diagnostics(hass: HomeAssistant) -> None:
             "station_code": "PEARS",
             "direction": "Northbound",
         },
-        unique_id="PEARS_Northbound",
+        unique_id="PEARS_northbound",
     )
     entry.add_to_hass(hass)
 
@@ -35,9 +36,15 @@ async def test_config_entry_diagnostics(hass: HomeAssistant) -> None:
 
     result = await async_get_config_entry_diagnostics(hass, entry)
 
-    assert result["entry"]["title"] == "Dublin Pearse"
+    # Entry identifiers are partially masked, not hidden entirely.
+    assert result["entry"]["title"] == _mask_identifier("Dublin Pearse")
+    assert result["entry"]["unique_id"] == _mask_identifier("PEARS_northbound")
+    assert result["entry"]["title"] != "**REDACTED**"
+    assert result["entry"]["unique_id"] != "**REDACTED**"
     # Station identifiers are redacted.
     assert result["entry"]["data"]["station"] == "**REDACTED**"
     assert result["entry"]["data"]["station_code"] == "**REDACTED**"
+    # Options are included and pass through the same redaction policy.
+    assert "options" in result["entry"]
     assert result["coordinator"]["last_update_success"] is True
     assert result["coordinator"]["due_trains_count"] == 0

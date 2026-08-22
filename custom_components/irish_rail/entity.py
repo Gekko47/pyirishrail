@@ -21,12 +21,15 @@ class IrishRailEntity(CoordinatorEntity[IrishRailDataUpdateCoordinator]):
         super().__init__(coordinator)
         self.entity_key = entity_key
         # Build stable unique ID from unique_id of the config entry
-        self._attr_unique_id = (
-            f"{coordinator.config_entry.unique_id}_{entity_key}"
-        )
+        self._attr_unique_id = f"{coordinator.config_entry.unique_id}_{entity_key}"
+        name = coordinator.station_name
+        if coordinator.direction:
+            name = f"{name} ({coordinator.direction})"
+        # The config flow always sets a unique ID for entries of this domain.
+        assert coordinator.config_entry.unique_id is not None
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, coordinator.station_code)},
-            name=coordinator.station_name,
+            identifiers={(DOMAIN, coordinator.config_entry.unique_id)},
+            name=name,
             manufacturer="Iarnród Éireann / Irish Rail",
             entry_type=DeviceEntryType.SERVICE,
         )

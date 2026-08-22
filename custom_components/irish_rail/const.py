@@ -13,6 +13,19 @@ _LOGGER = logging.getLogger(__package__)
 CONF_STATION = "station"
 CONF_STATION_CODE = "station_code"
 CONF_DIRECTION = "direction"
+CONF_SCAN_INTERVAL = "scan_interval"
+CONF_NUM_TRAINS = "num_trains"
+CONF_STOPS_AT = "stops_at"
+
+# Bounds for the user-configurable polling interval (roadmap 1.2).
+MIN_SCAN_INTERVAL_SECONDS = 30
+MAX_SCAN_INTERVAL_SECONDS = 600
+
+# Number of upcoming trains exposed via the ``upcoming_trains`` attribute
+# (roadmap 1.3). Configurable at setup and changeable later via options.
+DEFAULT_NUM_TRAINS = 3
+MIN_NUM_TRAINS = 1
+MAX_NUM_TRAINS = 5
 
 # HTTP timeout for a single Irish Rail API request.
 # The RTPI endpoints are lightweight XML documents; 10 seconds is generous

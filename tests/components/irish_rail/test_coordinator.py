@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from datetime import timedelta
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import UpdateFailed
 import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irish_rail.api import (
     IrishRailConnectionError,
     TrainDueTime,
 )
-from custom_components.irish_rail.coordinator import IrishRailDataUpdateCoordinator
+from custom_components.irish_rail.const import DOMAIN
+from custom_components.irish_rail.coordinator import (
+    IrishRailDataUpdateCoordinator,
+    resolve_num_trains,
+    resolve_scan_interval,
+    resolve_stops_at,
+)
 
 
 def _make_train() -> TrainDueTime:
@@ -36,7 +45,9 @@ def _make_train() -> TrainDueTime:
 
 
 async def test_coordinator_update_success(
-    hass: HomeAssistant, mock_api_client, mock_config_entry
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    mock_config_entry: Any,
 ) -> None:
     """Test a successful coordinator update returns the parsed trains."""
     coordinator = IrishRailDataUpdateCoordinator(
@@ -52,20 +63,152 @@ async def test_coordinator_update_success(
         data = await coordinator._async_update_data()
 
     assert data == expected
-    mock_fetch.assert_awaited_once_with("PEARS", direction="Northbound")
+    mock_fetch.assert_awaited_once_with(
+        "PEARS", direction="Northbound", stops_at=None
+    )
 
 
 async def test_coordinator_update_failed(
-    hass: HomeAssistant, mock_api_client, mock_config_entry
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    mock_config_entry: Any,
 ) -> None:
     """Test coordinator handles update failure."""
     coordinator = IrishRailDataUpdateCoordinator(
         hass, mock_api_client, mock_config_entry
     )
 
+    with (
+        patch.object(
+            mock_api_client,
+            "async_get_station_by_code",
+            side_effect=IrishRailConnectionError,
+        ),
+        pytest.raises(UpdateFailed),
+    ):
+        await coordinator._async_update_data()
+
+
+async def test_coordinator_scan_interval_from_options(
+    hass: HomeAssistant, mock_api_client: MagicMock
+) -> None:
+    """Test the coordinator honors a scan interval set via entry options."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Dublin Pearse",
+        data={
+            "station": "Dublin Pearse",
+            "station_code": "PEARS",
+            "direction": "Northbound",
+        },
+        unique_id="PEARS_Northbound",
+        options={"scan_interval": 300},
+    )
+
+    coordinator = IrishRailDataUpdateCoordinator(hass, mock_api_client, entry)
+    assert coordinator.update_interval == timedelta(seconds=300)
+
+
+def _entry_with(
+    data: dict[str, Any] | None = None, options: dict[str, Any] | None = None
+) -> Any:
+    """Return a mock config entry with the given data/options."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title="Dublin Pearse",
+        data={
+            "station": "Dublin Pearse",
+            "station_code": "PEARS",
+            "direction": "Northbound",
+            **(data or {}),
+        },
+        unique_id="PEARS_Northbound",
+        options=options,
+    )
+
+
+def test_resolve_scan_interval_defaults(hass: HomeAssistant) -> None:
+    """Test scan interval resolution falls back to the 60 s default."""
+    assert resolve_scan_interval(_entry_with()) == timedelta(seconds=60)
+    assert resolve_scan_interval(
+        _entry_with(options={"scan_interval": 300})
+    ) == timedelta(seconds=300)
+
+
+def test_resolve_scan_interval_clamps_to_bounds(hass: HomeAssistant) -> None:
+    """Test scan interval resolution clamps to the documented 30-600 s bounds."""
+    # Below the 30 s minimum clamps up to 30 s.
+    assert resolve_scan_interval(
+        _entry_with(options={"scan_interval": 10})
+    ) == timedelta(seconds=30)
+
+    # Above the 10 min maximum clamps down to 600 s.
+    assert resolve_scan_interval(
+        _entry_with(options={"scan_interval": 601})
+    ) == timedelta(seconds=600)
+
+    # In-range values are preserved.
+    assert resolve_scan_interval(
+        _entry_with(options={"scan_interval": 300})
+    ) == timedelta(seconds=300)
+
+    # Non-numeric values fall back to the 60 s default.
+    assert resolve_scan_interval(
+        _entry_with(options={"scan_interval": "bad"})
+    ) == timedelta(seconds=60)
+
+
+def test_resolve_num_trains_precedence_and_clamping(hass: HomeAssistant) -> None:
+    """Test num_trains resolution: options > data > default, clamped to 1-5."""
+    # No configuration at all: default.
+    assert resolve_num_trains(_entry_with()) == 3
+
+    # Value from initial setup data.
+    assert resolve_num_trains(_entry_with(data={"num_trains": 2})) == 2
+
+    # Options take precedence over data.
+    entry = _entry_with(data={"num_trains": 2}, options={"num_trains": 4})
+    assert resolve_num_trains(entry) == 4
+
+    # Out-of-range values are clamped.
+    assert resolve_num_trains(_entry_with(options={"num_trains": 99})) == 5
+    assert resolve_num_trains(_entry_with(options={"num_trains": 0})) == 1
+
+    # Non-numeric values fall back to the default.
+    assert resolve_num_trains(_entry_with(options={"num_trains": "bad"})) == 3
+
+
+def test_resolve_stops_at_precedence(hass: HomeAssistant) -> None:
+    """Test stops_at resolution: options > data > no filter."""
+    # No configuration at all: no filter.
+    assert resolve_stops_at(_entry_with()) is None
+
+    # Value from initial setup data.
+    assert resolve_stops_at(_entry_with(data={"stops_at": "Bray"})) == "Bray"
+
+    # Options take precedence over data.
+    entry = _entry_with(data={"stops_at": "Bray"}, options={"stops_at": "Howth"})
+    assert resolve_stops_at(entry) == "Howth"
+
+    # The "All" sentinel and blank values mean no filter.
+    assert resolve_stops_at(_entry_with(options={"stops_at": "All"})) is None
+    assert resolve_stops_at(_entry_with(options={"stops_at": ""})) is None
+
+
+async def test_coordinator_passes_stops_at_filter(
+    hass: HomeAssistant, mock_api_client: MagicMock
+) -> None:
+    """Test the coordinator forwards the stops_at option to the API client."""
+    entry = _entry_with(options={"stops_at": "Bray"})
+    coordinator = IrishRailDataUpdateCoordinator(hass, mock_api_client, entry)
+
     with patch.object(
         mock_api_client,
         "async_get_station_by_code",
-        side_effect=IrishRailConnectionError,
-    ), pytest.raises(UpdateFailed):
+        new=AsyncMock(return_value=[]),
+    ) as mock_fetch:
         await coordinator._async_update_data()
+
+    mock_fetch.assert_awaited_once_with(
+        "PEARS", direction="Northbound", stops_at="Bray"
+    )

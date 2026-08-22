@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from homeassistant.components.diagnostics import async_redact_data
@@ -11,7 +12,25 @@ from homeassistant.core import HomeAssistant
 from .const import CONF_STATION, CONF_STATION_CODE
 from .types import IrishRailRuntimeData
 
+# Only truly sensitive fields are fully redacted. Entry-level identifiers
+# (title/unique_id) are kept useful for debugging by partial masking instead.
 TO_REDACT = {CONF_STATION, CONF_STATION_CODE}
+
+_MASK_PREFIX_LENGTH = 3
+_MASK_HASH_LENGTH = 8
+
+
+def _mask_identifier(value: str | None) -> str | None:
+    """Partially mask an identifier, preserving debuggability.
+
+    Keeps a short prefix plus a stable hash suffix so entries can still be
+    correlated across diagnostics reports without exposing the full value.
+    """
+    if value is None:
+        return None
+    digest = hashlib.sha256(value.encode()).hexdigest()[:_MASK_HASH_LENGTH]
+    prefix = value[:_MASK_PREFIX_LENGTH]
+    return f"{prefix}...{digest}"
 
 
 async def async_get_config_entry_diagnostics(
@@ -36,9 +55,14 @@ async def async_get_config_entry_diagnostics(
 
     return {
         "entry": {
-            "title": entry.title,
-            "unique_id": entry.unique_id,
+            # Identifiers are partially masked rather than hidden entirely so
+            # diagnostics remain actionable.
+            "title": _mask_identifier(entry.title),
+            "unique_id": _mask_identifier(entry.unique_id),
             "data": async_redact_data(dict(entry.data), TO_REDACT),
+            # Redact options through the same policy so any sensitive field
+            # added there later is covered automatically.
+            "options": async_redact_data(dict(entry.options), TO_REDACT),
         },
         "coordinator": coordinator_info,
     }

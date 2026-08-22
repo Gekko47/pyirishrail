@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import IrishRailClient
-from .coordinator import IrishRailDataUpdateCoordinator
+from .coordinator import IrishRailDataUpdateCoordinator, resolve_scan_interval
 from .types import IrishRailRuntimeData
 
 _LOGGER = logging.getLogger(__name__)
@@ -33,9 +33,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # The container holds both the shared client and coordinator.
     entry.runtime_data = IrishRailRuntimeData(client=client, coordinator=coordinator)
 
+    # Apply option changes (scan interval / number of trains) without a full
+    # reload: the coordinator interval is updated in place and the sensors
+    # read the train count dynamically on every refresh.
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle options updates by applying them to the live coordinator."""
+    coordinator = entry.runtime_data.coordinator
+    # resolve_scan_interval() guards against invalid/non-numeric stored
+    # option values, falling back to the default instead of raising.
+    coordinator.update_interval = resolve_scan_interval(entry)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

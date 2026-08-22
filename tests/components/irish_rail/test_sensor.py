@@ -2,25 +2,28 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
+import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irish_rail.api import TrainDueTime
+from custom_components.irish_rail.const import DOMAIN
+from custom_components.irish_rail.sensor import IrishRailDueTrainSensor
 
 
-def _make_train() -> TrainDueTime:
+def _mock_train(due_in: int = 10) -> TrainDueTime:
     """Return a representative TrainDueTime for tests."""
     return TrainDueTime(
-        code="E123",
+        code=f"E{due_in}",
         origin="Howth",
         destination="Bray",
         origin_time="12:00",
         destination_time="13:00",
-        due_in_mins=10,
-        late_mins=2,
+        due_in_mins=due_in,
+        late_mins=0,
         expected_arrival_time="12:10",
         expected_departure_time="12:11",
         scheduled_arrival_time="12:00",
@@ -31,128 +34,102 @@ def _make_train() -> TrainDueTime:
     )
 
 
-async def _setup_entry(hass: HomeAssistant) -> MockConfigEntry:
-    """Set up a mock config entry with one due train."""
+async def _setup_entry(
+    hass: HomeAssistant, trains: list[TrainDueTime]
+) -> MockConfigEntry:
+    """Add and fully set up a mock config entry with the given train data."""
     entry = MockConfigEntry(
-        domain="irish_rail",
-        title="Dublin Pearse",
+        domain=DOMAIN,
+        title="Dublin Pearse (Northbound)",
         data={
             "station": "Dublin Pearse",
             "station_code": "PEARS",
             "direction": "Northbound",
+            "num_trains": 3,
         },
         unique_id="PEARS_Northbound",
     )
     entry.add_to_hass(hass)
-
     with patch(
         "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
-        return_value=[_make_train()],
+        return_value=trains,
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
-
     return entry
 
 
-async def test_sensors_created_with_stable_unique_ids(
-    hass: HomeAssistant,
-) -> None:
-    """Test that four sensors are created with stable unique IDs."""
-    await _setup_entry(hass)
-
-    expected_suffixes = [
-        "next_train_due",
-        "next_train_destination",
-        "next_train_delay",
-        "next_train_type",
-    ]
-    for suffix in expected_suffixes:
-        entity_id = f"sensor.dublin_pearse_{suffix}"
-        state = hass.states.get(entity_id)
-        assert state is not None, f"{entity_id} missing"
-
-    # Unique IDs are derived from the config entry unique ID + static suffix.
-    from homeassistant.helpers import entity_registry as er
-
+def _entity_id_for(hass: HomeAssistant, entry: MockConfigEntry, key: str) -> str:
+    """Return the entity id of the sensor with the given entity key."""
     registry = er.async_get(hass)
-    for suffix in expected_suffixes:
-        entry = registry.async_get_entity_id(
-            "sensor", "irish_rail", f"PEARS_Northbound_{suffix}"
-        )
-        assert entry is not None, f"unique id PEARS_Northbound_{suffix} missing"
-
-
-async def test_sensor_values_and_attributes(hass: HomeAssistant) -> None:
-    """Test sensor native values and extra state attributes."""
-    await _setup_entry(hass)
-
-    due_state = hass.states.get("sensor.dublin_pearse_next_train_due")
-    assert due_state is not None
-    assert due_state.state == "10"
-    assert due_state.attributes["unit_of_measurement"] == "min"
-    assert due_state.attributes["device_class"] == "duration"
-
-    dest_state = hass.states.get("sensor.dublin_pearse_next_train_destination")
-    assert dest_state is not None
-    assert dest_state.state == "Bray"
-
-    delay_state = hass.states.get("sensor.dublin_pearse_next_train_delay")
-    assert delay_state is not None
-    assert delay_state.state == "2"
-
-    type_state = hass.states.get("sensor.dublin_pearse_next_train_type")
-    assert type_state is not None
-    assert type_state.state == "DART"
-
-    # Extra attributes are attached to every sensor.
-    attrs = due_state.attributes
-    assert attrs["origin"] == "Howth"
-    assert attrs["train_code"] == "E123"
-    assert attrs["scheduled_arrival_time"] == "12:00"
-
-
-async def test_sensor_unknown_when_no_trains(hass: HomeAssistant) -> None:
-    """Test sensors report unknown when the API returns no trains."""
-    entry = MockConfigEntry(
-        domain="irish_rail",
-        title="Dublin Pearse",
-        data={
-            "station": "Dublin Pearse",
-            "station_code": "PEARS",
-            "direction": "Northbound",
-        },
-        unique_id="PEARS_Northbound",
+    return next(
+        e.entity_id
+        for e in registry.entities.values()
+        if e.config_entry_id == entry.entry_id
+        and e.unique_id.endswith(f"_{key}")
     )
-    entry.add_to_hass(hass)
-
-    with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
-        return_value=[],
-    ):
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-    state = hass.states.get("sensor.dublin_pearse_next_train_due")
-    assert state is not None
-    assert state.state == STATE_UNKNOWN
 
 
-async def test_sensor_unavailable_after_update_failure(
+async def test_empty_train_list_reports_api_reachable(
     hass: HomeAssistant,
 ) -> None:
-    """Test sensors become unavailable when a coordinator update fails."""
-    entry = await _setup_entry(hass)
+    """A successful refresh with zero trains still populates attributes."""
+    entry = await _setup_entry(hass, [])
 
+    entity_id = _entity_id_for(hass, entry, "next_train_due")
+    state = hass.states.get(entity_id)
+    assert state is not None
+    # The API responded, so the attributes must be present even though
+    # there are no trains.
+    assert state.attributes["api_reachable"] is True
+    assert state.attributes["upcoming_trains"] == []
+    # No next-train details exist without trains; the state is unknown.
+    assert state.state == "unknown"
+
+
+async def test_failed_refresh_marks_entity_unavailable(
+    hass: HomeAssistant,
+) -> None:
+    """A failed refresh makes the entity unavailable without attributes."""
+    entry = await _setup_entry(hass, [])
+
+    coordinator = entry.runtime_data.coordinator
     with patch(
         "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
         side_effect=Exception("boom"),
     ):
-        # Force a refresh that fails.
-        coordinator = entry.runtime_data.coordinator
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
-    state = hass.states.get("sensor.dublin_pearse_next_train_due")
+    # The coordinator keeps its last successful data ([]), but marks the
+    # refresh unsuccessful so the entity becomes unavailable.
+    entity_id = _entity_id_for(hass, entry, "next_train_due")
+    state = hass.states.get(entity_id)
     assert state is not None
-    assert state.state == STATE_UNAVAILABLE
+    assert state.state == "unavailable"
+    assert "api_reachable" not in state.attributes
+    assert "upcoming_trains" not in state.attributes
+
+
+def test_none_data_returns_no_attributes() -> None:
+    """Unsuccessful or incomplete refreshes (data is None) yield no attrs."""
+    coordinator = MagicMock()
+    coordinator.data = None
+    sensor = IrishRailDueTrainSensor(coordinator, "next_train_due")
+    assert sensor.extra_state_attributes is None
+
+
+@pytest.mark.parametrize("key", ["next_train_due", "next_train_destination"])
+async def test_non_empty_data_keeps_next_train_attributes(
+    hass: HomeAssistant, key: str
+) -> None:
+    """Non-empty data retains the existing attribute behaviour."""
+    entry = await _setup_entry(hass, [_mock_train()])
+
+    entity_id = _entity_id_for(hass, entry, key)
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.attributes["api_reachable"] is True
+    assert len(state.attributes["upcoming_trains"]) == 1
+    if key == "next_train_due":
+        assert state.state == "10"

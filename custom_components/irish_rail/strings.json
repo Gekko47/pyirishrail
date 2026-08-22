@@ -6,6 +6,17 @@
         "description": "Choose the station you want to monitor and optionally filter by train direction.",
         "data": {
           "station_code": "Station",
+          "direction": "Direction Filter",
+          "num_trains": "Number of upcoming trains"
+        },
+        "data_description": {
+          "num_trains": "How many of the next trains (1-5, default 3) are exposed in the upcoming_trains attribute of each sensor."
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure Irish Rail",
+        "description": "Change the direction filter for this station. The station itself cannot be changed.",
+        "data": {
           "direction": "Direction Filter"
         }
       }
@@ -16,7 +27,25 @@
       "unknown": "Unexpected error occurred."
     },
     "abort": {
-      "already_configured": "This station with this configuration is already monitored."
+      "already_configured": "This station with this configuration is already monitored.",
+      "reconfigure_successful": "Successfully reconfigured the Irish Rail entry.",
+      "update_entry_failed": "Failed to save the updated configuration."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Irish Rail options",
+        "description": "Adjust polling and how many upcoming trains are exposed.",
+        "data": {
+          "scan_interval": "Scan interval (seconds)",
+          "num_trains": "Number of upcoming trains"
+        },
+        "data_description": {
+          "scan_interval": "How often to poll the Irish Rail API, between 30 seconds and 10 minutes (default 60 seconds).",
+          "num_trains": "How many of the next trains (1-5, default 3) are exposed in the upcoming_trains attribute of each sensor."
+        }
+      }
     }
   },
   "entity": {
