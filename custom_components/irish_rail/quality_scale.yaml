@@ -1,0 +1,111 @@
+# Home Assistant Integration Quality Scale — Irish Rail (Bronze)
+# Rule IDs verified against https://developers.home-assistant.io/docs/core/integration-quality-scale/rules/
+# (20 Bronze rules as of the current rules page). Keys use the underscore
+# form of the official hyphenated rule names, matching home-assistant/core
+# quality_scale.yaml convention.
+
+rules:
+  # ── Bronze ──────────────────────────────────────────────────────────────
+  action_setup:
+    status: exempt
+    comment: >
+      Read-only integration with no service actions; nothing to register in
+      async_setup.
+
+  appropriate_polling:
+    status: done
+    comment: >
+      const.py DEFAULT_SCAN_INTERVAL (60s) with documented cadence evidence;
+      applied via DataUpdateCoordinator update_interval.
+
+  brands:
+    status: done
+    comment: brand/icon.png, brand/logo.png and brand/small.png ship with the integration.
+
+  common_modules:
+    status: done
+    comment: >
+      api.py is a framework-agnostic client module (no HA imports), entity.py
+      holds the shared entity base, types.py the shared runtime-data type.
+
+  config_flow_test_coverage:
+    status: done
+    comment: >
+      tests/components/irish_rail/test_config_flow.py covers success,
+      cannot_connect, invalid_station and duplicate-abort paths.
+
+  config_flow:
+    status: done
+    comment: IrishRailConfigFlow.async_step_user in config_flow.py.
+
+  dependency_transparency:
+    status: done
+    comment: >
+      defusedxml pinned in manifest.json requirements; aiohttp supplied by HA
+      core; no hidden dependencies.
+
+  docs_actions:
+    status: done
+    comment: README "Actions" section describes add/remove/reload effects.
+
+  docs_conditions:
+    status: done
+    comment: README "Conditions" section describes normal vs degraded states.
+
+  docs_high_level_description:
+    status: done
+    comment: README "Description" section.
+
+  docs_installation_instructions:
+    status: done
+    comment: README "Installation" section (HACS + manual); notes no API key needed.
+
+  docs_removal_instructions:
+    status: done
+    comment: README "Removal" section.
+
+  docs_triggers:
+    status: done
+    comment: README "Triggers" section describes startup refresh and 60s polling.
+
+  entity_event_setup:
+    status: done
+    comment: >
+      Entities extend CoordinatorEntity, which subscribes/unsubscribes the
+      coordinator listener in the correct lifecycle methods.
+
+  entity_unique_id:
+    status: done
+    comment: >
+      entity.py builds stable unique IDs from the config entry unique ID plus
+      a static per-sensor suffix.
+
+  has_entity_name:
+    status: done
+    comment: entity.py sets _attr_has_entity_name = True on the base class.
+
+  runtime_data:
+    status: done
+    comment: >
+      __init__.py stores an IrishRailRuntimeData container (client +
+      coordinator) on entry.runtime_data (types.py).
+
+  test_before_configure:
+    status: done
+    comment: >
+      config_flow.py validates the connection by fetching the station list
+      before allowing entry creation, mapping failures to cannot_connect.
+
+  test_before_setup:
+    status: done
+    comment: >
+      __init__.py awaits coordinator.async_config_entry_first_refresh(),
+      raising ConfigEntryNotReady on failure.
+
+  unique_config_entry:
+    status: done
+    comment: >
+      Config flow sets unique_id "{station_code}_{direction}" (API-assigned
+      station code + fixed direction enum) and aborts if already configured,
+      allowing one entry per station per direction filter while preventing
+      exact duplicates.

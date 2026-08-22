@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "irish-rail"
+version = "1.0.0"
+description = "A Home Assistant custom integration for Irish Rail RTPI"
+readme = "README.md"
+requires-python = ">=3.14"
+license = "Apache-2.0"
+authors = [
+    { name = "Gekko47" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Framework :: Home Assistant",
+]
+dependencies = [
+    "defusedxml>=0.7.1"
+]
+
+[tool.setuptools]
+# The integration is loaded from custom_components/ by Home Assistant and is
+# not itself an installable package. `pip install -e ".[dev]"` is only used
+# to fetch development/test tooling, so we declare no installable modules.
+packages = []
+py-modules = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-homeassistant-custom-component>=0.13.0",
+    "pytest-asyncio>=0.23.0",
+    "aresponses>=3.0.0",
+    "ruff>=0.3.0",
+    "mypy>=1.9.0",
+    "aiohttp>=3.9.0",
+    "types-defusedxml>=0.7.0"
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "ASYNC",# flake8-async
+    "I",    # isort (import ordering, enforced by HA core)
+    "SIM",  # flake8-simplify
+    "C4",   # flake8-comprehensions
+    "RET",  # flake8-return
+    "RUF",  # ruff-specific rules
+    "T20",  # flake8-print (no print statements)
+]
+ignore = []
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+combine-as-imports = true
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unused_configs = true
+show_error_codes = true
+
+[tool.pytest.ini_options]
+addopts = "-p win_stubs"
+testpaths = [
+    "tests",
+]
+pythonpath = [
+    "."
+]
+asyncio_mode = "auto"
