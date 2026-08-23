@@ -1,4 +1,5 @@
-# Home Assistant Integration Quality Scale — Irish Rail (Bronze + Silver)
+# Home Assistant Integration Quality Scale — Irish Rail (Bronze + Silver,
+# plus targeted Gold rules from roadmap Phase 3)
 # Rule IDs verified against https://developers.home-assistant.io/docs/core/integration-quality-scale/rules/
 # (20 Bronze rules plus the five targeted Silver rules as of the current
 # rules page). Keys use the underscore
@@ -198,3 +199,176 @@ rules:
       The integration uses no authentication of any kind (keyless public
       RTPI API); per the rule's own exception clause, the rule does not
       apply.
+
+  # ── Gold (roadmap Phase 3 targeted rules) ─────────────────────────────────
+  diagnostics:
+    status: done
+    comment: >
+      diagnostics.py implements async_get_config_entry_diagnostics; entry
+      data/options pass through async_redact_data and identifiers are
+      partially masked (_mask_identifier). Redaction edge cases are pinned in
+      test_diagnostics.py (None/empty/unicode masking, determinism, never
+      set-up entry without runtime_data, sensitive options redacted).
+
+  docs_examples:
+    status: done
+    comment: >
+      README "Example automations" section provides departure-alert and
+      delay-notification automations built on the exposed sensors and
+      attributes.
+
+  docs_use_cases:
+    status: done
+    comment: >
+      README "Use cases" section covers commuter dashboard, delay alerts,
+      presence-based departure reminders and service-health awareness.
+
+  docs_troubleshooting:
+    status: done
+    comment: >
+      README "Troubleshooting" section covers unavailable sensors during API
+      downtime, SETUP_RETRY behaviour, empty data at night (expected), the
+      persistent empty-data repair issue and its resolution steps, plus
+      diagnostics for bug reports.
+
+  entity_device_class:
+    status: done
+    comment: >
+      Phase 3 review as entities grew: next_train_due and next_train_delay
+      keep SensorDeviceClass.DURATION with UnitOfTime.MINUTES and MEASUREMENT
+      state class (genuine minute-based measurements eligible for long-term
+      statistics); destination/type remain deliberately classless free-text
+      sensors with no forced device/state class. No new attribute-based
+      surface introduced a mismatched class.
+
+  exception_translations:
+    status: exempt
+    comment: >
+      Audit: the integration registers no service actions and raises no
+      HomeAssistantError toward users (asserted by test_translations.py::
+      test_no_homeassistanterror_raised_to_users); typed API exceptions and
+      coordinator UpdateFailed messages surface only in logs. Every
+      user-facing failure surface that exists - config flow errors/aborts and
+      repair issues - is translation-keyed, pinned by test_translations.py.
+
+  icon_translations:
+    status: done
+    comment: >
+      icons.json defines per-entity default icons for all four sensor
+      translation keys (mdi:train, mdi:map-marker, mdi:clock-alert-outline,
+      mdi:ticket). For the two DURATION-class sensors the train-domain icons
+      intentionally extend the generic device-class icon with service
+      context; alignment with entity translation keys is enforced by
+      test_icons.py.
+
+  repair_issues:
+    status: done
+    comment: >
+      coordinator.py raises ir.async_create_issue (translation_key
+      "empty_data_during_service_hours", severity WARNING, is_fixable=False,
+      issue_domain=DOMAIN) after EMPTY_DATA_ISSUE_THRESHOLD consecutive
+      successful-but-empty polls during service hours; created exactly once
+      per streak, deleted on the first data-bearing refresh and on entry
+      unload. Pinned by tests in test_coordinator.py and test_init.py.
+
+  # ── Gold completion pass (remaining official Gold rules) ──────────────────
+  devices:
+    status: done
+    comment: >
+      entity.py sets _attr_device_info on every entity with identifiers
+      (DOMAIN + config entry unique_id), station/direction name,
+      manufacturer "Iarnród Éireann / Irish Rail" and entry_type=
+      DeviceEntryType.SERVICE, per the rule's guidance for service-type
+      devices.
+
+  discovery:
+    status: exempt
+    comment: >
+      The rule's own exception clause exempts integrations whose devices
+      cannot be discovered. Irish Rail RTPI is a keyless cloud XML API with
+      no discoverable hardware or network protocol (no mDNS/SSDP/BT/USB);
+      setup is by explicit user station selection.
+
+  discovery_update_info:
+    status: exempt
+    comment: >
+      Same exception clause as the discovery rule; there is no discovery
+      info to update connection data from (cloud service, no IP/host
+      configuration at all).
+
+  docs_data_update:
+    status: done
+    comment: >
+      README "Triggers (data updates)" section documents how data is
+      updated: immediate first refresh on startup/reload, periodic polling
+      every 60 s by default with cadence rationale (server-side ~1 min feed
+      changes), user-configurable 30 s-10 min interval, and failure/retry
+      behaviour.
+
+  docs_known_limitations:
+    status: done
+    comment: >
+      README "Known Limitations" section lists genuine limitations
+      (unofficial API that may experience downtime, unauthenticated plain
+      HTTP/HTTPS service, Republic of Ireland/Northern Ireland scope only,
+      extra per-train API requests when the stops-at filter is active)
+      without duplicating bug-tracker material.
+
+  docs_supported_devices:
+    status: exempt
+    comment: >
+      The rule does not apply to integrations that do not integrate physical
+      devices. This integration monitors a national rail timetable/RTPI
+      service; there is no device model or hardware compatibility matrix to
+      document.
+
+  docs_supported_functions:
+    status: done
+    comment: >
+      README "Entities" section describes each provided sensor (meaning,
+      device class, unit, state class) plus the full attribute table;
+      "Actions", "Triggers (data updates)" and "Conditions" describe the
+      remaining functionality including normal vs degraded behaviour.
+
+  dynamic_devices:
+    status: done
+    comment: >
+      Device creation follows config entries dynamically: adding an entry
+      for a station/direction creates its service device immediately during
+      platform setup. The architecture has no hub or shared device list, so
+      no further devices can appear mid-life that would require listener-
+      based re-add logic.
+
+  entity_category:
+    status: done
+    comment: >
+      Reviewed: all four entities are primary, user-facing train data
+      sensors for which the default category (None) is appropriate; no
+      diagnostic/config auxiliary entities exist, so no EntityCategory is
+      set anywhere in the package (verified by code search).
+
+  entity_disabled_by_default:
+    status: done
+    comment: >
+      Reviewed against the rule's noisy/unpopular criterion: all four
+      sensors are the integration's core value, update at most once per poll
+      (~1/min), and none are auxiliary diagnostics (e.g. signal strength),
+      so enabling them by default is correct.
+
+  entity_translations:
+    status: done
+    comment: >
+      Every sensor sets _attr_translation_key with has_entity_name=True;
+      strings.json and translations/en.json define a name per sensor key.
+      Alignment between sensor.py keys and both strings files is enforced by
+      test_icons.py and test_translations.py.
+
+  stale_devices:
+    status: done
+    comment: >
+      Each service device is bound to exactly one config entry via
+      identifiers=(DOMAIN, entry.unique_id); deleting the entry removes its
+      only config-entry link, so Home Assistant's registry cleanup removes
+      the device automatically. With one device per entry there is no hub
+      list from which devices can silently disappear, so no sweep or manual
+      async_remove_config_entry_device is needed.

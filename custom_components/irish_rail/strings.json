@@ -63,5 +63,11 @@
         "name": "Next train type"
       }
     }
+  },
+  "issues": {
+    "empty_data_during_service_hours": {
+      "title": "No train data received for {{station}}",
+      "message": "The Irish Rail API has returned no trains at this station for an extended period during service hours. This may indicate an API or schedule data change rather than a genuine quiet period. If it persists, check whether other stations still report data, then try reloading or re-adding the entry."
+    }
   }
 }

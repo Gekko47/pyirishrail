@@ -7,10 +7,16 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import IrishRailClient
-from .coordinator import IrishRailDataUpdateCoordinator, resolve_scan_interval
+from .const import DOMAIN
+from .coordinator import (
+    IrishRailDataUpdateCoordinator,
+    empty_data_issue_id,
+    resolve_scan_interval,
+)
 from .types import IrishRailRuntimeData
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,4 +59,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+    # Remove any pending empty-data repair issue so a stale warning is not
+    # left behind for an unloaded entry; a reload re-evaluates from scratch.
+    ir.async_delete_issue(hass, DOMAIN, empty_data_issue_id(entry))
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

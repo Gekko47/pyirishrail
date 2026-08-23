@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.irish_rail.const import DOMAIN, EMPTY_DATA_ISSUE_THRESHOLD
+from custom_components.irish_rail.coordinator import empty_data_issue_id
 from custom_components.irish_rail.types import IrishRailRuntimeData
 
 
@@ -114,3 +118,37 @@ async def test_unload_and_reload_restores_entities(
         assert reloaded_state is not None
         # Successful-but-empty refresh => sensors available reporting unknown.
         assert reloaded_state.state == "unknown"
+
+
+async def test_unload_removes_pending_empty_data_repair_issue(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Unloading an entry deletes a raised persistent-empty-data issue."""
+    mock_config_entry.add_to_hass(hass)
+
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[],
+        ),
+        patch(
+            "custom_components.irish_rail.coordinator.dt_util.now",
+            return_value=datetime(2026, 8, 23, 12, tzinfo=UTC),
+        ),
+    ):
+        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+        # Drive enough consecutive empty polls during service hours to raise
+        # the repair issue (Gold rule ``repair-issues``).
+        coordinator = mock_config_entry.runtime_data.coordinator
+        for _ in range(EMPTY_DATA_ISSUE_THRESHOLD):
+            await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    issue_id = empty_data_issue_id(mock_config_entry)
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+
+    assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None

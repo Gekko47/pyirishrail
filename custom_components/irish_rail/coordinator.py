@@ -7,7 +7,9 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .api import IrishRailClient, IrishRailError, TrainDueTime
 from .const import (
@@ -20,13 +22,21 @@ from .const import (
     DEFAULT_NUM_TRAINS,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    EMPTY_DATA_ISSUE_THRESHOLD,
     MAX_NUM_TRAINS,
     MAX_SCAN_INTERVAL_SECONDS,
     MIN_NUM_TRAINS,
     MIN_SCAN_INTERVAL_SECONDS,
+    SERVICE_HOURS_END_HOUR,
+    SERVICE_HOURS_START_HOUR,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def empty_data_issue_id(config_entry: ConfigEntry) -> str:
+    """Return the repair-issue ID for an entry's persistent-empty-data state."""
+    return f"empty_data_{config_entry.entry_id}"
 
 
 def resolve_scan_interval(config_entry: ConfigEntry) -> timedelta:
@@ -107,10 +117,67 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
             config_entry=config_entry,
         )
 
+        # Persistent-empty-data repair-issue tracking (roadmap Phase 3).
+        self._empty_streak = 0
+        self._empty_issue_reported = False
+
+    def _in_service_hours(self) -> bool:
+        """Return True when the local time is within Irish Rail service hours."""
+        hour = dt_util.now().hour
+        return SERVICE_HOURS_START_HOUR <= hour < SERVICE_HOURS_END_HOUR
+
+    def _async_update_empty_data_issue(self, trains: list[TrainDueTime]) -> None:
+        """Raise or clear the persistent-empty-data repair issue.
+
+        A station that keeps returning an empty list during service hours
+        suggests the API or its schema changed rather than a genuine quiet
+        period. The issue is created exactly once per streak and removed on
+        the first refresh that returns actual trains (Gold rule
+        ``repair-issues``; roadmap Phase 3).
+        """
+        if trains:
+            self._empty_streak = 0
+            if self._empty_issue_reported:
+                ir.async_delete_issue(
+                    self.hass, DOMAIN, empty_data_issue_id(self.config_entry)
+                )
+                self._empty_issue_reported = False
+                _LOGGER.info(
+                    "Station %s (%s) is reporting train data again",
+                    self.station_name,
+                    self.station_code,
+                )
+            return
+
+        self._empty_streak += 1
+        if (
+            not self._empty_issue_reported
+            and self._empty_streak >= EMPTY_DATA_ISSUE_THRESHOLD
+            and self._in_service_hours()
+        ):
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                empty_data_issue_id(self.config_entry),
+                is_fixable=False,
+                issue_domain=DOMAIN,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="empty_data_during_service_hours",
+                translation_placeholders={"station": self.station_name},
+            )
+            self._empty_issue_reported = True
+            _LOGGER.warning(
+                "Station %s (%s) returned no trains for %d consecutive "
+                "polls during service hours",
+                self.station_name,
+                self.station_code,
+                self._empty_streak,
+            )
+
     async def _async_update_data(self) -> list[TrainDueTime]:
         """Fetch real-time due train data from Irish Rail."""
         try:
-            return await self.client.async_get_station_by_code(
+            trains = await self.client.async_get_station_by_code(
                 self.station_code,
                 direction=self.direction,
                 stops_at=resolve_stops_at(self.config_entry),
@@ -119,3 +186,6 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
             raise UpdateFailed(
                 f"Error updating Irish Rail station data: {err}"
             ) from err
+
+        self._async_update_empty_data_issue(trains)
+        return trains

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import UpdateFailed
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -16,9 +17,10 @@ from custom_components.irish_rail.api import (
     IrishRailConnectionError,
     TrainDueTime,
 )
-from custom_components.irish_rail.const import DOMAIN
+from custom_components.irish_rail.const import DOMAIN, EMPTY_DATA_ISSUE_THRESHOLD
 from custom_components.irish_rail.coordinator import (
     IrishRailDataUpdateCoordinator,
+    empty_data_issue_id,
     resolve_num_trains,
     resolve_scan_interval,
     resolve_stops_at,
@@ -286,3 +288,164 @@ async def test_transition_logging_once_per_direction(
     ]
     assert len(recovered) == 1
     assert coordinator.last_update_success is True
+
+
+# ── Persistent-empty-data repair issue (roadmap Phase 3, Gold rule
+#    ``repair-issues``) ──────────────────────────────────────────────────────
+
+
+def _service_hours(hour: int) -> Any:
+    """Return a patcher pinning the coordinator clock to a specific hour."""
+    return patch(
+        "custom_components.irish_rail.coordinator.dt_util.now",
+        return_value=datetime(2026, 8, 23, hour, tzinfo=UTC),
+    )
+
+
+def _active_issue(hass: HomeAssistant, entry: Any) -> Any:
+    """Return the entry's persistent-empty-data issue from the registry."""
+    return ir.async_get(hass).async_get_issue(DOMAIN, empty_data_issue_id(entry))
+
+
+async def _refresh_empty(
+    coordinator: IrishRailDataUpdateCoordinator,
+    client: MagicMock,
+    times: int = 1,
+) -> None:
+    """Run ``times`` coordinator refreshes that each return zero trains."""
+    with patch.object(
+        client, "async_get_station_by_code", new=AsyncMock(return_value=[])
+    ):
+        for _ in range(times):
+            await coordinator.async_refresh()
+
+
+async def test_empty_polls_below_threshold_create_no_issue(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    mock_config_entry: Any,
+) -> None:
+    """Fewer than threshold consecutive empty polls never raise the issue."""
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, mock_config_entry
+    )
+
+    with _service_hours(12):
+        await _refresh_empty(
+            coordinator, mock_api_client, EMPTY_DATA_ISSUE_THRESHOLD - 1
+        )
+
+    assert _active_issue(hass, mock_config_entry) is None
+    assert coordinator._empty_issue_reported is False
+
+
+async def test_persistent_empty_data_creates_issue_once_during_service_hours(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    mock_config_entry: Any,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Gold rule ``repair-issues``: one translation-keyed issue per streak."""
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, mock_config_entry
+    )
+
+    with (
+        _service_hours(12),
+        patch(
+            "homeassistant.helpers.issue_registry.async_create_issue",
+            autospec=True,
+            side_effect=ir.async_create_issue,
+        ) as create_spy,
+        caplog.at_level(logging.WARNING),
+    ):
+        # Reaching the threshold raises exactly one issue.
+        await _refresh_empty(coordinator, mock_api_client, EMPTY_DATA_ISSUE_THRESHOLD)
+
+    issue = _active_issue(hass, mock_config_entry)
+    assert issue is not None
+    assert issue.translation_key == "empty_data_during_service_hours"
+    assert issue.translation_placeholders == {"station": "Dublin Pearse"}
+    assert issue.severity is ir.IssueSeverity.WARNING
+    assert issue.is_fixable is False
+    assert create_spy.call_count == 1
+    assert len(caplog.records) == 1
+
+    # Subsequent empty polls must not re-create the issue (once per streak).
+    with (
+        _service_hours(12),
+        patch(
+            "homeassistant.helpers.issue_registry.async_create_issue",
+            autospec=True,
+            side_effect=ir.async_create_issue,
+        ) as create_spy_again,
+    ):
+        await _refresh_empty(coordinator, mock_api_client, 3)
+
+    assert _active_issue(hass, mock_config_entry) is not None
+    assert create_spy_again.call_count == 0
+
+
+@pytest.mark.parametrize(("hour", "expected"), [(5, False), (6, True), (23, False)])
+async def test_empty_data_issue_respects_service_hour_boundaries(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    mock_config_entry: Any,
+    hour: int,
+    expected: bool,
+) -> None:
+    """The issue is gated to [SERVICE_HOURS_START_HOUR, SERVICE_HOURS_END_HOUR)."""
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, mock_config_entry
+    )
+
+    with _service_hours(hour):
+        await _refresh_empty(coordinator, mock_api_client, EMPTY_DATA_ISSUE_THRESHOLD)
+
+    assert (_active_issue(hass, mock_config_entry) is not None) is expected
+
+
+async def test_recovery_clears_issue_and_second_streak_re_reports(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    mock_config_entry: Any,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """First data-bearing refresh deletes the issue; a new streak re-raises."""
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, mock_config_entry
+    )
+
+    with _service_hours(12), caplog.at_level(logging.INFO):
+        # Streak 1: raise the issue.
+        await _refresh_empty(coordinator, mock_api_client, EMPTY_DATA_ISSUE_THRESHOLD)
+        assert _active_issue(hass, mock_config_entry) is not None
+
+        # Recovery: the very first refresh returning trains removes it again.
+        with patch.object(
+            mock_api_client,
+            "async_get_station_by_code",
+            new=AsyncMock(return_value=[_make_train()]),
+        ):
+            await coordinator.async_refresh()
+
+        assert _active_issue(hass, mock_config_entry) is None
+        assert coordinator._empty_issue_reported is False
+
+        recovered = [
+            record
+            for record in caplog.records
+            if record.name == "custom_components.irish_rail.coordinator"
+            and record.levelno == logging.INFO
+            and "reporting train data again" in record.getMessage()
+        ]
+        assert len(recovered) == 1
+
+        # Streak 2: the issue is raised again only after a fresh threshold of
+        # empty polls, proving the streak counter was reset on recovery.
+        await _refresh_empty(
+            coordinator, mock_api_client, EMPTY_DATA_ISSUE_THRESHOLD - 1
+        )
+        assert _active_issue(hass, mock_config_entry) is None
+        await _refresh_empty(coordinator, mock_api_client, 1)
+        assert _active_issue(hass, mock_config_entry) is not None

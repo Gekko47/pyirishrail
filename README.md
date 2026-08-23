@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/Gekko47/pyirishrail)](https://github.com/Gekko47/pyirishrail/releases)
 [![License](https://img.shields.io/github/license/Gekko47/pyirishrail)](LICENSE.txt)
 
-A modern, Home Assistant **Silver-tier** custom integration for the Irish Rail Realtime Passenger Information (RTPI) service.
+A modern Home Assistant custom integration for the Irish Rail Realtime Passenger Information (RTPI) service. It satisfies every Bronze and Silver rule of the [Home Assistant Integration Quality Scale](https://developers.home-assistant.io/docs/core/integration-quality-scale/), and every Gold-tier rule is assessed and satisfied (done or justified exempt) — see [quality_scale.yaml](custom_components/irish_rail/quality_scale.yaml) for per-rule evidence.
 
 ## Description
 This integration allows you to monitor upcoming trains at any Irish Rail station directly from Home Assistant. It provides real-time data on due times, destinations, delays, and more, using the unofficial Irish Rail RTPI API.
@@ -13,7 +13,7 @@ This integration allows you to monitor upcoming trains at any Irish Rail station
 - **Domain**: `irish_rail`
 - **Integration type**: Service
 - **IoT class**: Cloud polling
-- **Quality scale**: Silver
+- **Quality scale**: Gold
 - **Minimum HA version**: 2026.8.2
 - **API key required**: No
 
@@ -92,6 +92,70 @@ Each sensor includes additional attributes:
 | `direction` | Direction of travel of the next train. |
 | `train_code` | Irish Rail train identifier of the next train. |
 
+Each sensor ships with a domain-appropriate default icon (train, map marker, delay clock, ticket) defined in the integration's `icons.json` ([icon translations](https://developers.home-assistant.io/docs/core/entity/#icons)). As with any entity, you can override the icon per entity from the UI without touching the integration.
+
+## Use cases
+Typical ways to put the integration to work:
+
+- **Commuter dashboard**: build a dashboard card for your home station around *Next train due* and *Next train destination*, and render the `upcoming_trains` attribute through a Markdown card (or auto-entities) for a live departure board.
+- **Delay alerts**: watch *Next train delay* during your usual commute window and get notified as soon as disruption starts, so you can catch an earlier service or switch route.
+- **Presence-based departure reminders**: combine the sensors with person tracking — when you enter a zone near the office/station and the next suitable train is due within a few minutes, remind yourself to head to the platform immediately.
+- **Service-health awareness**: dashboards can tell "no trains scheduled" (sensor *available*, reporting `unknown`, `api_reachable: true`) apart from "API unreachable" (sensor `unavailable`), so a quiet late-evening timetable never looks like an outage.
+
+## Example automations
+### Departure alert
+Notify when the next train is due within 10 minutes on weekdays:
+
+```yaml
+- alias: "Irish Rail - time to leave"
+  mode: single
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.dublin_pearse_northbound_next_train_due
+      below: 10
+  conditions:
+    - condition: time
+      weekday: [mon, tue, wed, thu, fri]
+  actions:
+    - action: notify.mobile_app_phone
+      data:
+        title: "Train arriving soon"
+        message: >-
+          The {{ state_attr('sensor.dublin_pearse_northbound_next_train_due',
+          'direction') }} service departs in about
+          {{ states('sensor.dublin_pearse_northbound_next_train_due') }}
+          minutes.
+        data:
+          tag: irish-rail-departure
+```
+
+### Delay notification
+Notify when the monitored service is more than 5 minutes late:
+
+```yaml
+- alias: "Irish Rail - delay warning"
+  mode: single
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.dublin_pearse_southbound_next_train_delay
+      above: 5
+  actions:
+    - action: notify.mobile_app_phone
+      data:
+        title: "Train delayed"
+        message: >-
+          Service {{ state_attr('sensor.dublin_pearse_southbound_next_train_delay',
+          'train_code') }} towards
+          {{ state_attr('sensor.dublin_pearse_southbound_next_train_delay',
+          'direction') }} is running
+          {{ states('sensor.dublin_pearse_southbound_next_train_delay') }}
+          minutes late.
+        data:
+          tag: irish-rail-delay
+```
+
+Replace the entity IDs with those of your own station/direction entries.
+
 ## Actions
 This integration is read-only and exposes no service actions. The user-facing actions are limited to configuration management:
 
@@ -119,6 +183,13 @@ contains the (redacted) entry data/options plus coordinator health information
 (update interval, last-update success flag, number of due trains). Station
 names and codes are partially masked (short prefix + hash suffix) so reports
 remain useful for debugging without exposing identifying details.
+
+## Troubleshooting
+- **Sensors show `unavailable`**: the most recent API poll failed (service downtime, timeout, or malformed response). One error per outage is written to **Settings → System → Logs**. No intervention is needed — polling continues and the sensors recover automatically on the first successful poll.
+- **Entry stuck in retry after startup/reload**: if the API was unreachable during setup, the entry enters `SETUP_RETRY` and Home Assistant keeps retrying with backoff. Setup completes on its own once the API answers; use the three-dot menu → **Reload** to force an immediate attempt.
+- **`unknown` states late at night**: outside operating hours Irish Rail legitimately returns no trains. The sensors remain *available* with `api_reachable: true` — this is a quiet timetable, not a fault.
+- **"No train data received" repair issue**: when a station keeps returning an empty response during service hours (roughly 06:00–23:00), the integration raises a repair issue under **Settings → System → Repairs**, since a persistent empty result may indicate an API or schedule-data change. Check whether other stations still report data, reload the entry, and — if it persists — remove and re-add it or update the integration. The issue clears itself on the first refresh that returns real trains.
+- **Reporting a bug**: include the entry diagnostics download (see above); station identifiers are already masked in it.
 
 ## Underlying API client
 The bundled `IrishRailClient` wraps the public RTPI XML endpoints over HTTPS

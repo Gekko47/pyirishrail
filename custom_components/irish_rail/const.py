@@ -27,6 +27,18 @@ DEFAULT_NUM_TRAINS = 3
 MIN_NUM_TRAINS = 1
 MAX_NUM_TRAINS = 5
 
+# Service hours for the persistent-empty-data repair issue (roadmap Phase 3,
+# Gold rule ``repair-issues``). Irish Rail services run roughly 06:00-23:30;
+# an empty response outside these hours is a normal overnight quiet period,
+# while a persistent empty result during service hours suggests an API or
+# schema change worth surfacing to the user.
+SERVICE_HOURS_START_HOUR = 6
+SERVICE_HOURS_END_HOUR = 23
+
+# Consecutive successful-but-empty polls required before the repair issue is
+# raised (about 10 minutes at the default 60-second polling interval).
+EMPTY_DATA_ISSUE_THRESHOLD = 10
+
 # HTTP timeout for a single Irish Rail API request.
 # The RTPI endpoints are lightweight XML documents; 10 seconds is generous
 # enough for slow mobile connections while ensuring the event loop never
