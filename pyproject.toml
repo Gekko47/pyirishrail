@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "irish-rail"
-version = "1.0.0"
+version = "0.1.2"
 description = "A Home Assistant custom integration for Irish Rail RTPI"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -65,6 +65,11 @@ ignore = []
 force-sort-within-sections = true
 combine-as-imports = true
 
+[tool.coverage.report]
+# Silver rule ``test-coverage``: >=95% coverage for all integration modules.
+# Mirrors the --cov-fail-under=95 gate enforced in .github/workflows/ci.yml.
+fail_under = 95
+
 [tool.mypy]
 python_version = "3.14"
 strict = true
@@ -85,7 +90,7 @@ module = [
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-addopts = "-p win_stubs"
+addopts = "-p tests.win_stubs"
 testpaths = [
     "tests",
 ]

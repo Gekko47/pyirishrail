@@ -1,6 +1,11 @@
 # Irish Rail Home Assistant Integration
 
-A modern, Home Assistant **Bronze-tier** custom integration for the Irish Rail Realtime Passenger Information (RTPI) service.
+[![CI](https://github.com/Gekko47/pyirishrail/actions/workflows/ci.yml/badge.svg)](https://github.com/Gekko47/pyirishrail/actions/workflows/ci.yml)
+[![HACS Validate](https://github.com/Gekko47/pyirishrail/actions/workflows/hacs.yml/badge.svg)](https://github.com/Gekko47/pyirishrail/actions/workflows/hacs.yml)
+[![Release](https://img.shields.io/github/v/release/Gekko47/pyirishrail)](https://github.com/Gekko47/pyirishrail/releases)
+[![License](https://img.shields.io/github/license/Gekko47/pyirishrail)](LICENSE.txt)
+
+A modern, Home Assistant **Silver-tier** custom integration for the Irish Rail Realtime Passenger Information (RTPI) service.
 
 ## Description
 This integration allows you to monitor upcoming trains at any Irish Rail station directly from Home Assistant. It provides real-time data on due times, destinations, delays, and more, using the unofficial Irish Rail RTPI API.
@@ -8,7 +13,7 @@ This integration allows you to monitor upcoming trains at any Irish Rail station
 - **Domain**: `irish_rail`
 - **Integration type**: Service
 - **IoT class**: Cloud polling
-- **Quality scale**: Bronze
+- **Quality scale**: Silver
 - **Minimum HA version**: 2026.8.2
 - **API key required**: No
 
@@ -92,14 +97,14 @@ This integration is read-only and exposes no service actions. The user-facing ac
 
 - **Add a station**: via **Settings → Devices & Services → Add Integration → Irish Rail**. Selecting a station (and optionally a direction filter) creates a config entry and four sensors for that station. Adding the same station with the same direction filter again is prevented (duplicate protection); the same station with a *different* direction filter creates an additional, independent entry.
 - **Remove an entry**: deleting a config entry (see Removal below) unloads its coordinator and removes all four sensors belonging to that station/direction. No manual cleanup is required — no files or persistent state are written outside Home Assistant's own config-entry storage.
-- **Reload an entry**: reloading (three-dot menu → Reload) re-runs setup, performing a fresh first refresh against the API. If the API is unreachable at that moment, the entry enters a retry state and the sensors remain unavailable until it succeeds.
+- **Reload an entry**: entries fully support unloading and reloading at runtime without restarting Home Assistant. Reloading (three-dot menu → Reload) re-runs setup, performing a fresh first refresh against the API and restoring the same sensors under the same entity IDs. If the API is unreachable at that moment, the entry enters a retry state and the sensors remain unavailable until it succeeds.
 
 ## Triggers (data updates)
 The integration polls the Irish Rail RTPI API periodically; there are no user-configurable triggers:
 
 - **On startup / entry load**: when Home Assistant starts or the config entry is loaded/reloaded, an immediate first refresh is performed. If it fails, setup is retried with backoff (`ConfigEntryNotReady`).
 - **Periodic polling**: after the first refresh, a `DataUpdateCoordinator` fetches fresh due-train data every **60 seconds** by default (`DEFAULT_SCAN_INTERVAL`), matching the roughly once-a-minute cadence at which Irish Rail's real-time feed changes, while keeping load on the public API sustainable. The interval is user-configurable between 30 seconds and 10 minutes via the entry options (see Configuration above) and applies without a reload.
-- **On coordinator failure**: if a poll fails (connection error, timeout, or malformed response), the coordinator keeps the last known data, logs the failure, and retries on the next cycle; sensors become **Unavailable** after repeated failures.
+- **On coordinator failure**: if a poll fails (connection error, timeout, or malformed response), the coordinator keeps the last known data, logs the failure once per outage (not per failed poll), and retries on the next cycle; sensors become **Unavailable** immediately after the failed refresh and recover automatically on the next successful poll.
 
 ## Conditions (normal vs. degraded operation)
 - **Normal**: the coordinator returns a list of due trains; sensors report live values (minutes due, destination, delay, train type) plus schedule attributes.

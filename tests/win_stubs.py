@@ -1,11 +1,12 @@
 """Early-loading pytest plugin with Windows compatibility fixes.
 
-This module is force-loaded by pytest via ``-p win_stubs`` (see ``addopts``
-in pyproject.toml). The ``-p`` mechanism loads plugins *before* setuptools
-entry-point plugins such as ``pytest-homeassistant-custom-component``, whose
-plugin initialization imports ``homeassistant.runner``. A plain conftest.py
-cannot handle this because conftests are collected after entry-point
-plugins have already loaded.
+This module is force-loaded by pytest via ``-p tests.win_stubs`` (see
+``addopts`` in pyproject.toml). The ``-p`` mechanism loads plugins *before*
+setuptools entry-point plugins such as
+``pytest-homeassistant-custom-component``, whose plugin initialization
+imports ``homeassistant.runner``. A plain conftest.py cannot handle this
+because conftests are collected after entry-point plugins have already
+loaded.
 
 Fixes applied on Windows:
 

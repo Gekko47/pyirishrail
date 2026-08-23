@@ -1,6 +1,7 @@
-# Home Assistant Integration Quality Scale — Irish Rail (Bronze)
+# Home Assistant Integration Quality Scale — Irish Rail (Bronze + Silver)
 # Rule IDs verified against https://developers.home-assistant.io/docs/core/integration-quality-scale/rules/
-# (20 Bronze rules as of the current rules page). Keys use the underscore
+# (20 Bronze rules plus the five targeted Silver rules as of the current
+# rules page). Keys use the underscore
 # form of the official hyphenated rule names, matching home-assistant/core
 # quality_scale.yaml convention.
 
@@ -117,3 +118,83 @@ rules:
       station code + fixed direction enum) and aborts if already configured,
       allowing one entry per station per direction filter while preventing
       exact duplicates.
+
+  # ── Silver ────────────────────────────────────────────────────────────────
+  parallel_updates:
+    status: done
+    comment: >
+      sensor.py declares PARALLEL_UPDATES = 0: the platform is read-only and
+      all four entities share one DataUpdateCoordinator refresh, so
+      per-entity updates are pure property reads with no outbound calls
+      (official rule guidance for coordinator-based read-only platforms).
+
+  log_when_unavailable:
+    status: done
+    comment: >
+      coordinator.py raises UpdateFailed on IrishRailError; the built-in
+      DataUpdateCoordinator then logs the error exactly once on the
+      success-to-failure transition and an info recovery line exactly once
+      on failure-to-success (verified against the installed HA
+      helpers/update_coordinator.py). Pinned by explicit transition tests in
+      test_coordinator.py instead of adding duplicate logging.
+
+  entity_unavailable:
+    status: done
+    comment: >
+      All entities extend CoordinatorEntity whose availability follows the
+      coordinator result; test_sensor.py asserts every sensor reports
+      unavailable via the realistic IrishRailError -> UpdateFailed path and
+      recovers on the next successful refresh.
+
+  config_entry_unloading:
+    status: done
+    comment: >
+      __init__.py implements async_unload_entry via async_unload_platforms;
+      the options update listener is registered through entry.async_on_unload.
+      test_init.py verifies the unload + reload round-trip (entities removed,
+      entry NOT_LOADED, reload restores the same entities) and README
+      documents runtime unload/reload behaviour.
+
+  test_coverage:
+    status: done
+    comment: >
+      CI gate raised to >=95% (.github/workflows/ci.yml --cov-fail-under=95,
+      mirrored by pyproject [tool.coverage.report] fail_under = 95); suite
+      exceeds the gate at ~99%.
+
+  action_exceptions:
+    status: exempt
+    comment: >
+      Read-only integration: no service actions are registered and sensor
+      entities expose no callable platform actions, so there is no failure
+      path from which exceptions must be raised (mirrors the action_setup
+      exemption).
+
+  docs_configuration_parameters:
+    status: done
+    comment: >
+      README Configuration section documents every option: direction filter
+      (via reconfigure), scan interval 30s-10min with 60s default, number of
+      upcoming trains 1-5 with default 3, and the stops-at filter including
+      the disabling All sentinel.
+
+  docs_installation_parameters:
+    status: done
+    comment: >
+      README Installation + Configuration sections describe each parameter
+      the setup flow asks for (station dropdown fetched live from the API,
+      optional direction filter, optional number of upcoming trains) and
+      state explicitly that no API key or credentials are required.
+
+  integration_owner:
+    status: done
+    comment: >
+      manifest.json declares codeowners ["@Gekko47"], the owner and
+      maintainer of the repository.
+
+  reauthentication_flow:
+    status: exempt
+    comment: >
+      The integration uses no authentication of any kind (keyless public
+      RTPI API); per the rule's own exception clause, the rule does not
+      apply.

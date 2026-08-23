@@ -19,6 +19,14 @@ from .coordinator import IrishRailDataUpdateCoordinator, resolve_num_trains
 from .entity import IrishRailEntity
 from .types import IrishRailRuntimeData
 
+# Number of entities updated in parallel on this platform (Silver rule
+# ``parallel-updates``). This platform is read-only and every entity shares a
+# single DataUpdateCoordinator refresh, so per-entity updates are pure
+# in-memory property reads with no outbound calls. Per the official rule
+# guidance for coordinator-based read-only platforms (sensor), 0 explicitly
+# declares that no artificial serialization limit is needed.
+PARALLEL_UPDATES = 0
+
 
 async def async_setup_entry(
     hass: HomeAssistant,

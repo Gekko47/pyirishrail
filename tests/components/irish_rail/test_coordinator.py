@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -212,3 +213,76 @@ async def test_coordinator_passes_stops_at_filter(
     mock_fetch.assert_awaited_once_with(
         "PEARS", direction="Northbound", stops_at="Bray"
     )
+
+
+async def test_transition_logging_once_per_direction(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    mock_config_entry: Any,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Silver rule ``log-when-unavailable``: log once per state transition.
+
+    Exactly one error line must be logged when the coordinator transitions
+    from success to failure, and exactly one info line when it recovers —
+    not one per failed poll. This behaviour is provided by
+    ``DataUpdateCoordinator`` itself (the integration's job is only to raise
+    ``UpdateFailed``, which ``_async_update_data`` does); these tests pin the
+    behaviour so integration-side changes cannot silently break the rule.
+    """
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, mock_config_entry
+    )
+    assert coordinator.last_update_success is True
+
+    coordinator_logger = "custom_components.irish_rail.coordinator"
+    with patch.object(
+        mock_api_client,
+        "async_get_station_by_code",
+        side_effect=IrishRailConnectionError("connection refused"),
+    ):
+        # First failure: exactly one error log (success -> failure transition).
+        with caplog.at_level(logging.INFO):
+            await coordinator.async_refresh()
+        errors = [
+            record
+            for record in caplog.records
+            if record.name == coordinator_logger
+            and record.levelno >= logging.ERROR
+        ]
+        assert len(errors) == 1
+
+        # Second consecutive failure: no additional error log (no spamming).
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            await coordinator.async_refresh()
+        errors = [
+            record
+            for record in caplog.records
+            if record.name == coordinator_logger
+            and record.levelno >= logging.ERROR
+        ]
+        assert len(errors) == 0
+        assert coordinator.last_update_success is False
+
+    # Recovery: exactly one info log announcing recovery.
+    caplog.clear()
+    with (
+        patch.object(
+            mock_api_client,
+            "async_get_station_by_code",
+            new=AsyncMock(return_value=[]),
+        ),
+        caplog.at_level(logging.INFO),
+    ):
+        await coordinator.async_refresh()
+
+    recovered = [
+        record
+        for record in caplog.records
+        if record.name == coordinator_logger
+        and record.levelno == logging.INFO
+        and "recovered" in record.getMessage()
+    ]
+    assert len(recovered) == 1
+    assert coordinator.last_update_success is True

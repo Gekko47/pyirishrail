@@ -9,7 +9,10 @@ from homeassistant.helpers import entity_registry as er
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.irish_rail.api import TrainDueTime
+from custom_components.irish_rail.api import (
+    IrishRailConnectionError,
+    TrainDueTime,
+)
 from custom_components.irish_rail.const import DOMAIN
 from custom_components.irish_rail.sensor import IrishRailDueTrainSensor
 
@@ -109,6 +112,57 @@ async def test_failed_refresh_marks_entity_unavailable(
     assert state.state == "unavailable"
     assert "api_reachable" not in state.attributes
     assert "upcoming_trains" not in state.attributes
+
+
+async def test_all_entities_unavailable_after_failed_refresh_then_recover(
+    hass: HomeAssistant,
+) -> None:
+    """Silver rule ``entity-unavailable``: every entity, plus recovery.
+
+    Uses the realistic failure path (the client raises ``IrishRailError``,
+    which the coordinator converts into ``UpdateFailed``): all four sensors
+    must report ``unavailable`` immediately after a failed refresh, then
+    become available with fresh values on the next successful refresh.
+    """
+    entry = await _setup_entry(hass, [_mock_train()])
+    coordinator = entry.runtime_data.coordinator
+
+    keys = (
+        "next_train_due",
+        "next_train_destination",
+        "next_train_delay",
+        "next_train_type",
+    )
+
+    with patch(
+        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        side_effect=IrishRailConnectionError("connection lost"),
+    ):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    entity_ids = {key: _entity_id_for(hass, entry, key) for key in keys}
+    for key in keys:
+        state = hass.states.get(entity_ids[key])
+        assert state is not None
+        assert state.state == "unavailable"
+
+    # Recovery: the next successful refresh restores availability and values.
+    with patch(
+        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        return_value=[_mock_train(due_in=15)],
+    ):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    due_state = hass.states.get(entity_ids["next_train_due"])
+    assert due_state is not None
+    assert due_state.state == "15"
+    assert due_state.attributes["api_reachable"] is True
+    for key in keys:
+        state = hass.states.get(entity_ids[key])
+        assert state is not None
+        assert state.state != "unavailable"
 
 
 def test_none_data_returns_no_attributes() -> None:
