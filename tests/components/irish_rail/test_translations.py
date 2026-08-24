@@ -104,7 +104,27 @@ def test_repair_issue_keys_match_strings_files(file_name: str) -> None:
     assert issue_keys_in_code == set(issues)
     for key in issue_keys_in_code:
         # The coordinator supplies the {station} placeholder.
-        assert "{{station}}" in issues[key]["title"], key
+        assert "{station}" in issues[key]["title"], key
+
+
+@pytest.mark.parametrize("file_name", ["strings.json", "translations/en.json"])
+def test_translations_contain_no_unclosed_html_tags(file_name: str) -> None:
+    """Flow descriptions render via markdown; angle brackets are risky.
+
+    Regression pin: a literal ``<destination>`` placeholder once surfaced to
+    users as an ``unclosed_tag`` rendering error on the direction step.
+    """
+    data = _load_json(file_name)
+
+    def _walk(value: Any):
+        if isinstance(value, dict):
+            for sub in value.values():
+                yield from _walk(sub)
+        elif isinstance(value, str):
+            yield value
+
+    offenders = [text for text in _walk(data) if "<" in text or ">" in text]
+    assert offenders == []
 
 
 @pytest.mark.parametrize("file_name", ["strings.json", "translations/en.json"])

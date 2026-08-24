@@ -9,10 +9,13 @@ DOMAIN = "irish_rail"
 # Configuration keys
 CONF_STATION = "station"
 CONF_STATION_CODE = "station_code"
+CONF_STATION_FILTER = "station_filter"
 CONF_DIRECTION = "direction"
 CONF_SCAN_INTERVAL = "scan_interval"
 CONF_NUM_TRAINS = "num_trains"
 CONF_STOPS_AT = "stops_at"
+CONF_ENABLE_DIRECTION_FILTER = "enable_direction_filter"
+CONF_ENABLE_STOPS_AT_FILTER = "enable_stops_at_filter"
 
 # Bounds for the user-configurable polling interval (roadmap 1.2).
 MIN_SCAN_INTERVAL_SECONDS = 30
@@ -31,9 +34,9 @@ MAX_NUM_TRAINS = 5
 # while a persistent empty result during service hours suggests an API or
 # schema change worth surfacing to the user.
 SERVICE_HOURS_START_HOUR = 6
-# 24 means "through the end of the day": dt_util.now().hour never reaches 24,
-# so the half-open check keeps the gate open for all of 06:00-23:59 without
-# ever wrapping into the early-morning quiet period.
+# 24 means "through the end of the day": a local (Europe/Dublin) hour never
+# reaches 24, so the half-open check keeps the gate open for all of 06:00-23:59
+# without ever wrapping into the early-morning quiet period.
 SERVICE_HOURS_END_HOUR = 24
 
 # Consecutive successful-but-empty polls required before the repair issue is

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
@@ -17,7 +18,11 @@ from custom_components.irish_rail.api import (
     IrishRailConnectionError,
     TrainDueTime,
 )
-from custom_components.irish_rail.const import DOMAIN, EMPTY_DATA_ISSUE_THRESHOLD
+from custom_components.irish_rail.const import (
+    BACKOFF_MULTIPLIER,
+    DOMAIN,
+    EMPTY_DATA_ISSUE_THRESHOLD,
+)
 from custom_components.irish_rail.coordinator import (
     IrishRailDataUpdateCoordinator,
     empty_data_issue_id,
@@ -229,6 +234,113 @@ async def test_backoff_uses_new_base_after_options_change(
     assert coordinator.update_interval == timedelta(seconds=240)
 
 
+async def test_schedule_refresh_mirrors_backed_off_interval_into_cache(
+    hass: HomeAssistant, mock_api_client: MagicMock
+) -> None:
+    """HA 2026.8+ schedules from the seconds cache, not the property.
+
+    ``_schedule_refresh()`` must therefore sync that cache from the
+    effective interval so consecutive failures genuinely widen polling.
+    """
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, _entry_with(options={"scan_interval": 300})
+    )
+    # Constructor-time assignment already populated the scheduler cache.
+    assert coordinator._update_interval_seconds == 300.0
+
+    with (
+        patch.object(
+            mock_api_client,
+            "async_get_station_by_code",
+            side_effect=IrishRailConnectionError,
+        ),
+        pytest.raises(UpdateFailed),
+    ):
+        await coordinator._async_update_data()
+
+    coordinator._schedule_refresh()
+    # One failure backs the effective interval off once from 300 s.
+    assert coordinator._update_interval_seconds == pytest.approx(
+        300 * BACKOFF_MULTIPLIER
+    )
+
+    # Recovery restores the configured interval at the next schedule point.
+    coordinator._failure_streak = 0
+    coordinator._schedule_refresh()
+    assert coordinator._update_interval_seconds == 300.0
+
+    coordinator._unschedule_refresh()
+
+
+async def test_failed_refresh_cycle_reschedules_with_widened_interval(
+    hass: HomeAssistant, mock_api_client: MagicMock
+) -> None:
+    """A failed cycle reschedules through HA's loop with the backed-off wait.
+
+    End-to-end through ``async_refresh``: HA's ``_async_refresh`` finally
+    block calls ``_schedule_refresh``, which must hand ``loop.call_at`` a
+    deadline one backoff step beyond now (300 s configured -> doubled once
+    after the first failure).
+    """
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, _entry_with(options={"scan_interval": 300})
+    )
+    # HA only reschedules while something listens (mirrors entity setup).
+    remove_listener = coordinator.async_add_listener(lambda: None)
+
+    with (
+        patch.object(
+            mock_api_client,
+            "async_get_station_by_code",
+            side_effect=IrishRailConnectionError,
+        ),
+        patch.object(hass.loop, "call_at", wraps=hass.loop.call_at) as mock_call_at,
+    ):
+        await coordinator.async_refresh()
+
+    assert coordinator.last_update_success is False
+    assert coordinator._failure_streak == 1
+
+    assert mock_call_at.call_count == 1
+    delta = mock_call_at.call_args.args[0] - hass.loop.time()
+    # Doubled once from 300 s; allow ~1 s slack each way for the base
+    # class's int()-floored deadline and its sub-second stagger.
+    assert 300 * BACKOFF_MULTIPLIER - 1 < delta < 300 * BACKOFF_MULTIPLIER + 1
+
+    remove_listener()
+    coordinator._unschedule_refresh()
+
+
+async def test_successful_refresh_cycle_reschedules_at_configured_interval(
+    hass: HomeAssistant, mock_api_client: MagicMock
+) -> None:
+    """A healthy cycle keeps the configured spacing (override is inert)."""
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, _entry_with(options={"scan_interval": 300})
+    )
+    remove_listener = coordinator.async_add_listener(lambda: None)
+
+    with (
+        patch.object(
+            mock_api_client,
+            "async_get_station_by_code",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch.object(hass.loop, "call_at", wraps=hass.loop.call_at) as mock_call_at,
+    ):
+        await coordinator.async_refresh()
+
+    assert coordinator.last_update_success is True
+    assert coordinator._failure_streak == 0
+
+    assert mock_call_at.call_count == 1
+    delta = mock_call_at.call_args.args[0] - hass.loop.time()
+    assert 300 - 1 < delta < 300 + 1
+
+    remove_listener()
+    coordinator._unschedule_refresh()
+
+
 def _entry_with(
     data: dict[str, Any] | None = None, options: dict[str, Any] | None = None
 ) -> Any:
@@ -419,6 +531,45 @@ def _service_hours(hour: int) -> Any:
     )
 
 
+@pytest.mark.parametrize(
+    ("utc_stamp", "expected"),
+    [
+        # August IST (UTC+1): 23:15Z is already 00:15 the next day -> outside
+        # hours even though the UTC hour is inside them.
+        (datetime(2026, 8, 23, 23, 15, tzinfo=UTC), False),
+        # December GMT (UTC+0): 06:30Z is 06:30 Dublin -> inside hours.
+        (datetime(2026, 12, 20, 6, 30, tzinfo=UTC), True),
+    ],
+)
+async def test_in_service_hours_evaluates_dublin_local_time(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    mock_config_entry: Any,
+    utc_stamp: datetime,
+    expected: bool,
+) -> None:
+    """The gate converts now() to Europe/Dublin before reading ``hour``."""
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, mock_config_entry
+    )
+
+    seen_timezones: list[Any] = []
+
+    def fake_now(time_zone: Any = None) -> datetime:
+        # Mimic the real dt_util.now() contract: localize the current instant
+        # to the requested timezone so .hour reflects civil time there.
+        seen_timezones.append(time_zone)
+        return utc_stamp.astimezone(time_zone) if time_zone else utc_stamp
+
+    with patch(
+        "custom_components.irish_rail.coordinator.dt_util.now",
+        side_effect=fake_now,
+    ):
+        assert coordinator._in_service_hours() is expected
+
+    assert seen_timezones == [ZoneInfo("Europe/Dublin")]
+
+
 def _active_issue(hass: HomeAssistant, entry: Any) -> Any:
     """Return the entry's persistent-empty-data issue from the registry."""
     return ir.async_get(hass).async_get_issue(DOMAIN, empty_data_issue_id(entry))
@@ -524,6 +675,44 @@ async def test_empty_data_issue_respects_service_hour_boundaries(
     assert (_active_issue(hass, mock_config_entry) is not None) is expected
 
 
+async def test_overnight_empty_streak_does_not_carry_into_first_service_hour_poll(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    mock_config_entry: Any,
+) -> None:
+    """An overnight empty streak cannot pre-seed the next morning's count."""
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, mock_config_entry
+    )
+
+    # Overnight quiet period (outside service hours): far more than the
+    # threshold of consecutive empty polls must not accumulate any streak.
+    with _service_hours(2):
+        await _refresh_empty(
+            coordinator, mock_api_client, EMPTY_DATA_ISSUE_THRESHOLD * 2
+        )
+    assert coordinator._empty_streak == 0
+
+    # The first service-hour poll of the morning is also empty: it starts a
+    # fresh streak at 1 instead of inheriting the overnight empties.
+    with _service_hours(6):
+        await _refresh_empty(coordinator, mock_api_client, 1)
+    assert coordinator._empty_streak == 1
+    assert _active_issue(hass, mock_config_entry) is None
+
+    # A full fresh run of consecutive service-hour polls is still required:
+    # with the streak at 1, the issue must stay absent until the fresh
+    # in-service streak itself reaches the threshold, firing exactly there.
+    with _service_hours(6):
+        await _refresh_empty(
+            coordinator, mock_api_client, EMPTY_DATA_ISSUE_THRESHOLD - 2
+        )
+        assert _active_issue(hass, mock_config_entry) is None
+        await _refresh_empty(coordinator, mock_api_client, 1)
+        assert _active_issue(hass, mock_config_entry) is not None
+    assert coordinator._empty_issue_reported is True
+
+
 async def test_recovery_clears_issue_and_second_streak_re_reports(
     hass: HomeAssistant,
     mock_api_client: MagicMock,
@@ -568,6 +757,57 @@ async def test_recovery_clears_issue_and_second_streak_re_reports(
         assert _active_issue(hass, mock_config_entry) is None
         await _refresh_empty(coordinator, mock_api_client, 1)
         assert _active_issue(hass, mock_config_entry) is not None
+
+
+async def test_recovery_deletes_issue_raised_by_previous_coordinator_instance(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    mock_config_entry: Any,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A rebuilt coordinator still removes a registry issue on first data.
+
+    The issue may outlive the coordinator instance that raised it (entry
+    reload/re-setup); the fresh instance's ``_empty_issue_reported`` flag
+    starts False, so recovery must consult the issue registry itself.
+    """
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        empty_data_issue_id(mock_config_entry),
+        is_fixable=False,
+        issue_domain=DOMAIN,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="empty_data_during_service_hours",
+        translation_placeholders={"station": "Dublin Pearse"},
+    )
+    assert _active_issue(hass, mock_config_entry) is not None
+
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, mock_config_entry
+    )
+    assert coordinator._empty_issue_reported is False
+
+    with (
+        caplog.at_level(logging.INFO),
+        patch.object(
+            mock_api_client,
+            "async_get_station_by_code",
+            new=AsyncMock(return_value=[_make_train()]),
+        ),
+    ):
+        await coordinator.async_refresh()
+
+    assert _active_issue(hass, mock_config_entry) is None
+    assert coordinator._empty_issue_reported is False
+    recovered = [
+        record
+        for record in caplog.records
+        if record.name == "custom_components.irish_rail.coordinator"
+        and record.levelno == logging.INFO
+        and "reporting train data again" in record.getMessage()
+    ]
+    assert len(recovered) == 1
 
 
 def test_previous_unique_id_none_without_station_code(

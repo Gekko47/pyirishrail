@@ -18,10 +18,13 @@ import voluptuous as vol
 from .api import IrishRailClient, IrishRailError, Station
 from .const import (
     CONF_DIRECTION,
+    CONF_ENABLE_DIRECTION_FILTER,
+    CONF_ENABLE_STOPS_AT_FILTER,
     CONF_NUM_TRAINS,
     CONF_SCAN_INTERVAL,
     CONF_STATION,
     CONF_STATION_CODE,
+    CONF_STATION_FILTER,
     CONF_STOPS_AT,
     DEFAULT_NUM_TRAINS,
     DEFAULT_SCAN_INTERVAL,
@@ -69,15 +72,40 @@ def build_stops_at_schema_field(
     return {vol.Optional(CONF_STOPS_AT, default=current): vol.In(options)}
 
 
+def filter_stations(stations: list[Station], text: str) -> list[Station]:
+    """Return the stations matching a free-text filter.
+
+    Mirrors the word-prefix semantics of irishrail.ie's own station search
+    (verified against ``getStationsFilterXML``): case-insensitively, every
+    whitespace-separated term must be a prefix of some whitespace-delimited
+    word of the station name or alias. Blank text matches everything so the
+    full list stays browsable; there is deliberately no fuzziness.
+    """
+    terms = text.casefold().split()
+    if not terms:
+        return list(stations)
+    matched: list[Station] = []
+    for station in stations:
+        words = station.name.casefold().split()
+        if station.alias:
+            words.extend(station.alias.casefold().split())
+        if all(any(word.startswith(term) for word in words) for term in terms):
+            matched.append(station)
+    return matched
+
+
 class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Irish Rail.
 
-    The flow is two-stepped. Step one selects the station (fetched once per
-    flow instance and cached), validating the connection up front
-    (``test_before_configure``). Step two offers only the direction values
-    that are actually valid *for that station*, discovered live from its
-    due-trains list: ``Northbound`` / ``Southbound`` on the Dundalk-Rosslare
-    and Sligo-Dublin corridors, free-text values such as ``To Cork``
+    Step one narrows the station list with an optional free-text filter
+    using the same word-prefix semantics as irishrail.ie's own search; a
+    single match skips straight ahead, otherwise a pick screen lists the
+    candidates (the full list when the filter is left blank). The
+    connection is validated up front (``test_before_configure``). The
+    final step offers only the direction values that are actually valid
+    *for the chosen station*, discovered live from its due-trains list:
+    ``Northbound`` / ``Southbound`` on the Dundalk-Rosslare and
+    Sligo-Dublin corridors, free-text values such as ``To Cork``
     everywhere else. When nothing is currently due (e.g. overnight) the
     field degrades to free text so setup never blocks.
     """
@@ -98,6 +126,11 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
         self._station_code: str | None = None
         self._num_trains: int = DEFAULT_NUM_TRAINS
         self._stops_at: str | None = None
+        self._station_filter: str = ""
+        self._candidates: list[Station] | None = None
+        self._want_direction = False
+        self._want_stops_at = False
+        self._direction: str | None = None
 
     def _get_client(self) -> IrishRailClient:
         """Return (lazily creating) the API client for this flow."""
@@ -168,33 +201,27 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
             }
         )
 
-    def _build_schema(self, stations: list[Station]) -> vol.Schema:
-        """Build the user form schema from the available stations."""
-        station_options = {
-            s.code: s.name for s in sorted(stations, key=lambda x: x.name)
-        }
-        if not station_options:
-            station_options = {"": "None available (error)"}
-
+    def _build_schema(self) -> vol.Schema:
+        """Build the first-step schema (filter text and train count)."""
         return vol.Schema(
             {
-                vol.Required(CONF_STATION_CODE): vol.In(station_options),
+                vol.Optional(CONF_STATION_FILTER, default=""): str,
                 vol.Optional(CONF_NUM_TRAINS, default=DEFAULT_NUM_TRAINS): vol.All(
                     vol.Coerce(int),
                     vol.Range(min=MIN_NUM_TRAINS, max=MAX_NUM_TRAINS),
                 ),
-                **build_stops_at_schema_field(stations, NO_FILTER_SENTINEL),
             }
         )
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle the first step: station selection.
+        """Handle the first step: narrow the station list by name.
 
         The station-list fetch doubles as the connection check, keeping
         ``test_before_configure`` satisfied before any form is offered.
-        The chosen station is carried into the ``directions`` step.
+        An empty filter browses every station; a single match skips the
+        pick screen entirely.
         """
         errors: dict[str, str] = {}
 
@@ -207,7 +234,7 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
             errors["base"] = "cannot_connect"
             stations = []
 
-        schema = self._build_schema(stations)
+        schema = self._build_schema()
 
         if user_input is None:
             return self.async_show_form(
@@ -216,27 +243,182 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if not stations:
             # The station list could not be loaded; keep the connection error
-            # visible instead of reporting an invalid station.
+            # visible instead of reporting an unmatched filter.
             errors.setdefault("base", "cannot_connect")
             return self.async_show_form(
                 step_id="user", data_schema=schema, errors=errors
             )
 
-        station_code: str = user_input[CONF_STATION_CODE]
-        selected_station = next((s for s in stations if s.code == station_code), None)
-        if selected_station is None:
-            errors["base"] = "invalid_station"
+        # Remember the step-one answers up front: only station/direction
+        # form part of the entry identity created later.
+        self._num_trains = int(user_input.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS))
+        self._station_filter = str(user_input.get(CONF_STATION_FILTER, "")).strip()
+
+        candidates = filter_stations(stations, self._station_filter)
+
+        if not candidates:
+            errors["base"] = "no_matching_stations"
             return self.async_show_form(
                 step_id="user", data_schema=schema, errors=errors
             )
 
-        # Carry the validated selection into the next step; num_trains and
-        # stops_at are remembered here because only station/direction form
-        # part of the entry identity created later.
+        if len(candidates) == 1:
+            # A single hit skips the pick screen entirely.
+            self._station_code = candidates[0].code
+            return await self.async_step_filter_options()
+
+        self._candidates = candidates
+        return await self.async_step_station_pick()
+
+    async def async_step_station_pick(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle choosing one station from the filtered candidates."""
+        if not self._candidates:
+            # Step entered out of order; restart defensively.
+            return await self.async_step_user(None)
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_STATION_CODE): vol.In(
+                    {s.code: s.name for s in self._candidates}
+                ),
+            }
+        )
+
+        if user_input is None:
+            return self.async_show_form(
+                step_id="station_pick",
+                data_schema=schema,
+                description_placeholders={"filter": self._station_filter},
+            )
+
+        station_code: str = user_input[CONF_STATION_CODE]
+        selected_station = next(
+            (s for s in self._candidates if s.code == station_code), None
+        )
+        if selected_station is None:
+            # Unreachable through vol.In; restart defensively.
+            return await self.async_step_user(None)
+
         self._station_code = station_code
-        self._num_trains = int(user_input.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS))
-        self._stops_at = user_input.get(CONF_STOPS_AT)
-        return await self.async_step_directions()
+        return await self.async_step_filter_options()
+
+    async def async_step_filter_options(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask which optional filters to configure; unticked means All."""
+        selected_station = next(
+            (s for s in self._stations if s.code == self._station_code), None
+        )
+        station_name = (
+            selected_station.name if selected_station else (self._station_code or "")
+        )
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_ENABLE_DIRECTION_FILTER, default=False): bool,
+                vol.Required(CONF_ENABLE_STOPS_AT_FILTER, default=False): bool,
+            }
+        )
+        if user_input is None:
+            return self.async_show_form(
+                step_id="filter_options",
+                data_schema=schema,
+                description_placeholders={"station": station_name},
+            )
+
+        self._want_direction = bool(user_input[CONF_ENABLE_DIRECTION_FILTER])
+        self._want_stops_at = bool(user_input[CONF_ENABLE_STOPS_AT_FILTER])
+
+        if self._want_direction:
+            return await self.async_step_directions()
+        if self._want_stops_at:
+            return await self.async_step_stops_at()
+        return await self._async_finalize_entry()
+
+    async def async_step_stops_at(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Offer only the stops served by the filtered services."""
+        station_code = self._station_code
+        if station_code is None:
+            # Step entered out of order; restart defensively.
+            return await self.async_step_user(None)
+        selected_station = next(
+            (s for s in self._stations if s.code == station_code), None
+        )
+        station_name = selected_station.name if selected_station else station_code
+
+        try:
+            stops = await self._get_client().async_get_station_stops_at_options(
+                station_code,
+                direction=self._direction,
+                exclude=station_name,
+            )
+        except IrishRailError as err:
+            _LOGGER.warning("Could not discover stops for %s: %s", station_code, err)
+            stops = None
+
+        field: dict[Any, Any]
+        if stops:
+            options: dict[str, str] = {NO_FILTER_SENTINEL: NO_FILTER_SENTINEL}
+            for stop in stops:
+                options[stop] = stop
+            field = {
+                vol.Optional(CONF_STOPS_AT, default=NO_FILTER_SENTINEL): vol.In(
+                    options
+                )
+            }
+        else:
+            # No live services to sample (or discovery failed): degrade to
+            # the full cached station list instead of dead-ending setup.
+            field = build_stops_at_schema_field(self._stations, NO_FILTER_SENTINEL)
+
+        schema = vol.Schema({**field})
+
+        if user_input is None:
+            return self.async_show_form(
+                step_id="stops_at",
+                data_schema=schema,
+                description_placeholders={"station": station_name},
+            )
+
+        raw = user_input.get(CONF_STOPS_AT)
+        self._stops_at = None if not raw or raw == NO_FILTER_SENTINEL else raw
+        return await self._async_finalize_entry()
+
+    async def _async_finalize_entry(self) -> ConfigFlowResult:
+        """Claim the entry identity and create it once all steps are done."""
+        station_code = self._station_code
+        if station_code is None:
+            # Defensive: finalize is only reached after a station is chosen.
+            return await self.async_step_user(None)
+        selected_station = next(
+            (s for s in self._stations if s.code == station_code), None
+        )
+        station_name = selected_station.name if selected_station else station_code
+
+        await self.async_set_unique_id(
+            build_unique_id(station_code, self._direction)
+        )
+        self._abort_if_unique_id_configured()
+
+        title = station_name
+        if self._direction:
+            title += f" ({self._direction})"
+
+        entry_data: dict[str, Any] = {
+            CONF_STATION: station_name,
+            CONF_STATION_CODE: station_code,
+            CONF_DIRECTION: self._direction,
+            CONF_NUM_TRAINS: self._num_trains,
+        }
+        # "All" (or blank free text) seeds no filter at all, mirroring the
+        # options flow's normalization convention.
+        if self._stops_at and self._stops_at != NO_FILTER_SENTINEL:
+            entry_data[CONF_STOPS_AT] = self._stops_at
+
+        return self.async_create_entry(title=title, data=entry_data)
 
     async def async_step_directions(
         self, user_input: dict[str, Any] | None = None
@@ -273,35 +455,15 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
         direction: str | None = user_input.get(CONF_DIRECTION)
         if direction == NO_FILTER_SENTINEL:
             direction = None
+        self._direction = direction
 
-        selected_station = next(
-            (s for s in self._stations if s.code == station_code), None
-        )
-        station_name = selected_station.name if selected_station else station_code
-
-        # Unique ID combines the API-assigned station code with the
-        # normalized (lowercased) direction value, so the same station can
-        # be monitored once per direction filter — including free-text
-        # "To <destination>" values. Both parts are stable.
-        await self.async_set_unique_id(build_unique_id(station_code, direction))
-        self._abort_if_unique_id_configured()
-
-        title = station_name
-        if direction:
-            title += f" ({direction})"
-
-        entry_data: dict[str, Any] = {
-            CONF_STATION: station_name,
-            CONF_STATION_CODE: station_code,
-            CONF_DIRECTION: direction,
-            CONF_NUM_TRAINS: self._num_trains,
-        }
-        # "All" (or blank free text) seeds no filter at all, mirroring the
-        # options flow's normalization convention.
-        if self._stops_at and self._stops_at != NO_FILTER_SENTINEL:
-            entry_data[CONF_STOPS_AT] = self._stops_at
-
-        return self.async_create_entry(title=title, data=entry_data)
+        # The stops-at step (when requested) narrows on this direction's
+        # services, so chain there before finalizing the entry. The unique
+        # ID combines the API-assigned station code with the normalized
+        # (lowercased) direction value and is claimed at finalization time.
+        if self._want_stops_at:
+            return await self.async_step_stops_at()
+        return await self._async_finalize_entry()
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
@@ -386,6 +548,10 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
         new_unique_id = build_unique_id(station_code, direction)
         if new_unique_id != entry.unique_id:
             await self.async_set_unique_id(new_unique_id)
+            # No ``updates=`` argument is passed, so HA's reload_on_update
+            # machinery (and its update-listener conflict deprecation,
+            # breaking in 2026.12) cannot engage here; this call is pure
+            # duplicate-identity detection.
             self._abort_if_unique_id_configured()
 
         # Reload ownership belongs to the integration's update listener since

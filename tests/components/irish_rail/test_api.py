@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 from xml.etree.ElementTree import fromstring
@@ -20,7 +21,10 @@ from custom_components.irish_rail.api import (
     TrainMovement,
     parse_station_data,
 )
-from custom_components.irish_rail.const import MOVEMENT_CACHE_MAX_ENTRIES
+from custom_components.irish_rail.const import (
+    MAX_CONCURRENT_MOVEMENT_LOOKUPS,
+    MOVEMENT_CACHE_MAX_ENTRIES,
+)
 
 SAMPLE_STATIONS_XML = """
 <ArrayOfObjStation xmlns="http://api.irishrail.ie/realtime/">
@@ -530,10 +534,11 @@ async def test_api_timeout_error() -> None:
 
 # ── stops_at pruning hardening & movement cache (roadmap Phase 4.6) ──────────
 
-TWO_TRAIN_STATION_DATA_XML = """
-<ArrayOfObjStationData xmlns="http://api.irishrail.ie/realtime/">
-    <objStationData>
-        <Traincode>E777</Traincode>
+def _station_data_xml(codes: list[str]) -> str:
+    """Return a station-data document with one Bray-bound train per code."""
+    records = "\n".join(
+        f"""    <objStationData>
+        <Traincode>{code}</Traincode>
         <Origin>Howth</Origin>
         <Destination>Bray</Destination>
         <Origintime>12:00</Origintime>
@@ -543,40 +548,13 @@ TWO_TRAIN_STATION_DATA_XML = """
         <Direction>Southbound</Direction>
         <Traintype>DART</Traintype>
         <Locationtype>S</Locationtype>
-    </objStationData>
-    <objStationData>
-        <Traincode>E888</Traincode>
-        <Origin>Howth</Origin>
-        <Destination>Bray</Destination>
-        <Origintime>12:30</Origintime>
-        <Destinationtime>13:30</Destinationtime>
-        <Duein>40</Duein>
-        <Late>0</Late>
-        <Direction>Southbound</Direction>
-        <Traintype>DART</Traintype>
-        <Locationtype>S</Locationtype>
-    </objStationData>
-</ArrayOfObjStationData>
-"""
-
-
-def _movements_xml(code: str, location: str) -> str:
-    """Return a single-stop movement document for the given train/location."""
+    </objStationData>"""
+        for code in codes
+    )
     return f"""
-<ArrayOfObjTrainMovements xmlns="http://api.irishrail.ie/realtime/">
-    <objTrainMovements>
-        <TrainCode>{code}</TrainCode>
-        <TrainDate>01 Jan 2026</TrainDate>
-        <LocationCode>TGT</LocationCode>
-        <LocationFullName>{location}</LocationFullName>
-        <TrainOrigin>Howth</TrainOrigin>
-        <TrainDestination>Bray</TrainDestination>
-        <ExpectedArrival>12:10</ExpectedArrival>
-        <ExpectedDeparture>12:11</ExpectedDeparture>
-        <ScheduledArrival>12:00</ScheduledArrival>
-        <ScheduledDeparture>12:01</ScheduledDeparture>
-    </objTrainMovements>
-</ArrayOfObjTrainMovements>
+<ArrayOfObjStationData xmlns="http://api.irishrail.ie/realtime/">
+{records}
+</ArrayOfObjStationData>
 """
 
 
@@ -619,34 +597,62 @@ def _due_train(code: str) -> TrainDueTime:
 async def test_station_by_code_stops_at_multiple_candidates_concurrently(
     aresponses: ResponsesMockServer,
 ) -> None:
-    """Every stops_at candidate gets its route looked up concurrently."""
+    """stops_at lookups overlap and never exceed the concurrency cap."""
+    limit = MAX_CONCURRENT_MOVEMENT_LOOKUPS
+    # More candidates than the semaphore allows, so the cap must engage.
+    codes = [f"E{700 + index}" for index in range(limit + 2)]
     aresponses.add(
         "api.irishrail.ie",
         "/realtime/realtime.asmx/getStationDataByCodeXML",
         "GET",
-        aresponses.Response(text=TWO_TRAIN_STATION_DATA_XML, status=200),
+        aresponses.Response(text=_station_data_xml(codes), status=200),
     )
-    # Exactly two movement responses are queued, one per candidate train.
-    # Both routes include Greystones so both trains are kept regardless of
-    # response arrival order under concurrency; input order is preserved.
-    aresponses.add(
-        "api.irishrail.ie",
-        "/realtime/realtime.asmx/getTrainMovementsXML",
-        "GET",
-        aresponses.Response(text=_movements_xml("E777", "Greystones"), status=200),
-    )
-    aresponses.add(
-        "api.irishrail.ie",
-        "/realtime/realtime.asmx/getTrainMovementsXML",
-        "GET",
-        aresponses.Response(text=_movements_xml("E888", "Greystones"), status=200),
-    )
+
+    release = asyncio.Event()
+    saturated = asyncio.Event()
+    active = 0
+    peak = 0
+    expected_in_flight = min(limit, len(codes))
+
+    async def blocking_stops(
+        train_code: str, date: str | None = None
+    ) -> list[TrainMovement]:
+        """Block mid-flight until released, tracking concurrent activity."""
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        if active == expected_in_flight:
+            saturated.set()  # every slot the cap allows is now occupied
+        try:
+            await release.wait()
+        finally:
+            active -= 1
+        return [_movement("Greystones", train_code)]
 
     async with aiohttp.ClientSession() as session:
         client = IrishRailClient(session)
-        trains = await client.async_get_station_by_code("PEARS", stops_at="Greystones")
+        with patch.object(client, "async_get_train_stops", new=blocking_stops):
+            poll = asyncio.create_task(
+                client.async_get_station_by_code("PEARS", stops_at="Greystones")
+            )
+            # Fires only when enough lookups genuinely overlap; a serialized
+            # implementation would hang here and hit the timeout instead.
+            async with asyncio.timeout(30):
+                await saturated.wait()
 
-        assert [train.code for train in trains] == ["E777", "E888"]
+            # Multiple candidates are blocked mid-lookup simultaneously...
+            assert active == expected_in_flight
+            assert active > 1
+            # ...and never more than the configured bound.
+            assert peak <= limit
+
+            release.set()
+            trains = await poll
+
+    # The cap was reached exactly but never exceeded, and every candidate
+    # whose route matched was kept in API response order.
+    assert peak == limit
+    assert [train.code for train in trains] == codes
 
 
 async def test_prune_trains_partial_failure_isolates_single_train() -> None:
@@ -667,6 +673,30 @@ async def test_prune_trains_partial_failure_isolates_single_train() -> None:
     # E777's lookup raised, so only E888 survives; both were fetched.
     assert [train.code for train in result] == ["E888"]
     assert mock_stops.await_count == 2
+
+
+async def test_prune_trains_unexpected_lookup_error_isolates_single_train(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A non-IrishRailError failure prunes only that candidate, not all."""
+    client = IrishRailClient(MagicMock())
+    with patch.object(
+        client,
+        "async_get_train_stops",
+        new=AsyncMock(
+            side_effect=[RuntimeError("unexpected"), [_movement("Greystones")]]
+        ),
+    ) as mock_stops:
+        result = await client._async_prune_trains(
+            [_due_train("E777"), _due_train("E888")],
+            stops_at="Greystones",
+        )
+
+    # E777's lookup raised an unexpected error: it is pruned with a logged
+    # warning while E888 survives and the poll as a whole still succeeds.
+    assert [train.code for train in result] == ["E888"]
+    assert mock_stops.await_count == 2
+    assert "failed unexpectedly" in caplog.text
 
 
 async def test_stops_at_second_poll_uses_cached_routes(
@@ -802,6 +832,27 @@ def test_evict_movement_cache_drops_stale_dates_only_when_over_cap() -> None:
     assert client._movement_cache[fresh_key] == ["kept"]
 
 
+def test_evict_movement_cache_enforces_cap_for_current_date_entries() -> None:
+    """Same-date entries are oldest-first evicted when still over the cap."""
+    client = IrishRailClient(MagicMock())
+    today = "2026-08-24"
+    filler = {(f"T{i} ", today): [] for i in range(MOVEMENT_CACHE_MAX_ENTRIES)}
+    newest_key = ("NEW ", today)
+    client._movement_cache = {**filler, newest_key: ["newest"]}
+
+    # Stale removal cannot help here (no other-date entries), yet the cap
+    # must still hold: the oldest inserted key is dropped, the newest kept.
+    client._evict_movement_cache(current_date=today)
+
+    assert len(client._movement_cache) == MOVEMENT_CACHE_MAX_ENTRIES
+    assert ("T0 ", today) not in client._movement_cache
+    assert client._movement_cache[newest_key] == ["newest"]
+
+    # Under the cap afterwards, nothing further is evicted.
+    client._evict_movement_cache(current_date=today)
+    assert next(iter(client._movement_cache)) == ("T1 ", today)
+
+
 def test_parse_station_data_skips_record_on_unexpected_error(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -822,3 +873,58 @@ def test_parse_station_data_skips_record_on_unexpected_error(
         "Error parsing station data record" in record.getMessage()
         for record in caplog.records
     )
+
+
+async def test_station_stops_at_options_union_dedupe_and_exclude() -> None:
+    """Relevant-stops discovery unions routes minus home station."""
+    client = IrishRailClient(MagicMock())
+    base = _due_train("A1")
+    trains = [base, replace(base, code="A2")]
+
+    def _movement(code: str, location: str) -> TrainMovement:
+        return TrainMovement(
+            code=code,
+            date="01 Jan 2026",
+            location_code=f"L-{location}",
+            location=location,
+            origin="",
+            destination="",
+            expected_arrival_time="",
+            expected_departure_time="",
+            scheduled_arrival_time="",
+            scheduled_departure_time="",
+        )
+
+    async def fake_stops(train_code: str, date: str | None = None):
+        if train_code.strip() == "A2":
+            raise IrishRailConnectionError("route unavailable")
+        return [
+            _movement(train_code, "Dublin Pearse"),
+            _movement(train_code, "Bray"),
+            _movement(train_code, "Howth"),
+        ]
+
+    with (
+        patch.object(
+            client,
+            "async_get_station_by_code",
+            new_callable=AsyncMock,
+            return_value=trains,
+        ),
+        patch.object(client, "async_get_train_stops", new=fake_stops),
+    ):
+        stops = await client.async_get_station_stops_at_options(
+            "PEARS", exclude="Dublin Pearse"
+        )
+
+    # Home station excluded; failed route tolerated; dedupe keeps first
+    # casing ("Bray" from the successful route); blanks skipped; sorted.
+    assert stops == ["Bray", "Howth"]
+
+    with patch.object(
+        client,
+        "async_get_station_by_code",
+        new_callable=AsyncMock,
+        return_value=[],
+    ):
+        assert await client.async_get_station_stops_at_options("EMPT") == []

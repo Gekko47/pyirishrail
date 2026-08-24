@@ -22,6 +22,8 @@ from custom_components.irish_rail.api import (
 from custom_components.irish_rail.config_flow import IrishRailConfigFlow
 from custom_components.irish_rail.const import (
     CONF_DIRECTION,
+    CONF_ENABLE_DIRECTION_FILTER,
+    CONF_ENABLE_STOPS_AT_FILTER,
     CONF_STATION_CODE,
     CONF_STOPS_AT,
     DOMAIN,
@@ -132,10 +134,17 @@ async def test_config_flow_success(hass: HomeAssistant) -> None:
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "user"
 
-        # Step 1 picks only the station; the flow advances to directions.
+        # Step 1 filters the list; the sole candidate auto-advances.
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
-            {"station_code": "PEARS"},
+            {},
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "filter_options"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_ENABLE_DIRECTION_FILTER: True},
         )
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "directions"
@@ -187,31 +196,43 @@ async def test_config_flow_submit_when_stations_unavailable_preserves_error(
         # Submitting must not create an entry; the connection error persists.
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
-            {"station_code": ""},
+            {},
         )
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "user"
         assert result["errors"] == {"base": "cannot_connect"}
 
 
-async def test_config_flow_invalid_station(hass: HomeAssistant) -> None:
-    """Test config flow reports invalid_station for an unknown code."""
-    with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
-        return_value=[_mock_station()],
+async def test_config_flow_no_matching_stations(hass: HomeAssistant) -> None:
+    """A filter matching nothing re-shows the search with an error."""
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[_mock_train()],
+        ),
     ):
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
-        # Bypass the dropdown validation by invoking the step handler
-        # directly with a code that does not exist.
-        flow = IrishRailConfigFlow()
-        flow.hass = hass
-        result = await flow.async_step_user(
-            {"station_code": "NOPE", "direction": "All"}
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {"station_filter": "zzz"},
         )
         assert result["type"] == data_entry_flow.FlowResultType.FORM
-        assert result["errors"] == {"base": "invalid_station"}
+        assert result["step_id"] == "user"
+        assert result["errors"] == {"base": "no_matching_stations"}
+
+        # Correcting the filter auto-advances to the optional-filter page.
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {"station_filter": "Dublin"},
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "filter_options"
 
 
 async def test_config_flow_duplicate_abort(hass: HomeAssistant) -> None:
@@ -242,11 +263,19 @@ async def test_config_flow_duplicate_abort(hass: HomeAssistant) -> None:
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
-        # Step 1 succeeds; duplicate detection fires in the direction step
-        # once the full station/direction identity is known.
+        # Step 1 succeeds and auto-advances; duplicate detection fires in
+        # the direction step once the full station/direction identity is
+        # known.
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
-            {"station_code": "PEARS"},
+            {},
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "filter_options"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_ENABLE_DIRECTION_FILTER: True},
         )
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "directions"
@@ -276,7 +305,14 @@ async def test_config_flow_stores_num_trains(hass: HomeAssistant) -> None:
         )
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
-            {"station_code": "PEARS", "num_trains": 5},
+            {"num_trains": 5},
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "filter_options"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_ENABLE_DIRECTION_FILTER: True},
         )
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "directions"
@@ -311,7 +347,14 @@ async def test_user_step_offers_only_discovered_directions(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_STATION_CODE: "CORK"}
+            result["flow_id"], {}
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "filter_options"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_ENABLE_DIRECTION_FILTER: True},
         )
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "directions"
@@ -355,7 +398,14 @@ async def test_directions_step_falls_back_to_free_text_on_discovery_error(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_STATION_CODE: "PEARS"}
+            result["flow_id"], {}
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "filter_options"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_ENABLE_DIRECTION_FILTER: True},
         )
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "directions"
@@ -467,8 +517,16 @@ async def test_directions_step_defaults_to_all_when_no_trains_due(
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
+        # Blank filter: the sole candidate auto-advances to directions.
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_STATION_CODE: "PEARS"}
+            result["flow_id"], {}
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "filter_options"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_ENABLE_DIRECTION_FILTER: True},
         )
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "directions"
@@ -483,10 +541,10 @@ async def test_directions_step_defaults_to_all_when_no_trains_due(
     assert result["data"][CONF_DIRECTION] is None
 
 
-async def test_user_step_includes_stops_at_dropdown(
+async def test_stops_at_step_lists_discovered_relevant_stops(
     hass: HomeAssistant,
 ) -> None:
-    """Step 1 offers a station-name "stops at" dropdown next to All."""
+    """The stops-at step offers only stops on the selected services."""
     bray = Station(
         name="Bray",
         alias="",
@@ -504,42 +562,60 @@ async def test_user_step_includes_stops_at_dropdown(
             "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            return_value=["Bray", "Howth"],
+        ),
     ):
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
-        assert result["step_id"] == "user"
+        # Blank filter matches both stations: a pick screen appears.
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {}
+        )
+        assert result["step_id"] == "station_pick"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_STATION_CODE: "PEARS"},
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "filter_options"
+
+        # Opt into the stops-at filter only.
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_ENABLE_STOPS_AT_FILTER: True},
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "stops_at"
 
         schema = result["data_schema"].schema
         stops_at_key = next(
             k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
         )
-        assert stops_at_key.default() == "All"
         assert set(schema[stops_at_key].container) == {
             "All",
-            "Dublin Pearse",
             "Bray",
+            "Howth",
         }
 
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
-            {"station_code": "PEARS", CONF_STOPS_AT: "Bray"},
-        )
-        assert result["type"] == data_entry_flow.FlowResultType.FORM
-        assert result["step_id"] == "directions"
-
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {"direction": "Northbound"}
+            {CONF_STOPS_AT: "Howth"},
         )
 
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
-    assert result["data"][CONF_STOPS_AT] == "Bray"
+    assert result["title"] == "Dublin Pearse"
+    assert result["data"][CONF_STOPS_AT] == "Howth"
+    assert result["data"][CONF_DIRECTION] is None
 
 
-async def test_user_step_stops_at_all_is_not_stored(
+async def test_filter_options_both_off_creates_unfiltered_entry(
     hass: HomeAssistant,
 ) -> None:
-    """Choosing All seeds no stops_at key into entry data at all."""
+    """Unticked checkboxes finalize immediately with no filter keys."""
     with (
         patch(
             "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
@@ -553,15 +629,21 @@ async def test_user_step_stops_at_all_is_not_stored(
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
-        # Submit without touching stops_at; its default is All.
+        # Blank filter: the sole candidate auto-advances to filter options.
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {"station_code": "PEARS"}
+            result["flow_id"], {}
         )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "filter_options"
+
+        # Both boxes unticked: monitor everything, no extra steps.
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {"direction": "All"}
+            result["flow_id"], {}
         )
 
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["title"] == "Dublin Pearse"
+    assert result["data"][CONF_DIRECTION] is None
     assert CONF_STOPS_AT not in result["data"]
 
 
@@ -1450,6 +1532,227 @@ async def test_reconfigure_leaves_sibling_direction_entries_untouched(
     assert _no_deprecation_warning(caplog)
 
 
+async def test_blank_filter_shows_pick_screen_listing_all(
+    hass: HomeAssistant,
+) -> None:
+    """A blank filter lists every station on a dedicated pick screen."""
+    cork = Station(
+        name="Cork", alias="", latitude=51.9, longitude=-8.46, code="CORK", id="30"
+    )
+    bray = Station(
+        name="Bray", alias="", latitude=53.2, longitude=-6.1, code="BRAY", id="120"
+    )
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station(), cork, bray],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[_mock_train()],
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {}
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "station_pick"
+
+        schema = result["data_schema"].schema
+        station_key = next(
+            k for k in schema if getattr(k, "schema", None) == CONF_STATION_CODE
+        )
+        assert set(schema[station_key].container) == {"PEARS", "CORK", "BRAY"}
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_STATION_CODE: "CORK"}
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "filter_options"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_ENABLE_DIRECTION_FILTER: True},
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "directions"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"direction": "All"}
+        )
+
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["title"] == "Cork"
+    assert result["data"][CONF_STATION_CODE] == "CORK"
+
+
+async def test_pick_step_out_of_order_restarts_to_user_step(
+    hass: HomeAssistant,
+) -> None:
+    """Entering the pick step without candidates restarts the flow."""
+    flow = IrishRailConfigFlow()
+    flow.hass = hass
+    flow.flow_id = "test-pick-out-of-order"
+    flow.handler = DOMAIN
+    flow.context = {}
+
+    with patch(
+        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+        return_value=[_mock_station()],
+    ):
+        result = await flow.async_step_station_pick(None)
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "user"
+
+        # An impossible code (vol.In bypassed) also routes back to search.
+        flow._candidates = [_mock_station()]
+        result = await flow.async_step_station_pick({CONF_STATION_CODE: "NOPE"})
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "user"
+
+        # Finalizing without a station likewise routes back to search.
+        flow._station_code = None
+        result = await flow._async_finalize_entry()
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "user"
+
+
+@pytest.mark.parametrize("mode", ["error", "empty"])
+async def test_stops_at_step_falls_back_to_full_list(
+    hass: HomeAssistant, mode: str
+) -> None:
+    """Discovery failure or zero live services degrades to all stations."""
+    kwargs: dict[str, Any] = (
+        {"side_effect": IrishRailConnectionError}
+        if mode == "error"
+        else {"return_value": []}
+    )
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[_mock_train()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            **kwargs,
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {}
+        )
+        assert result["step_id"] == "filter_options"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_ENABLE_STOPS_AT_FILTER: True},
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "stops_at"
+
+        schema = result["data_schema"].schema
+        stops_at_key = next(
+            k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
+        )
+        # Full cached station list instead of a dead end.
+        assert set(schema[stops_at_key].container) == {
+            "All",
+            "Dublin Pearse",
+        }
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_STOPS_AT: "All"},
+        )
+
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert CONF_STOPS_AT not in result["data"]
+
+
+async def test_stops_at_step_out_of_order_restarts_to_user_step(
+    hass: HomeAssistant,
+) -> None:
+    """Entering the stops-at step without a station restarts the flow."""
+    flow = IrishRailConfigFlow()
+    flow.hass = hass
+    flow.flow_id = "test-stops-out-of-order"
+    flow.handler = DOMAIN
+    flow.context = {}
+
+    with patch(
+        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+        return_value=[_mock_station()],
+    ):
+        result = await flow.async_step_stops_at(None)
+
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+
+async def test_filter_options_both_on_chains_direction_then_stops(
+    hass: HomeAssistant,
+) -> None:
+    """Direction submit chains into relevant stops when both are opted in."""
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[_mock_train()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            return_value=["Howth"],
+        ) as mock_stops,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {}
+        )
+        assert result["step_id"] == "filter_options"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                CONF_ENABLE_DIRECTION_FILTER: True,
+                CONF_ENABLE_STOPS_AT_FILTER: True,
+            },
+        )
+        assert result["step_id"] == "directions"
+
+        # Direction submit chains into the stops screen for that direction.
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"direction": "Northbound"}
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "stops_at"
+        mock_stops.assert_awaited_once_with(
+            "PEARS", direction="Northbound", exclude="Dublin Pearse"
+        )
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_STOPS_AT: "Howth"},
+        )
+
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["title"] == "Dublin Pearse (Northbound)"
+    assert result["data"][CONF_DIRECTION] == "Northbound"
+    assert result["data"][CONF_STOPS_AT] == "Howth"
+
+
 async def test_directions_step_out_of_order_restarts_to_user_step(
     hass: HomeAssistant,
 ) -> None:
@@ -1468,3 +1771,110 @@ async def test_directions_step_out_of_order_restarts_to_user_step(
 
     assert result["type"] == data_entry_flow.FlowResultType.FORM
     assert result["step_id"] == "user"
+
+
+async def test_station_filter_word_prefix_and_multi_term(
+    hass: HomeAssistant,
+) -> None:
+    """Filtering mirrors irishrail.ie: word-start, case-insensitive, AND."""
+    cork = Station(
+        name="Cork", alias="", latitude=51.9, longitude=-8.46, code="CORK", id="30"
+    )
+    bray = Station(
+        name="Bray", alias="", latitude=53.2, longitude=-6.1, code="BRAY", id="120"
+    )
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station(), cork, bray],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[_mock_train()],
+        ),
+    ):
+        # Word-prefix hit on one station: auto-advance straight to the
+        # optional-filter page, then on through the direction step.
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"station_filter": "pear"}
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "filter_options"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_ENABLE_DIRECTION_FILTER: True},
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "directions"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"direction": "All"}
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+        assert result["data"][CONF_STATION_CODE] == "PEARS"
+
+        # Multi-term queries AND together, case-insensitively.
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"station_filter": "DUBLIN p"}
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "filter_options"
+
+        # A mid-word fragment is not a word prefix: nothing matches.
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"station_filter": "earse"}
+        )
+        assert result["errors"] == {"base": "no_matching_stations"}
+
+
+async def test_station_filter_matches_alias_tokens(
+    hass: HomeAssistant,
+) -> None:
+    """Alias words participate in filtering."""
+    junction = Station(
+        name="CITY JUNCTION",
+        alias="Dublin Belfast",
+        latitude=54.6,
+        longitude=-5.9,
+        code="CITYJ",
+        id="1516",
+    )
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station(), junction],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[_mock_train()],
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        # "belfast" only appears in the alias of the junction entry.
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"station_filter": "belfast"}
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "filter_options"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_ENABLE_DIRECTION_FILTER: True},
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "directions"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"direction": "All"}
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+        assert result["data"][CONF_STATION_CODE] == "CITYJ"

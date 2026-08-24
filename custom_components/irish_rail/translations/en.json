@@ -5,13 +5,19 @@
         "title": "Set up Irish Rail",
         "description": "Choose the station you want to monitor.",
         "data": {
-          "station_code": "Station",
-          "num_trains": "Number of upcoming trains",
-          "stops_at": "\"Stops at\" filter"
+          "station_filter": "Filter stations (optional)",
+          "num_trains": "Number of upcoming trains"
         },
         "data_description": {
-          "num_trains": "How many of the next trains (1-5, default 3) are exposed in the upcoming_trains attribute of each sensor.",
-          "stops_at": "Optionally show only trains that stop at this station en route. Choose All to disable the filter."
+          "station_filter": "Type the start of a word in the station's name, like the irishrail.ie search (e.g. pearse). Leave empty to browse all stations.",
+          "num_trains": "How many of the next trains (1-5, default 3) are exposed in the upcoming_trains attribute of each sensor."
+        }
+      },
+      "station_pick": {
+        "title": "Choose your station",
+        "description": "Several stations match \"{filter}\".",
+        "data": {
+          "station_code": "Station"
         }
       },
       "directions": {
@@ -21,7 +27,29 @@
           "direction": "Direction Filter"
         },
         "data_description": {
-          "direction": "Stations on the Dundalk-Rosslare and Sligo-Dublin corridors report Northbound/Southbound; every other station reports \"To <destination>\" values instead. The list reflects services due within the API's lookahead window, so choose All if unsure. If no trains are currently due, enter the direction exactly as shown on irishrail.ie (e.g. To Limerick) or leave All."
+          "direction": "Stations on the Dundalk-Rosslare and Sligo-Dublin corridors report Northbound/Southbound; every other station reports \"To Cork\" values instead. The list reflects services due within the API's lookahead window, so choose All if unsure. If no trains are currently due, enter the direction exactly as shown on irishrail.ie (e.g. To Limerick) or leave All."
+        }
+      },
+      "filter_options": {
+        "title": "Optional filters",
+        "description": "\"{station}\" is selected. Tick any filters to apply, or leave both unticked to monitor every service.",
+        "data": {
+          "enable_direction_filter": "Set a direction filter",
+          "enable_stops_at_filter": "Set a \"stops at\" filter"
+        },
+        "data_description": {
+          "enable_direction_filter": "Only monitor services towards one direction.",
+          "enable_stops_at_filter": "Only monitor trains that call at a particular station en route."
+        }
+      },
+      "stops_at": {
+        "title": "\"Stops at\" filter for {station}",
+        "description": "Stops currently served by the selected services at {station}.",
+        "data": {
+          "stops_at": "\"Stops at\" filter"
+        },
+        "data_description": {
+          "stops_at": "Choose All to disable the filter. If no live services could be sampled, the full station list is offered instead."
         }
       },
       "reconfigure": {
@@ -35,6 +63,7 @@
     "error": {
       "cannot_connect": "Failed to connect to Irish Rail API.",
       "invalid_station": "The selected station is invalid.",
+      "no_matching_stations": "No stations match that filter. Leave the box empty to browse all stations.",
       "unknown": "Unexpected error occurred."
     },
     "abort": {
@@ -79,7 +108,7 @@
   },
   "issues": {
     "empty_data_during_service_hours": {
-      "title": "No train data received for {{station}}",
+      "title": "No train data received for {station}",
       "description": "The Irish Rail API has returned no trains at this station for an extended period during service hours. This may indicate an API or schedule data change rather than a genuine quiet period. If it persists, check whether other stations still report data, then try reloading or re-adding the entry."
     }
   }

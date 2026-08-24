@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from datetime import timedelta
 import logging
+from zoneinfo import ZoneInfo
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -35,6 +36,11 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Irish Rail service hours follow Irish local time, not whichever timezone the
+# Home Assistant instance runs in; Europe/Dublin keeps the gate correct for
+# hosts abroad and across IST/GMT DST transitions.
+DUBLIN_TZ = ZoneInfo("Europe/Dublin")
 
 
 def empty_data_issue_id(config_entry: ConfigEntry) -> str:
@@ -155,8 +161,35 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
 
     @update_interval.setter
     def update_interval(self, value: timedelta) -> None:
-        """Store a newly configured base interval (e.g. options updates)."""
+        """Store a newly configured base interval (e.g. options updates).
+
+        Delegates to the base-class setter afterwards so its internal
+        scheduler bookkeeping (``_update_interval`` and the cached
+        ``_update_interval_seconds`` its ``_schedule_refresh()`` consumes)
+        stays in sync; the getter keeps deriving the effective backed-off
+        interval from ``_configured_interval``. The property object is
+        taken off the base class because ``super().update_interval = ...``
+        cannot target a same-named property from within its own setter.
+        """
         self._configured_interval = value
+        # ``fset`` is invisible to mypy's class-level property view.
+        DataUpdateCoordinator.update_interval.fset(self, value)  # type: ignore[attr-defined]
+
+    @callback
+    def _schedule_refresh(self) -> None:
+        """Schedule a refresh using the effective (backed-off) interval.
+
+        HA 2026.8+ schedules from ``_update_interval_seconds``, which the
+        base class populates when ``update_interval`` is assigned rather
+        than by re-reading the property at schedule time, so mirror the
+        getter into that cache before delegating. With no failure streak
+        this equals the configured interval and behavior is unchanged;
+        while backing off it makes consecutive failures genuinely widen
+        the polling spacing (and recovery narrows it at the next schedule
+        point). The base method's ``_retry_after`` handling still wins.
+        """
+        self._update_interval_seconds = self.update_interval.total_seconds()
+        super()._schedule_refresh()
 
     def _register_refresh_failure(self) -> None:
         """Advance the consecutive-failure streak driving adaptive backoff."""
@@ -198,8 +231,10 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
         )
 
     def _in_service_hours(self) -> bool:
-        """Return True when the local time is within Irish Rail service hours."""
-        hour = dt_util.now().hour
+        """Return True when Dublin local time is within Irish Rail service hours."""
+        # Evaluate against Irish civil time regardless of the host's configured
+        # Home Assistant timezone; DUBLIN_TZ handles IST/GMT DST shifts.
+        hour = dt_util.now(DUBLIN_TZ).hour
         return SERVICE_HOURS_START_HOUR <= hour < SERVICE_HOURS_END_HOUR
 
     def _async_update_empty_data_issue(self, trains: list[TrainDueTime]) -> None:
@@ -207,16 +242,26 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
 
         A station that keeps returning an empty list during service hours
         suggests the API or its schema changed rather than a genuine quiet
-        period. The issue is created exactly once per streak and removed on
+        period. Only consecutive empty polls during service hours count:
+        an empty poll outside service hours resets the streak, so an
+        overnight accumulation can never pre-seed the next morning's
+        count. The issue is created exactly once per streak and removed on
         the first refresh that returns actual trains (Gold rule
         ``repair-issues``; roadmap Phase 3).
         """
         if trains:
             self._empty_streak = 0
-            if self._empty_issue_reported:
-                ir.async_delete_issue(
-                    self.hass, DOMAIN, empty_data_issue_id(self.config_entry)
-                )
+            issue_id = empty_data_issue_id(self.config_entry)
+            # The registry is authoritative: this coordinator may have been
+            # reconstructed (entry reload/re-setup) after a previous instance
+            # raised the issue, leaving ``_empty_issue_reported`` False while
+            # the issue is still registered.
+            had_issue = self._empty_issue_reported or (
+                ir.async_get(self.hass).async_get_issue(DOMAIN, issue_id)
+                is not None
+            )
+            if had_issue:
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id)
                 self._empty_issue_reported = False
                 _LOGGER.info(
                     "Station %s (%s) is reporting train data again",
@@ -225,11 +270,18 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
                 )
             return
 
+        if not self._in_service_hours():
+            # Empty results outside service hours are a normal overnight
+            # quiet period: they neither advance nor carry over the streak,
+            # so only consecutive service-hour polls can reach the
+            # repair-issue threshold.
+            self._empty_streak = 0
+            return
+
         self._empty_streak += 1
         if (
             not self._empty_issue_reported
             and self._empty_streak >= EMPTY_DATA_ISSUE_THRESHOLD
-            and self._in_service_hours()
         ):
             ir.async_create_issue(
                 self.hass,

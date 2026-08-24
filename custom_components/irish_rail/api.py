@@ -293,6 +293,52 @@ class IrishRailClient:
             seen.setdefault(train.direction.lower(), train.direction)
         return sorted(seen.values(), key=str.lower)
 
+    async def async_get_station_stops_at_options(
+        self,
+        station_code: str,
+        direction: str | None = None,
+        exclude: str | None = None,
+    ) -> list[str]:
+        """Return the stops served by trains currently due at a station.
+
+        Candidate routes come from the due-train records for
+        ``station_code`` (optionally narrowed to one direction); each
+        distinct train code is resolved to its route through the per-day
+        cached :meth:`async_get_train_stops` under the shared bounded
+        semaphore. A route whose history cannot be fetched is skipped
+        rather than failing the union. The departure station itself is
+        excluded when its name is supplied via ``exclude`` (every route
+        trivially contains it), and remaining stop names are deduplicated
+        case-insensitively (first casing wins) and sorted case-insensitively.
+        """
+        trains = await self.async_get_station_by_code(
+            station_code, direction=direction
+        )
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_MOVEMENT_LOOKUPS)
+
+        async def _route_stops(train_code: str) -> list[TrainMovement]:
+            try:
+                async with semaphore:
+                    return await self.async_get_train_stops(train_code)
+            except IrishRailError:
+                return []
+
+        routes = await asyncio.gather(
+            *(_route_stops(train.code) for train in trains)
+        )
+
+        exclude_lower = exclude.lower() if exclude else None
+        seen: dict[str, str] = {}
+        for stops in routes:
+            for stop in stops:
+                name = stop.location
+                if not name or (
+                    exclude_lower and name.lower() == exclude_lower
+                ):
+                    continue
+                seen.setdefault(name.lower(), name)
+        return sorted(seen.values(), key=str.lower)
+
     async def async_get_all_current_trains(
         self, train_type: str | None = None, direction: str | None = None
     ) -> list[TrainPosition]:
@@ -399,13 +445,18 @@ class IrishRailClient:
 
         Eviction is lazy: it only runs once ``MOVEMENT_CACHE_MAX_ENTRIES``
         is exceeded and removes historical-date entries first, so today's
-        routes stay warm.
+        routes stay warm. If the cache is still over the cap afterwards
+        (every remaining entry matches ``current_date``), the oldest
+        remaining entries are evicted until the size is within the cap;
+        dicts preserve insertion order, so iteration order is age order.
         """
         if len(self._movement_cache) <= MOVEMENT_CACHE_MAX_ENTRIES:
             return
         stale = [key for key in self._movement_cache if key[1] != current_date]
         for key in stale:
             del self._movement_cache[key]
+        while len(self._movement_cache) > MOVEMENT_CACHE_MAX_ENTRIES:
+            del self._movement_cache[next(iter(self._movement_cache))]
 
     async def _async_prune_trains(
         self,
@@ -465,11 +516,25 @@ class IrishRailClient:
             *(
                 _movement_matches(code, tgt)
                 for code, tgt in lookup_targets.items()
-            )
+            ),
+            return_exceptions=True,
         )
-        matches: dict[str, bool] = dict(
-            zip(lookup_targets.keys(), outcomes, strict=True)
-        )
+        matches: dict[str, bool] = {}
+        for code, outcome in zip(lookup_targets.keys(), outcomes, strict=True):
+            if isinstance(outcome, BaseException):
+                # Unexpected failures (e.g. a parse bug raising something
+                # other than IrishRailError) prune this train exactly like
+                # a known failure instead of failing the whole poll; the
+                # other in-flight lookups keep running to completion.
+                _LOGGER.warning(
+                    "Movement lookup for train %s failed unexpectedly; "
+                    "pruning it from this poll",
+                    code,
+                    exc_info=outcome,
+                )
+                matches[code] = False
+            else:
+                matches[code] = outcome
 
         pruned_data: list[TrainDueTime] = []
         for train in trains:
