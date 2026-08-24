@@ -6,8 +6,12 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import (
+    device_registry as dr,
+    entity_registry as er,
+    issue_registry as ir,
+)
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import IrishRailClient
@@ -49,9 +53,63 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+@callback
+def _async_drop_stale_identity_registries(
+    hass: HomeAssistant, entry: ConfigEntry, previous_uid: str
+) -> None:
+    """Remove registry entries belonging to the entry's previous identity.
+
+    Reconfiguring a station/direction pair rewrites the entry's unique ID,
+    which mints fresh entity/device identities. Without cleanup, the previous
+    direction's entities would linger forever as unavailable ghosts (HA never
+    sweeps live registry entries that a reloaded platform stops providing).
+
+    Matching is strictly positive: only items carrying the exact previous
+    identity are removed, and enumeration is scoped to this config entry.
+    Sibling entries at the same station — e.g. an "All" direction alongside
+    a reconfigured Northbound — are different config entries and therefore
+    can never be touched.
+
+    Removal goes through the registries' normal removal, so the entries move
+    into the restorable deleted state tied to this config entry: switching
+    back to the prior direction re-registers them (unique IDs match again)
+    with names, area assignments and customizations intact.
+    """
+    entity_registry = er.async_get(hass)
+    old_prefix = f"{previous_uid}_"
+    for registry_entry in er.async_entries_for_config_entry(
+        entity_registry, entry.entry_id
+    ):
+        if registry_entry.unique_id.startswith(old_prefix):
+            entity_registry.async_remove(registry_entry.entity_id)
+
+    device_registry = dr.async_get(hass)
+    for device_entry in dr.async_entries_for_config_entry(
+        device_registry, entry.entry_id
+    ):
+        if (DOMAIN, previous_uid) in device_entry.identifiers:
+            device_registry.async_remove_device(device_entry.id)
+
+
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle options updates by applying them to the live coordinator."""
+    """Handle config-entry updates: reload on data changes, options in place.
+
+    Since HA 2026.6 an integration with an update listener must own reload
+    scheduling itself (a flow-scheduled reload alongside the listener can
+    double-reload or race; hard error in 2026.12). A change to
+    ``entry.data`` (station/direction identity) therefore schedules exactly
+    one reload here, while option-only changes apply to the live
+    coordinator without any reload.
+    """
     coordinator = entry.runtime_data.coordinator
+    if coordinator.requires_reload():
+        # Drop the previous identity's entities/device before reloading so
+        # post-reload setup registers only the new direction's entities.
+        previous_uid = coordinator.previous_unique_id()
+        if previous_uid is not None:
+            _async_drop_stale_identity_registries(hass, entry, previous_uid)
+        hass.config_entries.async_schedule_reload(entry.entry_id)
+        return
     # resolve_scan_interval() guards against invalid/non-numeric stored
     # option values, falling back to the default instead of raising.
     coordinator.update_interval = resolve_scan_interval(entry)

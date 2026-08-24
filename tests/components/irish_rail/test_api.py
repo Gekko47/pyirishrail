@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from xml.etree.ElementTree import fromstring
 
 import aiohttp
@@ -14,6 +14,8 @@ from custom_components.irish_rail.api import (
     IrishRailConnectionError,
     IrishRailParseError,
     IrishRailTimeoutError,
+    TrainDueTime,
+    TrainMovement,
     parse_station_data,
 )
 
@@ -521,3 +523,233 @@ async def test_api_timeout_error() -> None:
     client = IrishRailClient(session)
     with pytest.raises(IrishRailTimeoutError):
         await client.async_get_all_stations()
+
+
+# ── stops_at pruning hardening & movement cache (roadmap Phase 4.6) ──────────
+
+TWO_TRAIN_STATION_DATA_XML = """
+<ArrayOfObjStationData xmlns="http://api.irishrail.ie/realtime/">
+    <objStationData>
+        <Traincode>E777</Traincode>
+        <Origin>Howth</Origin>
+        <Destination>Bray</Destination>
+        <Origintime>12:00</Origintime>
+        <Destinationtime>13:00</Destinationtime>
+        <Duein>10</Duein>
+        <Late>0</Late>
+        <Direction>Southbound</Direction>
+        <Traintype>DART</Traintype>
+        <Locationtype>S</Locationtype>
+    </objStationData>
+    <objStationData>
+        <Traincode>E888</Traincode>
+        <Origin>Howth</Origin>
+        <Destination>Bray</Destination>
+        <Origintime>12:30</Origintime>
+        <Destinationtime>13:30</Destinationtime>
+        <Duein>40</Duein>
+        <Late>0</Late>
+        <Direction>Southbound</Direction>
+        <Traintype>DART</Traintype>
+        <Locationtype>S</Locationtype>
+    </objStationData>
+</ArrayOfObjStationData>
+"""
+
+
+def _movements_xml(code: str, location: str) -> str:
+    """Return a single-stop movement document for the given train/location."""
+    return f"""
+<ArrayOfObjTrainMovements xmlns="http://api.irishrail.ie/realtime/">
+    <objTrainMovements>
+        <TrainCode>{code}</TrainCode>
+        <TrainDate>01 Jan 2026</TrainDate>
+        <LocationCode>TGT</LocationCode>
+        <LocationFullName>{location}</LocationFullName>
+        <TrainOrigin>Howth</TrainOrigin>
+        <TrainDestination>Bray</TrainDestination>
+        <ExpectedArrival>12:10</ExpectedArrival>
+        <ExpectedDeparture>12:11</ExpectedDeparture>
+        <ScheduledArrival>12:00</ScheduledArrival>
+        <ScheduledDeparture>12:01</ScheduledDeparture>
+    </objTrainMovements>
+</ArrayOfObjTrainMovements>
+"""
+
+
+def _movement(location: str, code: str = "E777") -> TrainMovement:
+    """Return a TrainMovement record for the given location."""
+    return TrainMovement(
+        code=code,
+        date="01 Jan 2026",
+        location_code="TGT",
+        location=location,
+        origin="Howth",
+        destination="Bray",
+        expected_arrival_time="12:10",
+        expected_departure_time="12:11",
+        scheduled_arrival_time="12:00",
+        scheduled_departure_time="12:01",
+    )
+
+
+def _due_train(code: str) -> TrainDueTime:
+    """Return a due train bound for Bray (distinct from stops_at targets)."""
+    return TrainDueTime(
+        code=code,
+        origin="Howth",
+        destination="Bray",
+        origin_time="12:00",
+        destination_time="13:00",
+        due_in_mins=10,
+        late_mins=0,
+        expected_arrival_time="12:10",
+        expected_departure_time="12:11",
+        scheduled_arrival_time="12:00",
+        scheduled_departure_time="12:01",
+        type="DART",
+        direction="Southbound",
+        location_type="S",
+    )
+
+
+async def test_station_by_code_stops_at_multiple_candidates_concurrently(
+    aresponses: ResponsesMockServer,
+) -> None:
+    """Every stops_at candidate gets its route looked up concurrently."""
+    aresponses.add(
+        "api.irishrail.ie",
+        "/realtime/realtime.asmx/getStationDataByCodeXML",
+        "GET",
+        aresponses.Response(text=TWO_TRAIN_STATION_DATA_XML, status=200),
+    )
+    # Exactly two movement responses are queued, one per candidate train.
+    # Both routes include Greystones so both trains are kept regardless of
+    # response arrival order under concurrency; input order is preserved.
+    aresponses.add(
+        "api.irishrail.ie",
+        "/realtime/realtime.asmx/getTrainMovementsXML",
+        "GET",
+        aresponses.Response(text=_movements_xml("E777", "Greystones"), status=200),
+    )
+    aresponses.add(
+        "api.irishrail.ie",
+        "/realtime/realtime.asmx/getTrainMovementsXML",
+        "GET",
+        aresponses.Response(text=_movements_xml("E888", "Greystones"), status=200),
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = IrishRailClient(session)
+        trains = await client.async_get_station_by_code("PEARS", stops_at="Greystones")
+
+        assert [train.code for train in trains] == ["E777", "E888"]
+
+
+async def test_prune_trains_partial_failure_isolates_single_train() -> None:
+    """A failing movement lookup prunes only that candidate, not others."""
+    client = IrishRailClient(MagicMock())
+    with patch.object(
+        client,
+        "async_get_train_stops",
+        new=AsyncMock(
+            side_effect=[IrishRailParseError("boom"), [_movement("Greystones")]]
+        ),
+    ) as mock_stops:
+        result = await client._async_prune_trains(
+            [_due_train("E777"), _due_train("E888")],
+            stops_at="Greystones",
+        )
+
+    # E777's lookup raised, so only E888 survives; both were fetched.
+    assert [train.code for train in result] == ["E888"]
+    assert mock_stops.await_count == 2
+
+
+async def test_stops_at_second_poll_uses_cached_routes(
+    aresponses: ResponsesMockServer,
+) -> None:
+    """The second poll filters correctly without re-fetching known routes."""
+    for _ in range(2):
+        aresponses.add(
+            "api.irishrail.ie",
+            "/realtime/realtime.asmx/getStationDataByCodeXML",
+            "GET",
+            aresponses.Response(text=SAMPLE_STATION_DATA_XML, status=200),
+        )
+    movements_xml = SAMPLE_TRAIN_MOVEMENTS_XML.replace(
+        "Dublin Pearse", "Greystones"
+    ).replace("PEARS", "GREYS")
+    # Only ONE movement response is queued: the second poll must be served
+    # from the per-day cache instead of hitting the network again.
+    aresponses.add(
+        "api.irishrail.ie",
+        "/realtime/realtime.asmx/getTrainMovementsXML",
+        "GET",
+        aresponses.Response(text=movements_xml, status=200),
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = IrishRailClient(session)
+
+        first = await client.async_get_station_by_code("PEARS", stops_at="Greystones")
+        second = await client.async_get_station_by_code("PEARS", stops_at="Greystones")
+
+        assert len(first) == 1
+        assert [train.code for train in second] == ["E123"]
+
+
+async def test_train_stops_cached_per_day(aresponses: ResponsesMockServer) -> None:
+    """Repeat lookups for the same train/date are served from the cache."""
+    aresponses.add(
+        "api.irishrail.ie",
+        "/realtime/realtime.asmx/getTrainMovementsXML",
+        "GET",
+        aresponses.Response(text=SAMPLE_TRAIN_MOVEMENTS_XML, status=200),
+    )
+    # A different date is a separate cache entry and hits the network again.
+    aresponses.add(
+        "api.irishrail.ie",
+        "/realtime/realtime.asmx/getTrainMovementsXML",
+        "GET",
+        aresponses.Response(
+            text=SAMPLE_TRAIN_MOVEMENTS_XML.replace("01 Jan 2026", "02 Jan 2026"),
+            status=200,
+        ),
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = IrishRailClient(session)
+
+        first = await client.async_get_train_stops("E123", date="01 Jan 2026")
+        second = await client.async_get_train_stops("E123", date="01 Jan 2026")
+        other_day = await client.async_get_train_stops("E123", date="02 Jan 2026")
+
+        assert len(first) == 1
+        assert second is first  # cached instance returned unchanged
+        assert len(other_day) == 1
+
+
+async def test_train_stops_failure_not_cached(aresponses: ResponsesMockServer) -> None:
+    """A failed lookup retries on the next call instead of being cached."""
+    aresponses.add(
+        "api.irishrail.ie",
+        "/realtime/realtime.asmx/getTrainMovementsXML",
+        "GET",
+        aresponses.Response(status=500),
+    )
+    aresponses.add(
+        "api.irishrail.ie",
+        "/realtime/realtime.asmx/getTrainMovementsXML",
+        "GET",
+        aresponses.Response(text=SAMPLE_TRAIN_MOVEMENTS_XML, status=200),
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = IrishRailClient(session)
+
+        with pytest.raises(IrishRailConnectionError):
+            await client.async_get_train_stops("E123", date="01 Jan 2026")
+
+        movements = await client.async_get_train_stops("E123", date="01 Jan 2026")
+        assert len(movements) == 1

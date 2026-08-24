@@ -173,7 +173,10 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle reconfiguration of an existing entry.
 
         The station is fixed; only the direction filter can be changed.
-        On success the entry data is updated and the entry reloaded.
+        On success the entry data (and identity) are updated in place and
+        the integration's update listener schedules the single required
+        reload — since HA 2026.6 the listener, not the flow, must own
+        reload scheduling when one exists.
         """
         entry = self._get_reconfigure_entry()
         errors: dict[str, str] = {}
@@ -224,13 +227,22 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
         # The unique ID combines the API-assigned station code with the
         # normalized direction, mirroring the initial flow. Reconfiguring to a
         # different direction therefore changes the entry's identity: claim the
-        # new unique ID and reject the change if another entry already uses it
-        # (the current entry itself is exempt from that check). If the reload
-        # fails the flow aborts with ``update_entry_failed``.
-        await self.async_set_unique_id(build_unique_id(station_code, direction))
-        self._abort_if_unique_id_configured()
+        # new unique ID and reject the change if another entry already uses it.
+        # When the submitted direction matches the current one the identity is
+        # unchanged, so the uniqueness claim is skipped entirely — claiming it
+        # would find this very entry and wrongly abort with
+        # ``already_configured``.
+        new_unique_id = build_unique_id(station_code, direction)
+        if new_unique_id != entry.unique_id:
+            await self.async_set_unique_id(new_unique_id)
+            self._abort_if_unique_id_configured()
 
-        return self.async_update_reload_and_abort(
+        # Reload ownership belongs to the integration's update listener since
+        # HA 2026.6 (hard error in 2026.12): a flow-scheduled reload alongside
+        # an existing listener can double-reload or race. The entry is updated
+        # here and the listener detects the data change, scheduling the single
+        # required reload itself; option-only changes keep applying in place.
+        self.hass.config_entries.async_update_entry(
             entry,
             data={
                 CONF_STATION: selected_station.name,
@@ -241,6 +253,7 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
             title=title,
             unique_id=self.unique_id,
         )
+        return self.async_abort(reason="reconfigure_successful")
 
 
 class IrishRailOptionsFlow(OptionsFlow):

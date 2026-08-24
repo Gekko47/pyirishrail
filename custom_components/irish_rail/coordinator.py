@@ -12,7 +12,9 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .api import IrishRailClient, IrishRailError, TrainDueTime
+from .config_flow import build_unique_id
 from .const import (
+    BACKOFF_MULTIPLIER,
     CONF_DIRECTION,
     CONF_NUM_TRAINS,
     CONF_SCAN_INTERVAL,
@@ -23,6 +25,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     EMPTY_DATA_ISSUE_THRESHOLD,
+    MAX_BACKOFF_INTERVAL,
     MAX_NUM_TRAINS,
     MAX_SCAN_INTERVAL_SECONDS,
     MIN_NUM_TRAINS,
@@ -107,19 +110,92 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
         self.station_code = config_entry.data[CONF_STATION_CODE]
         self.station_name = config_entry.data[CONF_STATION]
         self.direction = config_entry.data.get(CONF_DIRECTION)
-        self.stops_at = resolve_stops_at(config_entry)
+
+        # Snapshot of the entry data this coordinator was built from; used by
+        # requires_reload() so the update listener can tell option-only
+        # changes (applied live) apart from data/identity changes (reload).
+        self._applied_entry_data = dict(config_entry.data)
+
+        # Adaptive-backoff state (roadmap 4.3). Initialized before
+        # super().__init__() because the base class assigns update_interval,
+        # which flows through the setter below.
+        self._configured_interval = resolve_scan_interval(config_entry)
+        self._failure_streak = 0
 
         super().__init__(
             hass,
             _LOGGER,
             name=f"{DOMAIN}_{self.station_code}",
-            update_interval=resolve_scan_interval(config_entry),
+            update_interval=self._configured_interval,
             config_entry=config_entry,
         )
 
         # Persistent-empty-data repair-issue tracking (roadmap Phase 3).
         self._empty_streak = 0
         self._empty_issue_reported = False
+
+    @property
+    def update_interval(self) -> timedelta:
+        """Return the effective polling interval.
+
+        While refreshes keep failing, the interval grows geometrically from
+        the user-configured value, capped at ``MAX_BACKOFF_INTERVAL``; the
+        configured interval applies whenever the last refresh succeeded
+        """
+        if self._failure_streak == 0:
+            return self._configured_interval
+        # Geometric growth from the configured interval, capped at
+        # MAX_BACKOFF_INTERVAL. Computed iteratively because typeshed types
+        # ``int.__pow__`` as returning ``Any``; the iteration count is tiny
+        # (the cap is reached within a handful of doublings).
+        interval = self._configured_interval
+        for _ in range(min(self._failure_streak, 16)):
+            interval = min(interval * BACKOFF_MULTIPLIER, MAX_BACKOFF_INTERVAL)
+        return interval
+
+    @update_interval.setter
+    def update_interval(self, value: timedelta) -> None:
+        """Store a newly configured base interval (e.g. options updates)."""
+        self._configured_interval = value
+
+    def _register_refresh_failure(self) -> None:
+        """Advance the consecutive-failure streak driving adaptive backoff."""
+        self._failure_streak += 1
+        _LOGGER.debug(
+            "Station %s (%s) poll failed (%d consecutive); backing off to %s",
+            self.station_name,
+            self.station_code,
+            self._failure_streak,
+            self.update_interval,
+        )
+
+    def requires_reload(self) -> bool:
+        """Return True when entry data changed since this coordinator loaded.
+
+        Entry-data changes alter the entry's identity (station/direction)
+        and therefore require a full config-entry reload; option-only
+        changes are applied to the live coordinator instead. Used by the
+        integration's update listener, which owns reload scheduling since
+        HA 2026.6.
+        """
+        return self._applied_entry_data != dict(self.config_entry.data)
+
+    def previous_unique_id(self) -> str | None:
+        """Return the entry unique ID this coordinator was loaded for.
+
+        Derived from the entry-data snapshot taken at construction time, so
+        it identifies the pre-reconfigure identity even after
+        ``config_entry.unique_id`` already reflects the new one. The update
+        listener uses it to target registry cleanup positively at exactly
+        the old station/direction identity.
+        """
+        station_code = self._applied_entry_data.get(CONF_STATION_CODE)
+        if not isinstance(station_code, str) or not station_code:
+            return None
+        return build_unique_id(
+            station_code,
+            self._applied_entry_data.get(CONF_DIRECTION),
+        )
 
     def _in_service_hours(self) -> bool:
         """Return True when the local time is within Irish Rail service hours."""
@@ -183,9 +259,27 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
                 stops_at=resolve_stops_at(self.config_entry),
             )
         except IrishRailError as err:
+            self._register_refresh_failure()
             raise UpdateFailed(
                 f"Error updating Irish Rail station data: {err}"
             ) from err
+        except Exception:
+            # Unexpected failures count toward backoff too, mirroring the
+            # base coordinator's treatment of any exception as a failed
+            # refresh; the exception itself propagates unchanged.
+            self._register_refresh_failure()
+            raise
+
+        if self._failure_streak:
+            _LOGGER.info(
+                "Station %s (%s) polling restored after %d consecutive "
+                "failed poll(s); interval back to %s",
+                self.station_name,
+                self.station_code,
+                self._failure_streak,
+                self._configured_interval,
+            )
+            self._failure_streak = 0
 
         self._async_update_empty_data_issue(trains)
         return trains

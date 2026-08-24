@@ -112,6 +112,123 @@ async def test_coordinator_scan_interval_from_options(
     assert coordinator.update_interval == timedelta(seconds=300)
 
 
+async def test_backoff_doubles_on_consecutive_failures(
+    hass: HomeAssistant, mock_api_client: MagicMock
+) -> None:
+    """Each consecutive failed poll doubles the effective interval."""
+    coordinator = IrishRailDataUpdateCoordinator(hass, mock_api_client, _entry_with())
+    assert coordinator.update_interval == timedelta(seconds=60)
+
+    with (
+        patch.object(
+            mock_api_client,
+            "async_get_station_by_code",
+            side_effect=IrishRailConnectionError,
+        ),
+        pytest.raises(UpdateFailed),
+    ):
+        await coordinator._async_update_data()
+    assert coordinator.update_interval == timedelta(seconds=120)
+
+    with (
+        patch.object(
+            mock_api_client,
+            "async_get_station_by_code",
+            side_effect=IrishRailConnectionError,
+        ),
+        pytest.raises(UpdateFailed),
+    ):
+        await coordinator._async_update_data()
+    assert coordinator.update_interval == timedelta(seconds=240)
+
+
+async def test_backoff_caps_at_max_interval(
+    hass: HomeAssistant, mock_api_client: MagicMock
+) -> None:
+    """Backoff growth is capped at MAX_BACKOFF_INTERVAL (15 minutes)."""
+    coordinator = IrishRailDataUpdateCoordinator(hass, mock_api_client, _entry_with())
+
+    for _ in range(10):
+        with (
+            patch.object(
+                mock_api_client,
+                "async_get_station_by_code",
+                side_effect=IrishRailConnectionError,
+            ),
+            pytest.raises(UpdateFailed),
+        ):
+            await coordinator._async_update_data()
+
+    # 60s * 2^streak far exceeds the cap after enough failures.
+    assert coordinator.update_interval == timedelta(minutes=15)
+
+
+async def test_backoff_restores_after_success(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The first successful poll restores the configured interval."""
+    entry = _entry_with(options={"scan_interval": 300})
+    coordinator = IrishRailDataUpdateCoordinator(hass, mock_api_client, entry)
+    assert coordinator.update_interval == timedelta(seconds=300)
+
+    for _ in range(2):
+        with (
+            patch.object(
+                mock_api_client,
+                "async_get_station_by_code",
+                side_effect=IrishRailConnectionError,
+            ),
+            pytest.raises(UpdateFailed),
+        ):
+            await coordinator._async_update_data()
+    assert coordinator.update_interval == timedelta(seconds=900)
+
+    with patch.object(
+        mock_api_client,
+        "async_get_station_by_code",
+        new=AsyncMock(return_value=[]),
+    ):
+        data = await coordinator._async_update_data()
+
+    assert data == []
+    assert coordinator.update_interval == timedelta(seconds=300)
+
+    recovery_logs = [
+        record
+        for record in caplog.records
+        if record.name == "custom_components.irish_rail.coordinator"
+        and record.levelno == logging.INFO
+        and "polling restored" in record.getMessage()
+    ]
+    assert len(recovery_logs) == 1
+
+
+async def test_backoff_uses_new_base_after_options_change(
+    hass: HomeAssistant, mock_api_client: MagicMock
+) -> None:
+    """An options-driven base-interval change applies during backoff too."""
+    coordinator = IrishRailDataUpdateCoordinator(hass, mock_api_client, _entry_with())
+
+    with (
+        patch.object(
+            mock_api_client,
+            "async_get_station_by_code",
+            side_effect=IrishRailConnectionError,
+        ),
+        pytest.raises(UpdateFailed),
+    ):
+        await coordinator._async_update_data()
+    assert coordinator.update_interval == timedelta(seconds=120)
+
+    # Mirrors _async_update_listener applying a changed options value.
+    coordinator.update_interval = resolve_scan_interval(
+        _entry_with(options={"scan_interval": 120})
+    )
+    assert coordinator.update_interval == timedelta(seconds=240)
+
+
 def _entry_with(
     data: dict[str, Any] | None = None, options: dict[str, Any] | None = None
 ) -> Any:
@@ -386,7 +503,9 @@ async def test_persistent_empty_data_creates_issue_once_during_service_hours(
     assert create_spy_again.call_count == 0
 
 
-@pytest.mark.parametrize(("hour", "expected"), [(5, False), (6, True), (23, False)])
+@pytest.mark.parametrize(
+    ("hour", "expected"), [(5, False), (6, True), (23, True), (0, False)]
+)
 async def test_empty_data_issue_respects_service_hour_boundaries(
     hass: HomeAssistant,
     mock_api_client: MagicMock,

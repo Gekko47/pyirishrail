@@ -9,6 +9,7 @@ from unittest.mock import patch
 from homeassistant import config_entries, data_entry_flow
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import InvalidData
+from homeassistant.helpers import device_registry, entity_registry
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -617,3 +618,393 @@ async def test_options_flow_stops_at_free_text_fallback_on_connection_error(
 
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert entry.options[CONF_STOPS_AT] == "Howth"
+
+
+# ── Update-listener-owned reload (HA >= 2026.6 deprecation, 2026.12 hard) ────
+
+
+def _no_deprecation_warning(caplog: pytest.LogCaptureFixture) -> bool:
+    """Return True when HA's update-listener/reload warning is absent."""
+    return not any(
+        "should use it for scheduling a reload" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+async def test_reconfigure_schedules_single_reload_via_listener(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A data-changing reconfigure schedules exactly one reload (listener)."""
+    entry = await _setup_entry(hass)
+
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[_mock_train()],
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_schedule_reload",
+            wraps=hass.config_entries.async_schedule_reload,
+        ) as mock_schedule,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_RECONFIGURE,
+                "entry_id": entry.entry_id,
+            },
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"direction": "Southbound"}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_DIRECTION] == "Southbound"
+    assert entry.unique_id == "PEARS_southbound"
+    # The update listener owns reload scheduling: exactly one was scheduled.
+    assert mock_schedule.call_count == 1
+    # The deprecated flow+listener combination must never be triggered.
+    assert _no_deprecation_warning(caplog)
+
+
+async def test_options_change_does_not_schedule_reload(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Option-only changes apply live without scheduling any reload."""
+    entry = await _setup_entry(hass)
+
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_schedule_reload",
+            wraps=hass.config_entries.async_schedule_reload,
+        ) as mock_schedule,
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"scan_interval": 90, "num_trains": 2}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert entry.options == {"scan_interval": 90, "num_trains": 2}
+    coordinator = entry.runtime_data.coordinator
+    assert coordinator.update_interval == timedelta(seconds=90)
+    assert mock_schedule.call_count == 0
+    assert _no_deprecation_warning(caplog)
+
+
+async def test_reconfigure_unchanged_direction_skips_reload(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Reconfiguring to the same direction changes nothing and never reloads."""
+    entry = await _setup_entry(hass)
+
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_schedule_reload",
+            wraps=hass.config_entries.async_schedule_reload,
+        ) as mock_schedule,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_RECONFIGURE,
+                "entry_id": entry.entry_id,
+            },
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"direction": "Northbound"}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_DIRECTION] == "Northbound"
+    # Nothing changed, so async_update_entry fired no listeners at all.
+    assert mock_schedule.call_count == 0
+    assert _no_deprecation_warning(caplog)
+
+
+async def test_reconfigure_direction_change_drops_old_entities_and_device(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The previous direction's entities/device are removed on identity change."""
+    entry = await _setup_entry(hass)
+
+    ent_reg = entity_registry.async_get(hass)
+    dev_reg = device_registry.async_get(hass)
+
+    old_entity_ids = [
+        registry_entry.entity_id
+        for registry_entry in entity_registry.async_entries_for_config_entry(
+            ent_reg, entry.entry_id
+        )
+    ]
+    assert len(old_entity_ids) == 4
+    old_device_id = device_registry.async_get_device_id_by_identifier(
+        hass, (DOMAIN, "PEARS_northbound"), config_entry_id=entry.entry_id
+    )
+    assert old_device_id is not None
+
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[_mock_train()],
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_RECONFIGURE,
+                "entry_id": entry.entry_id,
+            },
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"direction": "Southbound"}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+
+    # The old entities are gone from the live registry...
+    for entity_id in old_entity_ids:
+        assert ent_reg.async_get(entity_id) is None
+    # ...but kept restorable in the deleted bin, tied to this config entry.
+    deleted = [
+        deleted_entry
+        for deleted_entry in ent_reg.deleted_entities.values()
+        if deleted_entry.config_entry_id == entry.entry_id
+        and str(deleted_entry.unique_id).startswith("PEARS_northbound")
+    ]
+    assert len(deleted) == 4
+
+    # Exactly four new entities were registered for the new identity.
+    live = entity_registry.async_entries_for_config_entry(ent_reg, entry.entry_id)
+    assert len(live) == 4
+    assert all(
+        str(registry_entry.unique_id).startswith("PEARS_southbound")
+        for registry_entry in live
+    )
+
+    # The abandoned old device is gone; a fresh one serves the new identity.
+    assert dev_reg.async_get(old_device_id) is None
+    assert (
+        device_registry.async_get_device_id_by_identifier(
+            hass, (DOMAIN, "PEARS_southbound"), config_entry_id=entry.entry_id
+        )
+        is not None
+    )
+    assert _no_deprecation_warning(caplog)
+
+
+async def test_direction_flip_back_restores_prior_customization(
+    hass: HomeAssistant,
+) -> None:
+    """Switching back reclaims prior entity IDs with customizations intact."""
+    entry = await _setup_entry(hass)
+
+    ent_reg = entity_registry.async_get(hass)
+    original_ids = sorted(
+        registry_entry.entity_id
+        for registry_entry in entity_registry.async_entries_for_config_entry(
+            ent_reg, entry.entry_id
+        )
+    )
+
+    # Customize one sensor the way a user would from the UI.
+    due_sensor = next(
+        registry_entry
+        for registry_entry in entity_registry.async_entries_for_config_entry(
+            ent_reg, entry.entry_id
+        )
+        if str(registry_entry.unique_id).endswith("next_train_due")
+    )
+    ent_reg.async_update_entity(due_sensor.entity_id, name="My Custom Sensor")
+
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[_mock_train()],
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_RECONFIGURE,
+                "entry_id": entry.entry_id,
+            },
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"direction": "Southbound"}
+        )
+        await hass.async_block_till_done()
+
+        # Flip back to the original direction.
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_RECONFIGURE,
+                "entry_id": entry.entry_id,
+            },
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"direction": "Northbound"}
+        )
+        await hass.async_block_till_done()
+
+    assert entry.data[CONF_DIRECTION] == "Northbound"
+
+    # All original entity IDs are live again, customization included.
+    restored = sorted(
+        registry_entry.entity_id
+        for registry_entry in entity_registry.async_entries_for_config_entry(
+            ent_reg, entry.entry_id
+        )
+    )
+    assert restored == original_ids
+
+    restored_due = next(
+        registry_entry
+        for registry_entry in entity_registry.async_entries_for_config_entry(
+            ent_reg, entry.entry_id
+        )
+        if str(registry_entry.unique_id).endswith("next_train_due")
+    )
+    assert restored_due.name == "My Custom Sensor"
+
+
+async def test_reconfigure_leaves_sibling_direction_entries_untouched(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Reconfiguring one entry never cleans up sibling entries at the station."""
+    northbound = await _setup_entry(hass)
+
+    # A second, independent entry for the same station: the "All" filter.
+    all_entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Dublin Pearse",
+        data={
+            "station": "Dublin Pearse",
+            "station_code": "PEARS",
+            "direction": None,
+            "num_trains": 3,
+        },
+        unique_id="PEARS_all",
+    )
+    all_entry.add_to_hass(hass)
+    with patch(
+        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        return_value=[_mock_train()],
+    ):
+        assert await hass.config_entries.async_setup(all_entry.entry_id)
+        await hass.async_block_till_done()
+    assert all_entry.state is config_entries.ConfigEntryState.LOADED
+
+    ent_reg = entity_registry.async_get(hass)
+
+    all_entity_ids = sorted(
+        registry_entry.entity_id
+        for registry_entry in entity_registry.async_entries_for_config_entry(
+            ent_reg, all_entry.entry_id
+        )
+    )
+    assert len(all_entity_ids) == 4
+
+    northbound_entity_ids = sorted(
+        registry_entry.entity_id
+        for registry_entry in entity_registry.async_entries_for_config_entry(
+            ent_reg, northbound.entry_id
+        )
+    )
+    assert len(northbound_entity_ids) == 4
+
+    # Reconfigure the Northbound entry to Southbound (identity change).
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[_mock_train()],
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_RECONFIGURE,
+                "entry_id": northbound.entry_id,
+            },
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"direction": "Southbound"}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert northbound.unique_id == "PEARS_southbound"
+
+    # The reconfigured side behaved as usual: its previous identity's entities
+    # were removed (restorable trash), replaced by four southbound ones.
+    for entity_id in northbound_entity_ids:
+        assert ent_reg.async_get(entity_id) is None
+    southbound_live = entity_registry.async_entries_for_config_entry(
+        ent_reg, northbound.entry_id
+    )
+    assert len(southbound_live) == 4
+    assert all(
+        str(registry_entry.unique_id).startswith("PEARS_southbound")
+        for registry_entry in southbound_live
+    )
+
+    # The sibling All entry is completely untouched: same live entity IDs,
+    # still loaded, own device intact.
+    assert all_entry.state is config_entries.ConfigEntryState.LOADED
+    assert sorted(
+        registry_entry.entity_id
+        for registry_entry in entity_registry.async_entries_for_config_entry(
+            ent_reg, all_entry.entry_id
+        )
+    ) == all_entity_ids
+    assert (
+        device_registry.async_get_device_id_by_identifier(
+            hass, (DOMAIN, "PEARS_all"), config_entry_id=all_entry.entry_id
+        )
+        is not None
+    )
+
+    # And the southbound identity now exists alongside it.
+    assert (
+        device_registry.async_get_device_id_by_identifier(
+            hass, (DOMAIN, "PEARS_southbound"), config_entry_id=northbound.entry_id
+        )
+        is not None
+    )
+    assert _no_deprecation_warning(caplog)

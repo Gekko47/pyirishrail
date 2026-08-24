@@ -1,10 +1,17 @@
-# Home Assistant Integration Quality Scale — Irish Rail (Bronze + Silver,
-# plus targeted Gold rules from roadmap Phase 3)
-# Rule IDs verified against https://developers.home-assistant.io/docs/core/integration-quality-scale/rules/
-# (20 Bronze rules plus the five targeted Silver rules as of the current
-# rules page). Keys use the underscore
-# form of the official hyphenated rule names, matching home-assistant/core
-# quality_scale.yaml convention.
+# Home Assistant Integration Quality Scale — Irish Rail
+# (all four tiers: Bronze, Silver, Gold, Platinum)
+#
+# Rule IDs verified against the live rules page:
+# https://developers.home-assistant.io/docs/core/integration-quality-scale/rules/
+# Keys use the underscore form of the official hyphenated rule names, matching
+# home-assistant/core quality_scale.yaml convention.
+#
+# Statuses:
+#   done   — implemented and evidenced in this repository (file/function
+#            pointers in each comment)
+#   exempt — the rule's own exception clause applies; justification given
+#   todo   — assessed but not yet satisfied; the precise remaining work is
+#            named here and tracked in .cline/irish-rail-improvement-roadmap.md
 
 rules:
   # ── Bronze ──────────────────────────────────────────────────────────────
@@ -200,7 +207,7 @@ rules:
       RTPI API); per the rule's own exception clause, the rule does not
       apply.
 
-  # ── Gold (roadmap Phase 3 targeted rules) ─────────────────────────────────
+  # ── Gold  ────────────────────────────────────────────────────────────────
   diagnostics:
     status: done
     comment: >
@@ -271,7 +278,6 @@ rules:
       per streak, deleted on the first data-bearing refresh and on entry
       unload. Pinned by tests in test_coordinator.py and test_init.py.
 
-  # ── Gold completion pass (remaining official Gold rules) ──────────────────
   devices:
     status: done
     comment: >
@@ -372,3 +378,41 @@ rules:
       the device automatically. With one device per entry there is no hub
       list from which devices can silently disappear, so no sweep or manual
       async_remove_config_entry_device is needed.
+
+  # ── Platinum ──────────────────────────────────────────────────────────────
+  # Assessed against the live rule pages on 2026-08-24; the official Platinum
+  # tier contains exactly three rules. Reaching the tier additionally requires
+  # every Bronze/Silver/Gold rule above to stay done/exempt.
+  async_dependency:
+    status: todo
+    comment: >
+      The integration's own HTTP stack is fully async (api.py awaits aiohttp
+      requests on an injected session; no blocking calls anywhere). Remaining
+      work per the rule's no-exceptions text: extract api.py into a published
+      async pyirishrail PyPI package (roadmap Phase 5.3) so the
+      integration's declared dependency set is itself async, and record the
+      defusedxml decision there (parsing runs on already-fetched bytes;
+      evidence or replacement to be documented).
+
+  inject_websession:
+    status: done
+    comment: >
+      IrishRailClient.__init__ (api.py) accepts an injected
+      aiohttp.ClientSession and never creates one itself; async_setup_entry
+      (__init__.py) and both flow helpers (config_flow.py) pass
+      async_get_clientsession(hass). Satisfies the rule at integration level
+      today; the Phase 5.3 extraction carries this exact design into the
+      published package unchanged.
+
+  strict_typing:
+    status: todo
+    comment: >
+      mypy strict = true (pyproject.toml) passes clean on all nine
+      integration modules and is enforced in CI; no type: ignore anywhere in
+      integration code. Remaining for full compliance: (1) define
+      IrishRailConfigEntry = ConfigEntry[IrishRailRuntimeData] and use it
+      throughout — required by the rule when runtime-data is implemented;
+      (2) extend the CI mypy gate to tests/components/irish_rail, mirroring
+      core's .strict-typing convention; (3) ship py.typed via the PEP-561
+      compliant pyirishrail package once roadmap Phase 5.3 lands.
+      Tracked as Phase 5.1-5.3 in .cline/irish-rail-improvement-roadmap.md.

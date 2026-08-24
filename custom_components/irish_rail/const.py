@@ -1,13 +1,10 @@
 """Constants for the Irish Rail integration."""
 
 from datetime import timedelta
-import logging
 
 import aiohttp
 
 DOMAIN = "irish_rail"
-
-_LOGGER = logging.getLogger(__package__)
 
 # Configuration keys
 CONF_STATION = "station"
@@ -28,12 +25,16 @@ MIN_NUM_TRAINS = 1
 MAX_NUM_TRAINS = 5
 
 # Service hours for the persistent-empty-data repair issue (roadmap Phase 3,
-# Gold rule ``repair-issues``). Irish Rail services run roughly 06:00-23:30;
-# an empty response outside these hours is a normal overnight quiet period,
+# Gold rule ``repair-issues``). Irish Rail services run until around
+# midnight, so the gate below stays open through every evening hour; empty
+# responses between 00:00 and 06:00 are a normal overnight quiet period,
 # while a persistent empty result during service hours suggests an API or
 # schema change worth surfacing to the user.
 SERVICE_HOURS_START_HOUR = 6
-SERVICE_HOURS_END_HOUR = 23
+# 24 means "through the end of the day": dt_util.now().hour never reaches 24,
+# so the half-open check keeps the gate open for all of 06:00-23:59 without
+# ever wrapping into the early-morning quiet period.
+SERVICE_HOURS_END_HOUR = 24
 
 # Consecutive successful-but-empty polls required before the repair issue is
 # raised (about 10 minutes at the default 60-second polling interval).
@@ -51,3 +52,23 @@ DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=10)
 # overloading the public plain-HTTP/HTTPS API while ensuring the real-time
 # passenger information (RTPI) in Home Assistant remains fresh.
 DEFAULT_SCAN_INTERVAL = timedelta(minutes=1)
+
+# Adaptive backoff polling (roadmap 4.3). On consecutive failed refreshes
+# the effective polling interval grows geometrically from the user-configured
+# interval, capped at MAX_BACKOFF_INTERVAL; any successful refresh restores
+# the configured interval immediately. The cap deliberately exceeds the
+# normal 600 s maximum so a downed public API is not hammered.
+BACKOFF_MULTIPLIER = 2
+MAX_BACKOFF_INTERVAL = timedelta(minutes=15)
+
+# "stops_at" pruning hardening. Movement-history lookups for candidate trains
+# are issued concurrently, bounded by a small semaphore to stay polite to the
+# public API.
+MAX_CONCURRENT_MOVEMENT_LOOKUPS = 5
+
+# Per-client cache of train movement histories keyed by
+# ``(train_code, date)``. A running train's stop list only grows during its
+# journey, so caching per date is safe for "does this train stop at X?"
+# filtering; failed lookups are never cached. Entries for other dates are
+# evicted lazily once the cap is exceeded.
+MOVEMENT_CACHE_MAX_ENTRIES = 1024

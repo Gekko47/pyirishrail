@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import datetime
 import logging
@@ -12,12 +13,15 @@ import aiohttp
 from defusedxml.common import DefusedXmlException
 import defusedxml.ElementTree as ET
 
-from .const import DEFAULT_TIMEOUT
+from .const import (
+    DEFAULT_TIMEOUT,
+    MAX_CONCURRENT_MOVEMENT_LOOKUPS,
+    MOVEMENT_CACHE_MAX_ENTRIES,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 API_BASE_URL: Final = "https://api.irishrail.ie/realtime/realtime.asmx/"
-NAMESPACE: Final = "http://api.irishrail.ie/realtime/"
 
 STATION_TYPE_TO_CODE_DICT: Final[dict[str, str]] = {
     "mainline": "M",
@@ -103,13 +107,30 @@ class TrainMovement:
     scheduled_departure_time: str
 
 
+def _strip_namespaces(root: Element) -> Element:
+    """Strip all namespaces from an element tree, in place.
+
+    The RTPI endpoints have historically alternated between documents whose
+    elements sit in the default namespace and namespace-free documents.
+    Normalizing once, immediately after parsing, lets every lookup below use
+    plain tag names instead of dual namespace-or-not fallbacks (roadmap
+    item 4.4). The transformation is idempotent, so normalizing an
+    already-clean tree is a no-op. Non-element nodes such as comments and
+    processing instructions (whose tags are not strings) are left untouched.
+    """
+    for elem in root.iter():
+        if isinstance(elem.tag, str) and "}" in elem.tag:
+            elem.tag = elem.tag.split("}", 1)[1]
+    return root
+
+
 def _find_tag_text(element: Element, tag_name: str) -> str | None:
-    """Find a tag text safely considering namespace prefixes."""
-    # Attempt with namespace
-    elem = element.find(f"{{{NAMESPACE}}}{tag_name}")
-    if elem is None:
-        # Fallback without namespace
-        elem = element.find(tag_name)
+    """Return the stripped text of the first matching child, or None.
+
+    ``element`` must come from a namespace-normalized tree (see
+    :func:`_strip_namespaces`), so a plain tag name always matches.
+    """
+    elem = element.find(tag_name)
     if elem is not None and elem.text is not None:
         return elem.text.strip()
     return None
@@ -121,6 +142,9 @@ class IrishRailClient:
     def __init__(self, session: aiohttp.ClientSession) -> None:
         """Initialize the client."""
         self._session = session
+        # Movement histories keyed by ``(train_code, date)``; see
+        # MOVEMENT_CACHE_MAX_ENTRIES in const.py.
+        self._movement_cache: dict[tuple[str, str], list[TrainMovement]] = {}
 
     async def _request(
         self, endpoint: str, params: dict[str, str] | None = None
@@ -145,8 +169,9 @@ class IrishRailClient:
             ) from err
 
         try:
-            # Safely parse XML via defusedxml
-            return ET.fromstring(content)
+            # Safely parse XML via defusedxml, then normalize namespaces so
+            # every downstream lookup uses plain tag names (roadmap 4.4).
+            return _strip_namespaces(ET.fromstring(content))
         except (
             ET.ParseError,
             # Security exceptions raised by defusedxml (e.g. DTDForbidden,
@@ -171,10 +196,7 @@ class IrishRailClient:
         root = await self._request(endpoint, params)
         stations: list[Station] = []
 
-        # Elements can be nested under namespaces or directly
-        for obj in root.findall(f"{{{NAMESPACE}}}objStation") or root.findall(
-            "objStation"
-        ):
+        for obj in root.findall("objStation"):
             try:
                 name = _find_tag_text(obj, "StationDesc") or ""
                 alias = _find_tag_text(obj, "StationAlias")
@@ -262,9 +284,7 @@ class IrishRailClient:
         root = await self._request(endpoint, params)
         trains: list[TrainPosition] = []
 
-        for obj in root.findall(f"{{{NAMESPACE}}}objTrainPositions") or root.findall(
-            "objTrainPositions"
-        ):
+        for obj in root.findall("objTrainPositions"):
             try:
                 status = _find_tag_text(obj, "TrainStatus") or ""
                 lat_str = _find_tag_text(obj, "TrainLatitude") or "0.0"
@@ -296,7 +316,15 @@ class IrishRailClient:
     async def async_get_train_stops(
         self, train_code: str, date: str | None = None
     ) -> list[TrainMovement]:
-        """Get route/stop details for a train code."""
+        """Get route/stop details for a train code.
+
+        Results are cached per ``(train code, date)`` pair: a running
+        train's stop list only grows during its journey, so a cached route
+        stays valid for "does this train stop at X?" filtering. Failed
+        lookups are never cached, so transient errors retry naturally on
+        the next poll; empty results are likewise not cached because they
+        may simply mean the train has not reached its first stop yet.
+        """
         if date is None:
             # Use the local timezone's current date (Ireland for typical
             # deployments). Callers may pass an explicit date for historical
@@ -304,15 +332,18 @@ class IrishRailClient:
             # this module free of Home Assistant imports.
             date = datetime.datetime.now().astimezone().date().strftime("%d %b %Y")
 
+        cache_key = (train_code, date)
+        cached = self._movement_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         endpoint = "getTrainMovementsXML"
         params = {"TrainId": train_code, "TrainDate": date}
 
         root = await self._request(endpoint, params)
         movements: list[TrainMovement] = []
 
-        for obj in root.findall(f"{{{NAMESPACE}}}objTrainMovements") or root.findall(
-            "objTrainMovements"
-        ):
+        for obj in root.findall("objTrainMovements"):
             movements.append(
                 TrainMovement(
                     code=_find_tag_text(obj, "TrainCode") or "",
@@ -334,7 +365,24 @@ class IrishRailClient:
                 )
             )
 
+        if movements:
+            self._movement_cache[cache_key] = movements
+            self._evict_movement_cache(current_date=date)
+
         return movements
+
+    def _evict_movement_cache(self, current_date: str) -> None:
+        """Drop entries for other dates when the cache exceeds its cap.
+
+        Eviction is lazy: it only runs once ``MOVEMENT_CACHE_MAX_ENTRIES``
+        is exceeded and removes historical-date entries first, so today's
+        routes stay warm.
+        """
+        if len(self._movement_cache) <= MOVEMENT_CACHE_MAX_ENTRIES:
+            return
+        stale = [key for key in self._movement_cache if key[1] != current_date]
+        for key in stale:
+            del self._movement_cache[key]
 
     async def _async_prune_trains(
         self,
@@ -345,33 +393,73 @@ class IrishRailClient:
     ) -> list[TrainDueTime]:
         """Filter list of due trains based on options.
 
-        Note: when ``stops_at`` is used, one extra HTTP request per candidate
-        train is made sequentially to fetch its movement history. The number
-        of due trains at a station is small (typically fewer than 20), so the
-        extra load stays bounded; all other filtering happens locally without
-        additional requests.
+        Direction and destination filters run purely locally. When
+        ``stops_at`` is used, every candidate whose destination does not
+        already match gets its movement history fetched concurrently,
+        bounded by ``MAX_CONCURRENT_MOVEMENT_LOOKUPS``, so worst-case wall
+        time stays close to a single request timeout instead of growing
+        linearly with the number of due trains. Lookups go through
+        :meth:`async_get_train_stops` and are served from its per-day cache;
+        a candidate whose movement history cannot be fetched is pruned
+        rather than failing the whole poll.
         """
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_MOVEMENT_LOOKUPS)
+
+        async def _movement_matches(train_code: str, target: str) -> bool:
+            """Return True when the train's route includes the target stop."""
+            try:
+                async with semaphore:
+                    stops = await self.async_get_train_stops(train_code)
+            except IrishRailError:
+                # A movement-history failure prunes this train only; the
+                # lookup retries naturally on the next poll because failures
+                # are never cached.
+                return False
+            return any(stop.location.lower() == target for stop in stops)
+
+        def _passes_local_filters(train: TrainDueTime) -> bool:
+            """Return True when direction/destination filters keep the train."""
+            if direction and train.direction.lower() != direction.lower():
+                return False
+            return not (
+                destination and train.destination.lower() != destination.lower()
+            )
+
+        # One lookup per distinct candidate train code (codes repeat if the
+        # API ever lists the same service twice).
+        lookup_targets: dict[str, str] = {}
+        if stops_at is not None:
+            target = stops_at.lower()
+            for train in trains:
+                if (
+                    _passes_local_filters(train)
+                    and target != train.destination.lower()
+                    and train.code not in lookup_targets
+                ):
+                    lookup_targets[train.code] = target
+
+        outcomes = await asyncio.gather(
+            *(
+                _movement_matches(code, tgt)
+                for code, tgt in lookup_targets.items()
+            )
+        )
+        matches: dict[str, bool] = dict(
+            zip(lookup_targets.keys(), outcomes, strict=True)
+        )
+
         pruned_data: list[TrainDueTime] = []
         for train in trains:
-            append = True
-            if direction and train.direction.lower() != direction.lower():
-                append = False
-
-            if destination and train.destination.lower() != destination.lower():
-                append = False
-
-            if append and stops_at and stops_at.lower() != train.destination.lower():
-                # Extra HTTP call to retrieve full movement history
-                try:
-                    stops = await self.async_get_train_stops(train.code)
-                    append = any(
-                        stop.location.lower() == stops_at.lower() for stop in stops
-                    )
-                except IrishRailError:
-                    append = False
-
-            if append:
-                pruned_data.append(train)
+            if not _passes_local_filters(train):
+                continue
+            if (
+                stops_at
+                and stops_at.lower() != train.destination.lower()
+                # Verdict was fetched concurrently above.
+                and not matches.get(train.code, False)
+            ):
+                continue
+            pruned_data.append(train)
 
         return pruned_data
 
@@ -380,12 +468,13 @@ def parse_station_data(root: Element) -> list[TrainDueTime]:
     """Parse a station-data XML root element into a list of TrainDueTime.
 
     Module-level pure function (no I/O) so it can be unit-tested in
-    isolation without an HTTP session.
+    isolation without an HTTP session. Accepts both namespaced and
+    namespace-free roots: namespaces are normalized once up front (the
+    operation is idempotent).
     """
+    root = _strip_namespaces(root)
     trains: list[TrainDueTime] = []
-    for obj in root.findall(f"{{{NAMESPACE}}}objStationData") or root.findall(
-        "objStationData"
-    ):
+    for obj in root.findall("objStationData"):
         try:
             due_str = _find_tag_text(obj, "Duein") or "0"
             late_str = _find_tag_text(obj, "Late") or "0"

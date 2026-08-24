@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/Gekko47/pyirishrail)](https://github.com/Gekko47/pyirishrail/releases)
 [![License](https://img.shields.io/github/license/Gekko47/pyirishrail)](LICENSE.txt)
 
-A modern Home Assistant custom integration for the Irish Rail Realtime Passenger Information (RTPI) service. It satisfies every Bronze and Silver rule of the [Home Assistant Integration Quality Scale](https://developers.home-assistant.io/docs/core/integration-quality-scale/), and every Gold-tier rule is assessed and satisfied (done or justified exempt) — see [quality_scale.yaml](custom_components/irish_rail/quality_scale.yaml) for per-rule evidence.
+A modern Home Assistant custom integration for the Irish Rail Realtime Passenger Information (RTPI) service. It satisfies every Bronze and Silver rule of the [Home Assistant Integration Quality Scale](https://developers.home-assistant.io/docs/core/integration-quality-scale/), every Gold-tier rule is assessed and satisfied (done or justified exempt), and all three official Platinum-tier rules are assessed: `inject-websession` is already met by the injected-session client, while `async-dependency` and the remaining `strict-typing` evidence are tracked as the final tier — see [quality_scale.yaml](custom_components/irish_rail/quality_scale.yaml) for per-rule evidence and the improvement roadmap (`.cline/irish-rail-improvement-roadmap.md`) for what remains.
 
 ## Description
 This integration allows you to monitor upcoming trains at any Irish Rail station directly from Home Assistant. It provides real-time data on due times, destinations, delays, and more, using the unofficial Irish Rail RTPI API.
@@ -162,12 +162,14 @@ This integration is read-only and exposes no service actions. The user-facing ac
 - **Add a station**: via **Settings → Devices & Services → Add Integration → Irish Rail**. Selecting a station (and optionally a direction filter) creates a config entry and four sensors for that station. Adding the same station with the same direction filter again is prevented (duplicate protection); the same station with a *different* direction filter creates an additional, independent entry.
 - **Remove an entry**: deleting a config entry (see Removal below) unloads its coordinator and removes all four sensors belonging to that station/direction. No manual cleanup is required — no files or persistent state are written outside Home Assistant's own config-entry storage.
 - **Reload an entry**: entries fully support unloading and reloading at runtime without restarting Home Assistant. Reloading (three-dot menu → Reload) re-runs setup, performing a fresh first refresh against the API and restoring the same sensors under the same entity IDs. If the API is unreachable at that moment, the entry enters a retry state and the sensors remain unavailable until it succeeds.
+- **Change settings**: entry options (polling interval, train count, "stops at" filter) apply live without any reload. Changing the direction filter via **Reconfigure** rewrites the entry identity and the integration's own update listener schedules exactly one reload — the pattern Home Assistant ≥ 2026.6 requires when an update listener exists. Re-submitting the currently configured direction changes nothing and does not reload. When the direction changes, the previous direction's four sensors and their device are removed from the registries automatically; they are kept restorable, so switching back later restores the original entity IDs along with any names or area assignments you had set.
 
 ## Triggers (data updates)
 The integration polls the Irish Rail RTPI API periodically; there are no user-configurable triggers:
 
 - **On startup / entry load**: when Home Assistant starts or the config entry is loaded/reloaded, an immediate first refresh is performed. If it fails, setup is retried with backoff (`ConfigEntryNotReady`).
 - **Periodic polling**: after the first refresh, a `DataUpdateCoordinator` fetches fresh due-train data every **60 seconds** by default (`DEFAULT_SCAN_INTERVAL`), matching the roughly once-a-minute cadence at which Irish Rail's real-time feed changes, while keeping load on the public API sustainable. The interval is user-configurable between 30 seconds and 10 minutes via the entry options (see Configuration above) and applies without a reload.
+- **Adaptive backoff**: when polls fail consecutively, the effective polling interval doubles with each subsequent failure starting from the configured interval and is capped at roughly 15 minutes, so an outage does not hammer the public API. The first successful poll restores the configured interval immediately; manual refreshes remain available throughout an outage.
 - **On coordinator failure**: if a poll fails (connection error, timeout, or malformed response), the coordinator keeps the last known data, logs the failure once per outage (not per failed poll), and retries on the next cycle; sensors become **Unavailable** immediately after the failed refresh and recover automatically on the next successful poll.
 
 ## Conditions (normal vs. degraded operation)
@@ -188,8 +190,16 @@ remain useful for debugging without exposing identifying details.
 - **Sensors show `unavailable`**: the most recent API poll failed (service downtime, timeout, or malformed response). One error per outage is written to **Settings → System → Logs**. No intervention is needed — polling continues and the sensors recover automatically on the first successful poll.
 - **Entry stuck in retry after startup/reload**: if the API was unreachable during setup, the entry enters `SETUP_RETRY` and Home Assistant keeps retrying with backoff. Setup completes on its own once the API answers; use the three-dot menu → **Reload** to force an immediate attempt.
 - **`unknown` states late at night**: outside operating hours Irish Rail legitimately returns no trains. The sensors remain *available* with `api_reachable: true` — this is a quiet timetable, not a fault.
-- **"No train data received" repair issue**: when a station keeps returning an empty response during service hours (roughly 06:00–23:00), the integration raises a repair issue under **Settings → System → Repairs**, since a persistent empty result may indicate an API or schedule-data change. Check whether other stations still report data, reload the entry, and — if it persists — remove and re-add it or update the integration. The issue clears itself on the first refresh that returns real trains.
+- **"No train data received" repair issue**: when a station keeps returning an empty response during service hours (roughly 06:00–midnight), the integration raises a repair issue under **Settings → System → Repairs**, since a persistent empty result may indicate an API or schedule-data change. Check whether other stations still report data, reload the entry, and — if it persists — remove and re-add it or update the integration. The issue clears itself on the first refresh that returns real trains.
 - **Reporting a bug**: include the entry diagnostics download (see above); station identifiers are already masked in it.
+
+## Removal
+1. Go to **Settings** → **Devices & Services**.
+2. Find the **Irish Rail** config entry you wish to remove.
+3. Click the three-dot menu and select **Delete**. The entry unloads immediately: its four sensors and its device are removed, and any pending repair issue is cleared. No manual cleanup is required — nothing is written outside Home Assistant's own config-entry storage.
+4. To remove the integration entirely, uninstall it via HACS or delete the `custom_components/irish_rail` folder (manual installs), then restart Home Assistant.
+
+Re-adding the same station/direction later restores the original entity IDs; names, icons, and area assignments you made are kept by Home Assistant's registries.
 
 ## Underlying API client
 The bundled `IrishRailClient` wraps the public RTPI XML endpoints over HTTPS
@@ -200,7 +210,7 @@ custom automations/scripts built on top of the library:
 - `async_get_all_stations()` — all stations, optionally filtered by type (mainline/suburban/DART).
 - `async_get_station_by_name()` / `async_get_station_by_code()` — due trains at a station, with optional direction, destination, and "stops at" filtering.
 - `async_get_all_current_trains()` — real-time positions of all running trains, optionally filtered by type or direction.
-- `async_get_train_stops()` — full route/stop history for a given train code and date.
+- `async_get_train_stops()` — full route/stop history for a given train code and date (cached per train/day).
 
 Only the station-by-code due-trains endpoint is used by the integration itself;
 the remaining methods power the config/options flows and are available for
@@ -210,10 +220,11 @@ future expansion.
 Requires Python 3.14+.
 
 ```bash
-pip install -e ".[dev]"   # installs test/lint tooling only
-pytest                    # run the test suite
-ruff check .              # lint
-mypy .                    # strict type checking
+pip install -e ".[dev]"                    # installs test/lint tooling only
+pytest                                     # run the test suite
+ruff check .                               # lint
+mypy custom_components/irish_rail          # strict type checking (as CI)
+pytest --cov=custom_components/irish_rail --cov-fail-under=95   # CI coverage gate
 ```
 
 The test suite lives under `tests/` and uses
@@ -224,7 +235,7 @@ with `aresponses` for HTTP mocking.
 - The Irish Rail RTPI API is an unofficial public service and may occasionally experience downtime.
 - The service uses plain HTTP/HTTPS and does not require authentication.
 - Data is specific to the Republic of Ireland and Northern Ireland rail network.
-- The "stops at" filter performs one extra API request per candidate train per poll, which slightly increases load when enabled.
+- The "stops at" filter fetches each candidate train's route: one extra API request per newly seen train per day, served from a per-day cache afterwards. Lookups run concurrently with a small concurrency cap, keeping the added latency per poll bounded even at busy stations.
 
 ## License
 This project is licensed under the **Apache License 2.0** — the same license used by
@@ -232,6 +243,5 @@ This project is licensed under the **Apache License 2.0** — the same license u
 [LICENSE.txt](LICENSE.txt) for the full text.
 
 ## AI Disclosure
-This integration was developed with the assistance of AI/LLM tooling (large language
-models) in the making of this code. All code was reviewed, tested, and validated by
-human maintainers before release.
+Parts of this project were drafted with AI/LLM assistance. All code was reviewed,
+tested, and validated by human maintainers before release.
