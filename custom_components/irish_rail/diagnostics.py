@@ -9,12 +9,12 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_STATION, CONF_STATION_CODE
+from .const import CONF_STATION, CONF_STATION_CODE, CONF_STOPS_AT
 from .types import IrishRailRuntimeData
 
 # Only truly sensitive fields are fully redacted. Entry-level identifiers
 # (title/unique_id) are kept useful for debugging by partial masking instead.
-TO_REDACT = {CONF_STATION, CONF_STATION_CODE}
+TO_REDACT = {CONF_STATION, CONF_STATION_CODE, CONF_STOPS_AT}
 
 _MASK_PREFIX_LENGTH = 3
 _MASK_HASH_LENGTH = 8

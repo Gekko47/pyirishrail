@@ -40,21 +40,38 @@ This integration allows you to monitor upcoming trains at any Irish Rail station
 4. Choose the station you wish to monitor from the dropdown list (the station
    list is fetched live from the API before you can submit — the connection is
    validated up front).
-5. Optionally, select a direction filter (**All**, **Northbound**, or **Southbound**).
-6. Optionally, set how many upcoming trains (1–5, default 3) are exposed in
+5. Pick a direction filter on the second screen. Only the directions Irish Rail
+   actually reports for your chosen station are offered: **Northbound** /
+   **Southbound** on the Dundalk–Rosslare and Sligo–Dublin corridors, and
+   free-text values such as **To Cobh**, **To Dublin Heuston** or **To
+   Midleton** everywhere else — so a direction filter can never silently match
+   nothing. If no trains are due at that moment (e.g. overnight), the field
+   becomes free text: leave it as **All** or copy the exact wording from
+   [irishrail.ie](https://www.irishrail.ie).
+6. Optionally pick a **"Stops at"** station to show only trains that call there
+   en route (**All** disables the filter). The same filter stays changeable
+   later via the entry's **Configure** dialog, which always wins over the
+   value picked here.
+7. Optionally, set how many upcoming trains (1–5, default 3) are exposed in
    each sensor's `upcoming_trains` attribute.
-7. Click **Submit**.
+8. Click **Submit**.
 
 *Note: No API key is required to use this service.*
 
 ### Changing settings later
 - **Direction filter**: use the three-dot menu on the config entry →
   **Reconfigure**. The station cannot be changed; only the direction filter
-  can be updated in place. Changing the direction changes the entry's unique
-  ID, so reconfiguring is rejected if another entry already monitors that
-  station/direction combination.
+  can be updated in place, chosen from the directions Irish Rail currently
+  reports for that station (your previously stored value stays selectable
+  even if it is not being sampled right now). Changing the direction changes
+  the entry's unique ID, so reconfiguring is rejected if another entry
+  already monitors that station/direction combination. Entries created before
+  dynamic direction discovery that hold `Northbound`/`Southbound` at a
+  non-corridor station should be reconfigured here — those filters never
+  matched any real service at such stations.
 - **Scan interval, number of trains & "stops at" filter**: use the three-dot
-  menu → **Configure** (options). All three apply without reloading the entry:
+  menu → **Configure** (options). All three apply without reloading the entry
+  (a value saved here always overrides one chosen during initial setup):
   - **Scan interval**: polling interval between 30 seconds and 10 minutes
     (default 60 seconds).
   - **Number of upcoming trains**: between 1 and 5 (default 3).
@@ -209,6 +226,7 @@ custom automations/scripts built on top of the library:
 
 - `async_get_all_stations()` — all stations, optionally filtered by type (mainline/suburban/DART).
 - `async_get_station_by_name()` / `async_get_station_by_code()` — due trains at a station, with optional direction, destination, and "stops at" filtering.
+- `async_get_station_directions()` — distinct live direction values for one station (the source of the config flow's per-station dropdown).
 - `async_get_all_current_trains()` — real-time positions of all running trains, optionally filtered by type or direction.
 - `async_get_train_stops()` — full route/stop history for a given train code and date (cached per train/day).
 

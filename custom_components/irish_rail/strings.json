@@ -3,19 +3,30 @@
     "step": {
       "user": {
         "title": "Set up Irish Rail",
-        "description": "Choose the station you want to monitor and optionally filter by train direction.",
+        "description": "Choose the station you want to monitor.",
         "data": {
           "station_code": "Station",
-          "direction": "Direction Filter",
-          "num_trains": "Number of upcoming trains"
+          "num_trains": "Number of upcoming trains",
+          "stops_at": "\"Stops at\" filter"
         },
         "data_description": {
-          "num_trains": "How many of the next trains (1-5, default 3) are exposed in the upcoming_trains attribute of each sensor."
+          "num_trains": "How many of the next trains (1-5, default 3) are exposed in the upcoming_trains attribute of each sensor.",
+          "stops_at": "Optionally show only trains that stop at this station en route. Choose All to disable the filter."
+        }
+      },
+      "directions": {
+        "title": "Direction filter for {station}",
+        "description": "Only the directions Irish Rail currently reports for services at {station} are listed below.",
+        "data": {
+          "direction": "Direction Filter"
+        },
+        "data_description": {
+          "direction": "Stations on the Dundalk-Rosslare and Sligo-Dublin corridors report Northbound/Southbound; every other station reports \"To <destination>\" values instead. The list reflects services due within the API's lookahead window, so choose All if unsure. If no trains are currently due, enter the direction exactly as shown on irishrail.ie (e.g. To Limerick) or leave All."
         }
       },
       "reconfigure": {
         "title": "Reconfigure Irish Rail",
-        "description": "Change the direction filter for this station. The station itself cannot be changed.",
+        "description": "Change the direction filter for {station}. Only the directions Irish Rail currently reports for this station are offered; the station itself cannot be changed.",
         "data": {
           "direction": "Direction Filter"
         }
@@ -39,11 +50,13 @@
         "description": "Adjust polling and how many upcoming trains are exposed.",
         "data": {
           "scan_interval": "Scan interval (seconds)",
-          "num_trains": "Number of upcoming trains"
+          "num_trains": "Number of upcoming trains",
+          "stops_at": "\"Stops at\" filter"
         },
         "data_description": {
           "scan_interval": "How often to poll the Irish Rail API, between 30 seconds and 10 minutes (default 60 seconds).",
-          "num_trains": "How many of the next trains (1-5, default 3) are exposed in the upcoming_trains attribute of each sensor."
+          "num_trains": "How many of the next trains (1-5, default 3) are exposed in the upcoming_trains attribute of each sensor.",
+          "stops_at": "Only show trains that stop at this station en route. Choose All to disable the filter."
         }
       }
     }
@@ -67,7 +80,7 @@
   "issues": {
     "empty_data_during_service_hours": {
       "title": "No train data received for {{station}}",
-      "message": "The Irish Rail API has returned no trains at this station for an extended period during service hours. This may indicate an API or schedule data change rather than a genuine quiet period. If it persists, check whether other stations still report data, then try reloading or re-adding the entry."
+      "description": "The Irish Rail API has returned no trains at this station for an extended period during service hours. This may indicate an API or schedule data change rather than a genuine quiet period. If it persists, check whether other stations still report data, then try reloading or re-adding the entry."
     }
   }
 }

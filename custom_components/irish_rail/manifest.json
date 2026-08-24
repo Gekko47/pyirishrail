@@ -1,14 +1,13 @@
 {
   "domain": "irish_rail",
   "name": "Irish Rail",
+  "codeowners": ["@Gekko47"],
   "config_flow": true,
   "documentation": "https://github.com/Gekko47/pyirishrail/blob/master/README.md",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/Gekko47/pyirishrail/issues",
   "quality_scale": "gold",
-  "iot_class": "cloud_polling",
-  "integration_type": "service",
   "requirements": ["defusedxml>=0.7.1"],
-  "codeowners": ["@Gekko47"],
-  "version": "0.1.4",
-  "min_ha_version": "2026.8.2"
+  "version": "0.1.4"
 }

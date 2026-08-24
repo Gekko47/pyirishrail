@@ -187,3 +187,15 @@ async def test_non_empty_data_keeps_next_train_attributes(
     assert len(state.attributes["upcoming_trains"]) == 1
     if key == "next_train_due":
         assert state.state == "10"
+
+
+def test_unknown_entity_key_returns_none_value() -> None:
+    """An unrecognized entity key falls back to a None native value."""
+    coordinator = MagicMock()
+    coordinator.data = [_mock_train()]
+    coordinator.config_entry.unique_id = "PEARS_northbound"
+    coordinator.station_name = "Dublin Pearse"
+    coordinator.direction = "Northbound"
+
+    sensor = IrishRailDueTrainSensor(coordinator, "not_a_real_key")
+    assert sensor.native_value is None

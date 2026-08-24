@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 from xml.etree.ElementTree import fromstring
 
@@ -9,6 +10,7 @@ import aiohttp
 from aresponses import ResponsesMockServer
 import pytest
 
+from custom_components.irish_rail import api as ir_api
 from custom_components.irish_rail.api import (
     IrishRailClient,
     IrishRailConnectionError,
@@ -18,6 +20,7 @@ from custom_components.irish_rail.api import (
     TrainMovement,
     parse_station_data,
 )
+from custom_components.irish_rail.const import MOVEMENT_CACHE_MAX_ENTRIES
 
 SAMPLE_STATIONS_XML = """
 <ArrayOfObjStation xmlns="http://api.irishrail.ie/realtime/">
@@ -753,3 +756,69 @@ async def test_train_stops_failure_not_cached(aresponses: ResponsesMockServer) -
 
         movements = await client.async_get_train_stops("E123", date="01 Jan 2026")
         assert len(movements) == 1
+
+
+async def test_station_directions_dedupes_and_skips_empty() -> None:
+    """Direction discovery ignores blanks and dedupes case-insensitively."""
+    client = IrishRailClient(MagicMock())
+    base = _due_train("A1")
+    trains = [
+        replace(base, code="A1", direction="To Cobh"),
+        replace(base, code="A2", direction=""),
+        replace(base, code="A3", direction="to cobh"),
+        replace(base, code="A4", direction="Northbound"),
+    ]
+    with patch.object(
+        client,
+        "async_get_station_by_code",
+        new_callable=AsyncMock,
+        return_value=trains,
+    ):
+        directions = await client.async_get_station_directions("CORK")
+
+    # First-seen casing wins for duplicates; blank values never appear.
+    assert directions == ["Northbound", "To Cobh"]
+
+
+def test_evict_movement_cache_drops_stale_dates_only_when_over_cap() -> None:
+    """Lazy eviction keeps today's routes and only runs past the cap."""
+    client = IrishRailClient(MagicMock())
+    today = "2026-08-24"
+    stale_key = ("A1 ", "2020-01-01")
+    fresh_key = ("A2 ", today)
+
+    # Under the cap nothing is evicted, even with stale entries present.
+    client._movement_cache = {stale_key: [], fresh_key: []}
+    client._evict_movement_cache(current_date=today)
+    assert stale_key in client._movement_cache
+
+    # Over the cap: every non-current-date entry is dropped, today's kept.
+    filler = {
+        (f"T{i} ", "2019-05-05"): [] for i in range(MOVEMENT_CACHE_MAX_ENTRIES)
+    }
+    client._movement_cache = {**filler, stale_key: [], fresh_key: ["kept"]}
+    client._evict_movement_cache(current_date=today)
+    assert list(client._movement_cache) == [fresh_key]
+    assert client._movement_cache[fresh_key] == ["kept"]
+
+
+def test_parse_station_data_skips_record_on_unexpected_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A record raising mid-parse is skipped with a warning, not fatal."""
+    root = fromstring(SAMPLE_STATION_DATA_XML)
+    original = ir_api._find_tag_text
+
+    def flaky(element, tag):
+        if tag == "Traincode":
+            raise ValueError("unexpected malformed value")
+        return original(element, tag)
+
+    with patch.object(ir_api, "_find_tag_text", flaky):
+        trains = parse_station_data(root)
+
+    assert trains == []
+    assert any(
+        "Error parsing station data record" in record.getMessage()
+        for record in caplog.records
+    )

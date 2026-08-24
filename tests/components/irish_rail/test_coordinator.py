@@ -568,3 +568,16 @@ async def test_recovery_clears_issue_and_second_streak_re_reports(
         assert _active_issue(hass, mock_config_entry) is None
         await _refresh_empty(coordinator, mock_api_client, 1)
         assert _active_issue(hass, mock_config_entry) is not None
+
+
+def test_previous_unique_id_none_without_station_code(
+    hass: HomeAssistant, mock_api_client
+) -> None:
+    """previous_unique_id() yields None when applied data lacks a code."""
+    entry = _entry_with(data={"station_code": ""})
+    coordinator = IrishRailDataUpdateCoordinator(hass, mock_api_client, entry)
+    assert coordinator.previous_unique_id() is None
+
+    # Sanity check: a normal entry still produces its identity.
+    healthy = IrishRailDataUpdateCoordinator(hass, mock_api_client, _entry_with())
+    assert healthy.previous_unique_id() == "PEARS_northbound"

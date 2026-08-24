@@ -270,6 +270,29 @@ class IrishRailClient:
 
         return trains
 
+    async def async_get_station_directions(self, station_code: str) -> list[str]:
+        """Return the distinct direction values currently due at a station.
+
+        The RTPI API exposes no static per-station direction directory: on
+        the Dundalk-Rosslare and Sligo-Dublin corridors trains report
+        ``Northbound`` / ``Southbound``, while every other station reports
+        free-text values such as ``To Cork`` that only appear in live
+        due-train records. The only authoritative source for valid filter
+        values is therefore a query of the station's own due-trains list.
+
+        Values are deduplicated case-insensitively (first-seen casing wins)
+        and sorted case-insensitively. An empty result simply means no
+        trains are due within the API's lookahead window right now (e.g.
+        overnight); it never indicates an error.
+        """
+        trains = await self.async_get_station_by_code(station_code)
+        seen: dict[str, str] = {}
+        for train in trains:
+            if not train.direction:
+                continue
+            seen.setdefault(train.direction.lower(), train.direction)
+        return sorted(seen.values(), key=str.lower)
+
     async def async_get_all_current_trains(
         self, train_type: str | None = None, direction: str | None = None
     ) -> list[TrainPosition]:

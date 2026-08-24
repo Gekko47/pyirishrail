@@ -35,3 +35,13 @@ jobs:
 
       - name: Pytest with coverage
         run: pytest --cov=custom_components/irish_rail --cov-report=term-missing --cov-fail-under=95
+
+  hassfest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Hassfest validation
+        uses: home-assistant/actions/hassfest@master
