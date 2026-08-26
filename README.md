@@ -138,7 +138,23 @@ Replace the entity IDs with those of your own station/direction entries.
 - **Adaptive backoff**: consecutive failed polls double the effective interval, capped at ~15 minutes, so an outage never hammers the public API; the first successful poll restores the configured interval. Manual refreshes stay available throughout.
 - **Failed poll**: the coordinator keeps last-known data, logs one error per outage, and sensors become **Unavailable** immediately — recovering automatically on the next successful poll.
 - **No trains due**: a legitimately empty feed (e.g. late at night) leaves sensors *available* reporting `unknown` with `api_reachable: true`. **Unavailable = API unreachable; available-but-unknown = quiet timetable.**
-- **Persistent empty feed**: if a station keeps returning nothing during service hours (roughly 06:00–midnight), a repair issue is raised under **Settings → System → Repairs**; it clears itself on the first refresh that returns real trains.
+- **Persistent empty feed**: if a station keeps returning nothing during service hours (roughly 06:00–midnight), a repair issue is raised under **Settings → System → Repairs**; it clears itself on the first refresh that returns real trains. While the shared [API connectivity probe](#global-irish-rail-api-device-health-sensor-and-matrix-rebuild-button) confirms the API itself is reachable, an empty board is treated as *no scheduled services inside the look-ahead window* instead: no issue is raised and any open one is cleared automatically.
+
+## "Stops at" filter
+
+When configuring a station you can optionally enable a **"stops at"** filter (optionally combined with a direction filter) so only trains that actually call at a chosen downstream station are exposed. The dropdown never offers arbitrary free text: it only lists stations that the selected services genuinely reach *after* your station.
+
+Because Irish Rail's realtime API publishes no static route directory, option lists are built from three layers, in order:
+
+1. **Live sampling** (source of truth): trains currently due at your station are resolved to their current journey, and only stops reached after your station on that journey are offered.
+2. **Learned matrix**: every successful discovery — including ordinary polling while a filter is active — is merged into a per-install cache that survives restarts and refreshes itself automatically.
+3. **Bundled seed**: a reference snapshot ships with the integration so setup still works when no services are currently due (e.g. overnight).
+
+Only if all three come up empty (fresh install during dead hours) does the form fall back to the full national station list. To regenerate the bundled snapshot from the live network, run:
+
+```shell
+python scripts/build_stops_matrix.py
+```
 
 ## Diagnostics & troubleshooting
 
@@ -188,6 +204,51 @@ with `aresponses` for HTTP mocking.
 - The service uses plain HTTP/HTTPS and does not require authentication.
 - Data is specific to the Republic of Ireland and Northern Ireland rail network.
 - The "stops at" filter fetches each candidate train's route: one extra API request per newly seen train per day, served from a per-day cache afterwards. Lookups run concurrently with a small concurrency cap, keeping the added latency per poll bounded even at busy stations.
+
+## Global "Irish Rail API" device: health sensor and matrix rebuild button
+
+Every config entry shares one synthetic **"Irish Rail API"** hub device that
+carries two integration-wide entities:
+
+### API connectivity sensor (`binary_sensor.<entry>_status`)
+A lightweight probe (`getAllStationsXML`) pings the RTPI API every 5 minutes
+(plus once at startup). While the probe confirms the API is reachable, an
+empty board at your station is treated as *no scheduled services inside the
+RTPI look-ahead window* instead of a fault:
+
+- no persistent `empty_data_during_service_hours` repair issue is raised,
+- any issue raised before the API was confirmed healthy is cleared
+  automatically.
+
+If the health probe itself starts failing, the original warning behaviour
+returns so genuine outages are still surfaced.
+
+### Rebuild stops-at matrix button (`button.<entry>_rebuild_stops_matrix`)
+Pressing this runs the equivalent of `scripts/build_stops_matrix.py`
+in-process, without a Home Assistant restart:
+
+> Warning: one press polls ~150 stations plus per-train movement lookups
+> against the public Irish Rail RTPI API and can take several minutes. The
+> same caution is logged at WARNING level for every run.
+
+Results are gap-fill merged: existing stops in `stops_matrix.json` are never
+removed; newly observed station-direction-stops knowledge is unioned in,
+timestamps refreshed, and the bundled-seed cache invalidated so the config
+flow immediately benefits. A press while a rebuild is already running is
+rejected rather than queued. Progress and outcome (stations sampled, stops
+added, duration, errors) appear in the button's state attributes. The same
+action is available as the service `irish_rail.rebuild_stops_matrix` for
+automations.
+
+Notes:
+- The global entities are provided exactly once no matter how many config
+  entries you have; they disappear while their owning entry is unloaded and
+  return when it is reloaded or another entry claims providership after a
+  removal.
+- Because `stops_matrix.json` lives inside the integration folder, a HACS
+  update overwrites a runtime-rebuilt seed. The per-install learning cache
+  (`irish_rail.stops_matrix.json` in HA storage) is unaffected; re-run the
+  rebuild after an update if needed.
 
 ## License
 This project is licensed under the **Apache License 2.0** — the same license used by

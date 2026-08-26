@@ -34,7 +34,7 @@ jobs:
         run: mypy custom_components/irish_rail
 
       - name: Pytest with coverage
-        run: pytest --cov=custom_components/irish_rail --cov-report=term-missing --cov-fail-under=95
+        run: pytest --cov=custom_components/irish_rail --cov-report=term-missing --cov-fail-under=100
 
   hassfest:
     runs-on: ubuntu-latest

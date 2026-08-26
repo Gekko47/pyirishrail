@@ -13,6 +13,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irish_rail.const import DOMAIN, EMPTY_DATA_ISSUE_THRESHOLD
 from custom_components.irish_rail.coordinator import empty_data_issue_id
+from custom_components.irish_rail.health import get_health_monitor
 from custom_components.irish_rail.types import IrishRailRuntimeData
 
 
@@ -138,6 +139,14 @@ async def test_unload_removes_pending_empty_data_repair_issue(
     ):
         assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
         await hass.async_block_till_done()
+
+        # Deliberately withhold API-health confirmation: the entity-scan path
+        # is healthy while the shared probe is not recent/confident, so empty
+        # polls must fall back to the legacy persistent-empty-data warning.
+        monitor = get_health_monitor(hass)
+        assert monitor is not None
+        monitor.healthy = False
+        monitor.consecutive_failures = 1
 
         # Drive enough consecutive empty polls during service hours to raise
         # the repair issue (Gold rule ``repair-issues``).

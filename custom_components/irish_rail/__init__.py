@@ -21,11 +21,16 @@ from .coordinator import (
     empty_data_issue_id,
     resolve_scan_interval,
 )
+from .health import async_note_entry_loaded, async_note_entry_unloaded
 from .types import IrishRailRuntimeData
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR]
+PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR,
+    Platform.BUTTON,
+    Platform.SENSOR,
+]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -47,6 +52,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # reload: the coordinator interval is updated in place and the sensors
     # read the train count dynamically on every refresh.
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
+    # Start/attach the shared API-health probe before platforms are
+    # forwarded so the global connectivity sensor appears with live state.
+    await async_note_entry_loaded(hass, client)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -120,4 +129,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Remove any pending empty-data repair issue so a stale warning is not
     # left behind for an unloaded entry; a reload re-evaluates from scratch.
     ir.async_delete_issue(hass, DOMAIN, empty_data_issue_id(entry))
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    # Account for this entry leaving so the shared health probe stops once
+    # the last Irish Rail entry unloads.
+    await async_note_entry_unloaded(hass)
+    return unloaded

@@ -928,3 +928,265 @@ async def test_station_stops_at_options_union_dedupe_and_exclude() -> None:
         return_value=[],
     ):
         assert await client.async_get_station_stops_at_options("EMPT") == []
+
+
+# ── journey-scoped routes & stops-matrix learning (roadmap 4.8) ─────────────
+
+def _journey_movement(
+    location: str,
+    location_code: str,
+    code: str = "E932",
+    destination: str = "Howth",
+) -> TrainMovement:
+    """Return a movement row on a journey bound for ``destination``."""
+    return TrainMovement(
+        code=code,
+        date="01 Jan 2026",
+        location_code=location_code,
+        location=location,
+        origin="Somewhere",
+        destination=destination,
+        expected_arrival_time="12:10",
+        expected_departure_time="12:11",
+        scheduled_arrival_time="12:00",
+        scheduled_departure_time="12:01",
+    )
+
+
+def test_scoped_journey_stops_cuts_upstream_and_other_journeys() -> None:
+    """Only the current journey's stops past the monitored station remain."""
+    movements = [
+        # An earlier Northbound journey of the same train code today:
+        _journey_movement("Howth", "HOWTH", destination="Howth"),
+        _journey_movement("Dublin Pearse", "PEARS", destination="Howth"),
+        # The current Southbound journey towards Greystones:
+        _journey_movement("Dublin Pearse", "PEARS", destination="Greystones"),
+        _journey_movement("Bray", "BRAY", destination="Greystones"),
+        _journey_movement("Greystones", "GREYS", destination="Greystones"),
+        # A later return leg (Northbound again):
+        _journey_movement("Greystones", "GREYS", destination="Howth"),
+        _journey_movement("Bray", "BRAY", destination="Howth"),
+    ]
+
+    scoped = ir_api._scoped_journey_stops(
+        movements, "Greystones", station_code="PEARS"
+    )
+
+    assert [stop.location for stop in scoped] == ["Bray", "Greystones"]
+
+
+def test_scoped_journey_stops_cuts_by_station_name_fallback() -> None:
+    """Without a code hit, the monitored station is found by display name."""
+    movements = [
+        _journey_movement("Dublin Pearse", "PERSE", destination="Greystones"),
+        _journey_movement("Bray", "BRAY", destination="Greystones"),
+    ]
+
+    scoped = ir_api._scoped_journey_stops(
+        movements,
+        "Greystones",
+        station_code="UNKNOWN",
+        station_name="Dublin Pearse",
+    )
+
+    assert [stop.location for stop in scoped] == ["Bray"]
+
+
+def test_scoped_journey_stops_blank_destination_keeps_all_rows() -> None:
+    """Blank/malformed destinations degrade to the unscoped day history."""
+    movements = [
+        _journey_movement("Dublin Pearse", "PEARS", destination=""),
+        _journey_movement("Bray", "BRAY", destination=""),
+    ]
+
+    scoped = ir_api._scoped_journey_stops(
+        movements, "", station_code="PEARS"
+    )
+
+    assert [stop.location for stop in scoped] == ["Bray"]
+
+
+def test_scoped_journey_stops_unknown_station_returns_rows_uncut() -> None:
+    """An unmatched station must never silently empty the result."""
+    movements = [
+        _journey_movement("Dublin Pearse", "PEARS", destination="Greystones"),
+        _journey_movement("Bray", "BRAY", destination="Greystones"),
+    ]
+
+    scoped = ir_api._scoped_journey_stops(
+        movements, "Greystones", station_code="NOWHERE"
+    )
+
+    assert [stop.location for stop in scoped] == ["Dublin Pearse", "Bray"]
+
+
+def test_scoped_journey_stops_cut_limited_to_contiguous_run() -> None:
+    """Later same-day journeys sharing the destination do not leak in."""
+    movements = [
+        # The current Southbound journey towards Greystones:
+        _journey_movement("Dublin Pearse", "PEARS", destination="Greystones"),
+        _journey_movement("Greystones", "GREYS", destination="Greystones"),
+        # An opposite-direction return leg (filtered out of the match):
+        _journey_movement("Greystones", "GREYS", destination="Bray"),
+        _journey_movement("Bray", "BRAY", destination="Bray"),
+        # A later journey of the same train code, again bound for Greystones:
+        # its stops must not appear in the result.
+        _journey_movement("Dublin Connolly", "CONNY", destination="Greystones"),
+        _journey_movement("Howth", "HOWTH", destination="Greystones"),
+    ]
+
+    scoped = ir_api._scoped_journey_stops(
+        movements, "Greystones", station_code="PEARS"
+    )
+
+    # Only the current journey's downstream stop remains, not the later one.
+    assert [stop.location for stop in scoped] == ["Greystones"]
+
+
+async def test_stops_at_options_exclude_upstream_and_other_direction() -> None:
+    """Option discovery only offers stops reached after the station."""
+    client = IrishRailClient(MagicMock())
+    train = replace(_due_train("A1"), destination="Greystones")
+
+    async def fake_stops(
+        train_code: str, date: str | None = None
+    ) -> list[TrainMovement]:
+        return [
+            # Earlier Northbound journeys of the same train code today:
+            _journey_movement("Howth", "HOWTH", destination="Malahide"),
+            _journey_movement("Dublin Pearse", "PEARS", destination="Malahide"),
+            # The current Southbound journey towards Greystones:
+            _journey_movement("Dublin Pearse", "PEARS", destination="Greystones"),
+            _journey_movement("Bray", "BRAY", destination="Greystones"),
+            _journey_movement("Greystones", "GREYS", destination="Greystones"),
+            # A later return leg (Northbound again):
+            _journey_movement("Bray", "BRAY", destination="Howth"),
+        ]
+
+    with (
+        patch.object(
+            client,
+            "async_get_station_by_code",
+            new_callable=AsyncMock,
+            return_value=[train],
+        ),
+        patch.object(client, "async_get_train_stops", new=fake_stops),
+    ):
+        stops = await client.async_get_station_stops_at_options(
+            "PEARS", direction="Southbound", exclude="Dublin Pearse"
+        )
+
+    assert stops == ["Bray", "Greystones"]
+
+
+async def test_prune_ignores_target_stop_on_other_journey() -> None:
+    """A target only visited by the train's other journey prunes the train."""
+    client = IrishRailClient(MagicMock())
+    # A stale observation set must be replaced, never merged into.
+    client.last_downstream_stop_names = frozenset({"STALE"})
+
+    async def fake_stops(
+        train_code: str, date: str | None = None
+    ) -> list[TrainMovement]:
+        return [
+            # Earlier Northbound leg that does call at Greystones:
+            _journey_movement("Dublin Pearse", "PEARS", destination="Howth"),
+            _journey_movement("Greystones", "GREYS", destination="Howth"),
+            # Current Southbound leg towards Bray: no Greystones downstream.
+            _journey_movement("Dublin Pearse", "PEARS", destination="Bray"),
+            _journey_movement("Dun Laoghaire", "DLGHY", destination="Bray"),
+        ]
+
+    with patch.object(client, "async_get_train_stops", new=fake_stops):
+        result = await client._async_prune_trains(
+            [_due_train("E777")],
+            stops_at="Greystones",
+            station_code="PEARS",
+        )
+
+    assert result == []
+    # Only the current journey's downstream stops were observed.
+    assert client.last_downstream_stop_names == frozenset({"Dun Laoghaire"})
+
+
+async def test_prune_keeps_target_on_current_journey_and_records_observation() -> None:
+    """Journey-scoped matching keeps the train and learns its stops."""
+    client = IrishRailClient(MagicMock())
+
+    async def fake_stops(
+        train_code: str, date: str | None = None
+    ) -> list[TrainMovement]:
+        return [
+            _journey_movement("Dublin Pearse", "PEARS", destination="Bray"),
+            _journey_movement("Greystones", "GREYS", destination="Bray"),
+            _journey_movement("Bray", "BRAY", destination="Bray"),
+        ]
+
+    with patch.object(client, "async_get_train_stops", new=fake_stops):
+        result = await client._async_prune_trains(
+            [_due_train("E777")],
+            stops_at="Greystones",
+            station_code="PEARS",
+        )
+
+    assert [train.code for train in result] == ["E777"]
+    assert client.last_downstream_stop_names == frozenset({"Greystones", "Bray"})
+
+
+async def test_prune_without_stops_at_resets_observations() -> None:
+    """Passes without a stops_at filter carry no stale observations."""
+    client = IrishRailClient(MagicMock())
+    client.last_downstream_stop_names = frozenset({"STALE"})
+
+    with patch.object(
+        client,
+        "async_get_train_stops",
+        new=AsyncMock(side_effect=AssertionError("must not look up")),
+    ):
+        await client._async_prune_trains([_due_train("E777")], direction="Southbound")
+
+    assert client.last_downstream_stop_names == frozenset()
+
+
+async def test_stops_at_options_skip_blank_and_excluded_locations() -> None:
+    """Blank rows and the excluded departure station never join options."""
+    client = IrishRailClient(MagicMock())
+
+    def _movement(location: str) -> TrainMovement:
+        return TrainMovement(
+            code="E700",
+            date="01 Jan 2026",
+            location_code=f"L-{location or 'BLANK'}",
+            location=location,
+            origin="Somewhere",
+            destination="Greystones",
+            expected_arrival_time="12:10",
+            expected_departure_time="12:11",
+            scheduled_arrival_time="12:00",
+            scheduled_departure_time="12:01",
+        )
+
+    async def fake_stops(
+        train_code: str, date: str | None = None
+    ) -> list[TrainMovement]:
+        return [
+            _movement(""),
+            _movement("dublin pearse"),
+            _movement("Bray"),
+            _movement(""),
+        ]
+
+    with (
+        patch.object(
+            client,
+            "async_get_station_by_code",
+            new_callable=AsyncMock,
+            return_value=[_due_train("E700")],
+        ),
+        patch.object(client, "async_get_train_stops", new=fake_stops),
+    ):
+        options = await client.async_get_station_stops_at_options(
+            "PEARS", exclude="Dublin Pearse"
+        )
+
+    assert options == ["Bray"]

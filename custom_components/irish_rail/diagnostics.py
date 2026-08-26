@@ -9,7 +9,14 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_STATION, CONF_STATION_CODE, CONF_STOPS_AT
+from .const import (
+    CONF_STATION,
+    CONF_STATION_CODE,
+    CONF_STOPS_AT,
+    DOMAIN,
+    GLOBAL_LAST_REBUILD_KEY,
+)
+from .health import get_health_monitor
 from .types import IrishRailRuntimeData
 
 # Only truly sensitive fields are fully redacted. Entry-level identifiers
@@ -53,6 +60,11 @@ async def async_get_config_entry_diagnostics(
             "due_trains_count": len(trains),
         }
 
+    monitor = get_health_monitor(hass)
+    health_info = monitor.as_dict() if monitor is not None else None
+    rebuild_result = hass.data.get(DOMAIN, {}).get(GLOBAL_LAST_REBUILD_KEY)
+    rebuild_info = rebuild_result.as_dict() if rebuild_result is not None else None
+
     return {
         "entry": {
             # Identifiers are partially masked rather than hidden entirely so
@@ -65,4 +77,6 @@ async def async_get_config_entry_diagnostics(
             "options": async_redact_data(dict(entry.options), TO_REDACT),
         },
         "coordinator": coordinator_info,
+        "api_health": health_info,
+        "stops_matrix_rebuild": rebuild_info,
     }

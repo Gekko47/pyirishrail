@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import timedelta
+import logging
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant import config_entries, data_entry_flow
 from homeassistant.core import HomeAssistant
@@ -28,6 +29,7 @@ from custom_components.irish_rail.const import (
     CONF_STOPS_AT,
     DOMAIN,
 )
+from custom_components.irish_rail.store import get_stops_store
 
 
 def _mock_station() -> Station:
@@ -1267,7 +1269,9 @@ async def test_reconfigure_direction_change_drops_old_entities_and_device(
             ent_reg, entry.entry_id
         )
     ]
-    assert len(old_entity_ids) == 4
+    # Four station sensors plus the two shared globals (health sensor +
+    # rebuild button), which live on the hub device owned by this entry.
+    assert len(old_entity_ids) == 6
     old_device_id = device_registry.async_get_device_id_by_identifier(
         hass, (DOMAIN, "PEARS_northbound"), config_entry_id=entry.entry_id
     )
@@ -1302,9 +1306,15 @@ async def test_reconfigure_direction_change_drops_old_entities_and_device(
     assert result["type"] == data_entry_flow.FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
 
-    # The old entities are gone from the live registry...
-    for entity_id in old_entity_ids:
-        assert ent_reg.async_get(entity_id) is None
+    # The old station-sensor entities are gone from the live registry...
+    # (the two shared hub entities are excluded: they deliberately survive
+    # reconfigures, pinned to their owning entry by design)
+    for registry_entry in entity_registry.async_entries_for_config_entry(
+        ent_reg, entry.entry_id
+    ):
+        if not str(registry_entry.unique_id).startswith("PEARS_northbound"):
+            continue
+        assert ent_reg.async_get(registry_entry.entity_id) is None
     # ...but kept restorable in the deleted bin, tied to this config entry.
     deleted = [
         deleted_entry
@@ -1314,12 +1324,18 @@ async def test_reconfigure_direction_change_drops_old_entities_and_device(
     ]
     assert len(deleted) == 4
 
-    # Exactly four new entities were registered for the new identity.
+    # The four new station-sensor entities carry the new identity; the two
+    # shared globals keep their fixed unique IDs on the same entry.
     live = entity_registry.async_entries_for_config_entry(ent_reg, entry.entry_id)
-    assert len(live) == 4
+    southbound_sensors = [
+        registry_entry
+        for registry_entry in live
+        if str(registry_entry.unique_id).startswith("PEARS_southbound")
+    ]
+    assert len(southbound_sensors) == 4
     assert all(
         str(registry_entry.unique_id).startswith("PEARS_southbound")
-        for registry_entry in live
+        for registry_entry in southbound_sensors
     )
 
     # The abandoned old device is gone; a fresh one serves the new identity.
@@ -1460,7 +1476,8 @@ async def test_reconfigure_leaves_sibling_direction_entries_untouched(
             ent_reg, northbound.entry_id
         )
     )
-    assert len(northbound_entity_ids) == 4
+    # Owner of the two shared globals plus its own four station sensors.
+    assert len(northbound_entity_ids) == 6
 
     # Reconfigure the Northbound entry to Southbound (identity change).
     with (
@@ -1493,17 +1510,26 @@ async def test_reconfigure_leaves_sibling_direction_entries_untouched(
     assert result["reason"] == "reconfigure_successful"
     assert northbound.unique_id == "PEARS_southbound"
 
-    # The reconfigured side behaved as usual: its previous identity's entities
-    # were removed (restorable trash), replaced by four southbound ones.
-    for entity_id in northbound_entity_ids:
-        assert ent_reg.async_get(entity_id) is None
+    # The reconfigured side behaved as usual: its previous identity's sensor
+    # entities were removed (restorable trash), replaced by four southbound
+    # ones; the two shared globals it owns simply persist across the change.
     southbound_live = entity_registry.async_entries_for_config_entry(
         ent_reg, northbound.entry_id
     )
-    assert len(southbound_live) == 4
+    for registry_entry in southbound_live:
+        assert not str(registry_entry.unique_id).startswith("PEARS_northbound")
+    southbound_live = entity_registry.async_entries_for_config_entry(
+        ent_reg, northbound.entry_id
+    )
+    southbound_sensors = [
+        registry_entry
+        for registry_entry in southbound_live
+        if str(registry_entry.unique_id).startswith("PEARS_southbound")
+    ]
+    assert len(southbound_sensors) == 4
     assert all(
         str(registry_entry.unique_id).startswith("PEARS_southbound")
-        for registry_entry in southbound_live
+        for registry_entry in southbound_sensors
     )
 
     # The sibling All entry is completely untouched: same live entity IDs,
@@ -1878,3 +1904,262 @@ async def test_station_filter_matches_alias_tokens(
         )
         assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
         assert result["data"][CONF_STATION_CODE] == "CITYJ"
+
+
+# ── stops-at option fallback chain: live → cache → seed → full list ─────────
+
+
+async def test_stops_at_step_persists_live_discovery(hass: HomeAssistant) -> None:
+    """A successful live discovery is learned into the per-install matrix."""
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[_mock_train()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            return_value=["Bray", "Howth"],
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+        assert result["step_id"] == "filter_options"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_ENABLE_STOPS_AT_FILTER: True},
+        )
+        assert result["step_id"] == "stops_at"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_STOPS_AT: "Howth"}
+        )
+
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    store = get_stops_store(hass)
+    assert await store.async_lookup("PEARS", None) == ["Bray", "Howth"]
+
+
+async def test_stops_at_step_survives_persistence_failure(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A persisting store failure warns but never dead-ends stops-at setup."""
+    failing_store = MagicMock()
+    failing_store.async_record = AsyncMock(side_effect=OSError("disk full"))
+
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[_mock_train()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            return_value=["Bray", "Howth"],
+        ),
+        patch(
+            "custom_components.irish_rail.config_flow.get_stops_store",
+            return_value=failing_store,
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+        assert result["step_id"] == "filter_options"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_ENABLE_STOPS_AT_FILTER: True}
+        )
+        assert result["step_id"] == "stops_at"
+        # The live-discovered stops are still offered despite the failure,
+        # so choosing one completes setup normally.
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_STOPS_AT: "Howth"}
+        )
+
+    failing_store.async_record.assert_awaited()
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_STOPS_AT] == "Howth"
+    assert "Could not persist discovered stops" in caplog.text
+
+
+async def test_stops_at_step_prefers_cached_matrix_when_live_unavailable(
+    hass: HomeAssistant,
+) -> None:
+    """With no samplable services, the learned matrix beats the full list."""
+    store = get_stops_store(hass)
+    assert await store.async_record("PEARS", None, ["Bray"]) is True
+
+    async def _empty_seed() -> dict[str, Any]:
+        return {}
+
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[_mock_train()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            side_effect=IrishRailConnectionError,
+        ),
+        patch(
+            "custom_components.irish_rail.config_flow.async_load_bundled_stops_matrix",
+            new=_empty_seed,
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_ENABLE_STOPS_AT_FILTER: True},
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "stops_at"
+
+        schema = result["data_schema"].schema
+        stops_at_key = next(
+            k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
+        )
+        # Cached bucket offered instead of the full national station list.
+        assert set(schema[stops_at_key].container) == {"All", "Bray"}
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_STOPS_AT: "All"}
+        )
+
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert CONF_STOPS_AT not in result["data"]
+
+
+async def test_stops_at_step_uses_bundled_seed_before_full_list(
+    hass: HomeAssistant,
+) -> None:
+    """The bundled seed matrix is consulted before degrading to all stations."""
+    async def _pearse_seed() -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "stations": {
+                "PEARS": {
+                    "updated": "2026-08-25T12:00:00+00:00",
+                    "directions": {"_all": ["Howth"]},
+                }
+            },
+        }
+
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[_mock_train()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            side_effect=IrishRailConnectionError,
+        ),
+        patch(
+            "custom_components.irish_rail.config_flow.async_load_bundled_stops_matrix",
+            new=_pearse_seed,
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_ENABLE_STOPS_AT_FILTER: True},
+        )
+        assert result["step_id"] == "stops_at"
+
+        schema = result["data_schema"].schema
+        stops_at_key = next(
+            k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
+        )
+        # Seed bucket offered instead of the full national station list.
+        assert set(schema[stops_at_key].container) == {"All", "Howth"}
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_STOPS_AT: "Howth"}
+        )
+
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_STOPS_AT] == "Howth"
+
+
+async def test_stops_matrix_cache_is_direction_scoped(hass: HomeAssistant) -> None:
+    """A cached bucket is only offered for its own direction."""
+    store = get_stops_store(hass)
+    assert await store.async_record("PEARS", "Northbound", ["Howth"]) is True
+
+    async def _empty_seed() -> dict[str, Any]:
+        return {}
+
+    with (
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            return_value=[_mock_train()],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_directions",
+            return_value=["Northbound", "Southbound"],
+        ),
+        patch(
+            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            side_effect=IrishRailConnectionError,
+        ),
+        patch(
+            "custom_components.irish_rail.config_flow.async_load_bundled_stops_matrix",
+            new=_empty_seed,
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                CONF_ENABLE_DIRECTION_FILTER: True,
+                CONF_ENABLE_STOPS_AT_FILTER: True,
+            },
+        )
+        assert result["step_id"] == "directions"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"direction": "Southbound"}
+        )
+        assert result["step_id"] == "stops_at"
+
+        schema = result["data_schema"].schema
+        stops_at_key = next(
+            k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
+        )
+        # The Northbound cache must never leak into a Southbound setup.
+        assert set(schema[stops_at_key].container) == {"All", "Dublin Pearse"}
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_STOPS_AT: "All"}
+        )
+
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_DIRECTION] == "Southbound"

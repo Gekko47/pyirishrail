@@ -34,6 +34,8 @@ from .const import (
     SERVICE_HOURS_END_HOUR,
     SERVICE_HOURS_START_HOUR,
 )
+from .health import get_health_monitor
+from .store import get_stops_store
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -237,6 +239,15 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
         hour = dt_util.now(DUBLIN_TZ).hour
         return SERVICE_HOURS_START_HOUR <= hour < SERVICE_HOURS_END_HOUR
 
+    def _health_monitor_is_healthy(self) -> bool:
+        """Return True when a shared health probe recently succeeded.
+
+        Unit-level coordinators built without full entry setup have no
+        shared monitor; they keep the legacy conservative behaviour.
+        """
+        monitor = get_health_monitor(self.hass)
+        return monitor is not None and monitor.recently_confirmed_healthy
+
     def _async_update_empty_data_issue(self, trains: list[TrainDueTime]) -> None:
         """Raise or clear the persistent-empty-data repair issue.
 
@@ -248,6 +259,11 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
         count. The issue is created exactly once per streak and removed on
         the first refresh that returns actual trains (Gold rule
         ``repair-issues``; roadmap Phase 3).
+
+        When the shared API-health monitor confirms the RTPI API answered a
+        recent probe, an empty result here is classified as "no scheduled
+        services within the look-ahead window": no issue is raised, any
+        already-open one is cleared immediately, and the streak resets.
         """
         if trains:
             self._empty_streak = 0
@@ -268,6 +284,34 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
                     self.station_name,
                     self.station_code,
                 )
+            return
+
+        # A confirmed-recently-healthy API means the empty result reflects
+        # scheduling reality (nothing due inside the look-ahead window),
+        # not an integration or schema problem: suppress the repair issue,
+        # clear any stale one right away, and reset the streak.
+        if self._health_monitor_is_healthy():
+            self._empty_streak = 0
+            self._empty_issue_reported = False
+            issue_id = empty_data_issue_id(self.config_entry)
+            if (
+                ir.async_get(self.hass).async_get_issue(DOMAIN, issue_id)
+                is not None
+            ):
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+                _LOGGER.info(
+                    "Station %s (%s) has no trains because the Irish Rail "
+                    "API reports no scheduled services in the look-ahead "
+                    "window; cleared the persistent-empty-data issue",
+                    self.station_name,
+                    self.station_code,
+                )
+            _LOGGER.debug(
+                "Station %s (%s) returned no trains while the API is "
+                "healthy: nothing scheduled in the look-ahead window",
+                self.station_name,
+                self.station_code,
+            )
             return
 
         if not self._in_service_hours():
@@ -334,4 +378,53 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
             self._failure_streak = 0
 
         self._async_update_empty_data_issue(trains)
+        await self._async_learn_downstream_stops()
         return trains
+
+    async def _async_learn_downstream_stops(self) -> None:
+        """Merge stops observed this poll into the persistent stops matrix.
+
+        While a "stops_at" filter is active, pruning already fetches each
+        candidate's movement history; :meth:`IrishRailClient._async_prune_trains`
+        records the journey-scoped downstream stops it saw in
+        ``client.last_downstream_stop_names`` at zero extra API cost. Merging
+        them here keeps the config flow's option list current ("static, but
+        routinely checked and updated") without any additional requests.
+        Persistence failures are logged and never fail the poll: the matrix
+        is an optimization over live sampling, not a data source of record.
+        """
+        if resolve_stops_at(self.config_entry) is None:
+            return
+        # Only polls that actually pruned candidates carry observations; an
+        # empty due-list has nothing new to learn either way.
+        downstream = self.client.last_downstream_stop_names
+        if not downstream:
+            _LOGGER.debug(
+                "No downstream stops observed for %s (%s) this poll",
+                self.station_name,
+                self.station_code,
+            )
+            return
+        try:
+            changed = await get_stops_store(self.hass).async_record(
+                self.station_code,
+                self.direction,
+                sorted(downstream),
+            )
+        except Exception:
+            # Deliberate broad guard: any storage failure must degrade to
+            # "matrix not updated", never to a failed coordinator refresh.
+            _LOGGER.warning(
+                "Could not persist observed stops for %s (%s)",
+                self.station_name,
+                self.station_code,
+                exc_info=True,
+            )
+            return
+        if changed:
+            _LOGGER.debug(
+                "Stops matrix updated for %s (%s, direction=%s)",
+                self.station_name,
+                self.station_code,
+                self.direction,
+            )

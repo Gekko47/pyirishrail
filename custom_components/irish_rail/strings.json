@@ -44,12 +44,12 @@
       },
       "stops_at": {
         "title": "\"Stops at\" filter for {station}",
-        "description": "Stops currently served by the selected services at {station}.",
+        "description": "Only stations that the selected services actually reach after {station} are offered.",
         "data": {
           "stops_at": "\"Stops at\" filter"
         },
         "data_description": {
-          "stops_at": "Choose All to disable the filter. If no live services could be sampled, the full station list is offered instead."
+          "stops_at": "Choose All to disable the filter. Options come from services currently due; when none can be sampled right now, recently observed stops or the bundled reference data is used instead. Only as a last resort is the full station list offered."
         }
       },
       "reconfigure": {
@@ -91,6 +91,16 @@
     }
   },
   "entity": {
+    "binary_sensor": {
+      "status": {
+        "name": "Status"
+      }
+    },
+    "button": {
+      "rebuild_stops_matrix": {
+        "name": "Rebuild stops at matrix"
+      }
+    },
     "sensor": {
       "next_train_due": {
         "name": "Next train due"

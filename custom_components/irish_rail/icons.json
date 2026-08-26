@@ -1,5 +1,15 @@
 {
   "entity": {
+    "binary_sensor": {
+      "status": {
+        "default": "mdi:api"
+      }
+    },
+    "button": {
+      "rebuild_stops_matrix": {
+        "default": "mdi:database-refresh"
+      }
+    },
     "sensor": {
       "next_train_due": {
         "default": "mdi:train"

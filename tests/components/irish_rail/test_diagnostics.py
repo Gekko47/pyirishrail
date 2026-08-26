@@ -8,10 +8,15 @@ from unittest.mock import patch
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.irish_rail.const import (
+    DOMAIN,
+    GLOBAL_LAST_REBUILD_KEY,
+)
 from custom_components.irish_rail.diagnostics import (
     _mask_identifier,
     async_get_config_entry_diagnostics,
 )
+from custom_components.irish_rail.matrix_rebuild import RebuildResult
 
 
 async def test_config_entry_diagnostics(hass: HomeAssistant) -> None:
@@ -122,3 +127,35 @@ async def test_diagnostics_redacts_sensitive_options(hass: HomeAssistant) -> Non
     assert result["entry"]["options"]["station_code"] == "**REDACTED**"
     assert result["entry"]["options"]["scan_interval"] == 120
     assert result["coordinator"]["last_update_success"] is True
+
+
+async def test_diagnostics_reports_last_rebuild(
+    hass: HomeAssistant,
+) -> None:
+    """The most recent stops-matrix rebuild outcome is surfaced in the report."""
+    entry = MockConfigEntry(
+        domain="irish_rail",
+        title="Dublin Pearse",
+        data={"station": "Dublin Pearse", "station_code": "PEARS"},
+        unique_id="PEARS_northbound",
+    )
+    entry.add_to_hass(hass)
+
+    rebuild = RebuildResult(
+        total_stations=5,
+        sampled=4,
+        skipped=1,
+        stops_added=3,
+        started="2026-01-01T00:00:00+00:00",
+        finished="2026-01-01T00:01:00+00:00",
+        duration_seconds=58.0,
+    )
+    hass.data.setdefault(DOMAIN, {})[GLOBAL_LAST_REBUILD_KEY] = rebuild
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+
+    # No monitor runs without a full entry setup, so API health stays None.
+    assert result["api_health"] is None
+    assert result["stops_matrix_rebuild"]["total_stations"] == 5
+    assert result["stops_matrix_rebuild"]["stops_added"] == 3
+    assert "error" not in result["stops_matrix_rebuild"]

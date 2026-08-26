@@ -1,6 +1,7 @@
 """Constants for the Irish Rail integration."""
 
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 import aiohttp
 
@@ -75,3 +76,54 @@ MAX_CONCURRENT_MOVEMENT_LOOKUPS = 5
 # filtering; failed lookups are never cached. Entries for other dates are
 # evicted lazily once the cap is exceeded.
 MOVEMENT_CACHE_MAX_ENTRIES = 1024
+
+# "Stops at" option discovery (roadmap 4.8). Live sampling of due trains is
+# the source of truth; its results are persisted per install in a versioned
+# Store file and layered over a bundled seed matrix so the config flow can
+# still offer valid options when no services are currently due (e.g.
+# overnight). The seed file lives inside the integration directory because
+# HACS installs only that folder.
+STOPS_MATRIX_FILENAME = "stops_matrix.json"
+
+# ── Shared API-health infrastructure ────────────────────────────────────────
+# Both global entities (connectivity binary_sensor + stops-matrix rebuild
+# button) hang off ONE synthetic hub device, so several config entries never
+# duplicate them. The first loaded config entry "claims" providership (see
+# health.py) for the lifetime of the Home Assistant session; if that entry is
+# unloaded the globals disappear with it until reload/restart rather than
+# fighting over entity-registry ownership mid-session.
+API_DEVICE_ID = "irish_rail_api"
+
+# Fixed unique IDs (not derived from any config entry unique_id) so registry
+# identity survives reloads and ownership changes alike.
+GLOBAL_HEALTH_UNIQUE_ID = "irish_rail_api_connectivity"
+GLOBAL_REBUILD_UNIQUE_ID = "irish_rail_rebuild_stops_matrix"
+
+# How often the reachability probe fires. Independent from station polling
+# because its job is distinguishing "the whole API is down" from "this
+# station has nothing scheduled in the RTPI look-ahead window".
+HEALTH_CHECK_INTERVAL = timedelta(minutes=5)
+
+# Station code used by the connectivity probe. Probing one lightweight
+# single-station poll (a small XML document of its due trains) is far
+# cheaper than fetching the whole ~155-record station list every interval
+# and is every bit as conclusive for "did the API answer?". Dublin Pearse
+# is a permanent major terminus, and the probe treats any successful
+# response -- even one with no trains currently due -- as healthy, so it
+# never depends on a service actually being scheduled.
+HEALTH_PROBE_STATION_CODE = "PEARS"
+
+# Pause between station samples during a stops-matrix rebuild, mirroring
+# scripts/build_stops_matrix.py's polite pacing against the public API.
+REBUILD_DELAY_SECONDS = 0.3
+
+# Keys under ``hass.data[DOMAIN]`` for the shared-global runtime objects.
+HEALTH_MONITOR_INSTANCE = "api_health_monitor"
+GLOBAL_PROVIDER_KEY = "global_provider_entry_id"
+# Stores the most recent RebuildResult dict (from button.py) so diagnostics
+# can report the last stops-matrix rebuild outcome without importing it.
+GLOBAL_LAST_REBUILD_KEY = "global_last_result"
+
+# Irish civil-time zone shared by service-hours gating and rebuild dating;
+# host-installed Home Assistant instances abroad must still follow Dublin.
+DUBLIN_TZ = ZoneInfo("Europe/Dublin")

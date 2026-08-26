@@ -136,6 +136,95 @@ def _find_tag_text(element: Element, tag_name: str) -> str | None:
     return None
 
 
+def _scoped_journey_stops(
+    movements: list[TrainMovement],
+    journey_destination: str | None,
+    station_code: str | None = None,
+    station_name: str | None = None,
+) -> list[TrainMovement]:
+    """Return the stops of the train's current journey past the station.
+
+    ``getTrainMovementsXML`` reports every movement of a train code for the
+    whole day. A train code routinely operates several journeys per day —
+    including return legs in the opposite direction — so using the raw list
+    as "where does this service go?" wrongly offers upstream stops and stops
+    belonging to other journeys entirely.
+
+    Three case-insensitive cuts fix that:
+
+    1. **Journey scoping** — movement rows carrying the same ``TrainDestination``
+       the due-train record reports, so rows whose destination matches the
+       candidate train's due destination isolate the current journey. When no
+       row matches, all rows are kept rather than returning nothing; correctness
+       degrades gracefully to the pre-scoping behavior instead of inventing
+       semantics.
+    2. **Downstream cut** — within the matched rows, everything up to and
+       including the monitored station is dropped by matching the station's
+       code first and its display name second. Only stations reached *after*
+       the monitored station remain.
+    3. **Contiguous-run scoping** — a train code routinely operates the *same*
+       route several times a day, so several runs of rows can share the
+       destination. The downstream cut is therefore additionally limited to the
+       contiguous run (a single journey) containing the matched station, so the
+       stops of later same-day journeys never leak into the result. Rows of one
+       run are adjacent in the ``movements`` history; rows belonging to
+       separate runs are separated there by the other direction's now filtered
+       rows.
+
+    If the monitored station cannot be located at all, the (journey-scoped)
+    rows are returned uncut: an unmatched station must not silently empty
+    the result.
+    """
+    rows = list(movements)
+    # Position of each retained row within ``movements`` (the whole-day
+    # history). Consecutive rows of one journey are adjacent here; rows
+    # belonging to separate same-destination journeys are not, because the
+    # other journeys' (now destination-filtered) rows sat between them.
+    row_positions = list(range(len(rows)))
+    destination_cf = (journey_destination or "").casefold()
+    if destination_cf:
+        matched_indices = [
+            index
+            for index, movement in enumerate(movements)
+            if (movement.destination or "").casefold() == destination_cf
+        ]
+        if matched_indices:
+            rows = [movements[index] for index in matched_indices]
+            row_positions = matched_indices
+
+    code_cf = (station_code or "").casefold()
+    name_cf = (station_name or "").casefold()
+    cut_index: int | None = None
+    if code_cf or name_cf:
+        for index, movement in enumerate(rows):
+            location_code_cf = (movement.location_code or "").casefold()
+            location_cf = (movement.location or "").casefold()
+            if (code_cf and location_code_cf == code_cf) or (
+                name_cf and location_cf == name_cf
+            ):
+                cut_index = index
+                break
+    if cut_index is None:
+        return rows
+
+    # Bound the downstream cut to the contiguous run containing the matched
+    # station: slicing from ``cut_index + 1`` across the whole list would leak
+    # stops of later same-day journeys that happen to share the destination.
+    run_start = cut_index
+    while (
+        run_start > 0
+        and row_positions[run_start] == row_positions[run_start - 1] + 1
+    ):
+        run_start -= 1
+    run_end = cut_index + 1
+    while (
+        run_end < len(rows)
+        and row_positions[run_end] == row_positions[run_end - 1] + 1
+    ):
+        run_end += 1
+    return rows[cut_index + 1 : run_end]
+
+
 class IrishRailClient:
     """Client for fetching data from the Irish Rail RTPI API."""
 
@@ -145,6 +234,11 @@ class IrishRailClient:
         # Movement histories keyed by ``(train_code, date)``; see
         # MOVEMENT_CACHE_MAX_ENTRIES in const.py.
         self._movement_cache: dict[tuple[str, str], list[TrainMovement]] = {}
+        # Downstream stop names observed during the most recent stops-at
+        # pruning pass (empty unless a pass ran). The coordinator merges
+        # these into the persistent "stops at" matrix so option discovery
+        # keeps healing itself from ordinary polling; see store.py.
+        self.last_downstream_stop_names: frozenset[str] = frozenset()
 
     async def _request(
         self, endpoint: str, params: dict[str, str] | None = None
@@ -240,7 +334,11 @@ class IrishRailClient:
 
         if direction or destination or stops_at:
             return await self._async_prune_trains(
-                trains, direction=direction, destination=destination, stops_at=stops_at
+                trains,
+                direction=direction,
+                destination=destination,
+                stops_at=stops_at,
+                station_name=station_name,
             )
 
         return trains
@@ -265,7 +363,11 @@ class IrishRailClient:
 
         if direction or destination or stops_at:
             return await self._async_prune_trains(
-                trains, direction=direction, destination=destination, stops_at=stops_at
+                trains,
+                direction=direction,
+                destination=destination,
+                stops_at=stops_at,
+                station_code=station_code,
             )
 
         return trains
@@ -305,9 +407,12 @@ class IrishRailClient:
         ``station_code`` (optionally narrowed to one direction); each
         distinct train code is resolved to its route through the per-day
         cached :meth:`async_get_train_stops` under the shared bounded
-        semaphore. A route whose history cannot be fetched is skipped
-        rather than failing the union. The departure station itself is
-        excluded when its name is supplied via ``exclude`` (every route
+        semaphore. Routes are scoped to each train's current journey and cut
+        downstream of ``station_code`` via :func:`_scoped_journey_stops`, so
+        the union only contains stations the selected services actually
+        reach after this station. A route whose history cannot be fetched is
+        skipped rather than failing the union. The departure station itself
+        is excluded when its name is supplied via ``exclude`` (every route
         trivially contains it), and remaining stop names are deduplicated
         case-insensitively (first casing wins) and sorted case-insensitively.
         """
@@ -329,8 +434,14 @@ class IrishRailClient:
 
         exclude_lower = exclude.lower() if exclude else None
         seen: dict[str, str] = {}
-        for stops in routes:
-            for stop in stops:
+        for train, route in zip(trains, routes, strict=True):
+            journey = _scoped_journey_stops(
+                route,
+                train.destination,
+                station_code=station_code,
+                station_name=exclude,
+            )
+            for stop in journey:
                 name = stop.location
                 if not name or (
                     exclude_lower and name.lower() == exclude_lower
@@ -464,6 +575,8 @@ class IrishRailClient:
         direction: str | None = None,
         destination: str | None = None,
         stops_at: str | None = None,
+        station_code: str | None = None,
+        station_name: str | None = None,
     ) -> list[TrainDueTime]:
         """Filter list of due trains based on options.
 
@@ -476,20 +589,38 @@ class IrishRailClient:
         :meth:`async_get_train_stops` and are served from its per-day cache;
         a candidate whose movement history cannot be fetched is pruned
         rather than failing the whole poll.
+
+        Matching is journey-scoped like :func:`_scoped_journey_stops`: a
+        candidate only counts as "stopping at" the target when the target is
+        reached *after* the monitored station on its current journey, not
+        merely somewhere in the train code's whole-day history. Successfully
+        resolved journeys are recorded in ``last_downstream_stop_names`` so
+        callers can learn the monitored station's reachable stops from
+        ordinary polling.
         """
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_MOVEMENT_LOOKUPS)
+        # Reset per pass: the observations must describe this poll only, so a
+        # stale set from an earlier poll can never be merged by callers.
+        self.last_downstream_stop_names = frozenset()
 
-        async def _movement_matches(train_code: str, target: str) -> bool:
-            """Return True when the train's route includes the target stop."""
+        async def _journey_stops(
+            train_code: str, journey_destination: str
+        ) -> list[TrainMovement]:
+            """Return the train's current-journey stops past the station."""
             try:
                 async with semaphore:
-                    stops = await self.async_get_train_stops(train_code)
+                    movements = await self.async_get_train_stops(train_code)
             except IrishRailError:
                 # A movement-history failure prunes this train only; the
                 # lookup retries naturally on the next poll because failures
                 # are never cached.
-                return False
-            return any(stop.location.lower() == target for stop in stops)
+                return []
+            return _scoped_journey_stops(
+                movements,
+                journey_destination,
+                station_code=station_code,
+                station_name=station_name,
+            )
 
         def _passes_local_filters(train: TrainDueTime) -> bool:
             """Return True when direction/destination filters keep the train."""
@@ -500,27 +631,29 @@ class IrishRailClient:
             )
 
         # One lookup per distinct candidate train code (codes repeat if the
-        # API ever lists the same service twice).
-        lookup_targets: dict[str, str] = {}
+        # API ever lists the same service twice); each candidate remembers
+        # its own journey destination for the scoping cut.
+        candidates: dict[str, tuple[str, str]] = {}
         if stops_at is not None:
             target = stops_at.lower()
             for train in trains:
                 if (
                     _passes_local_filters(train)
                     and target != train.destination.lower()
-                    and train.code not in lookup_targets
+                    and train.code not in candidates
                 ):
-                    lookup_targets[train.code] = target
+                    candidates[train.code] = (target, train.destination)
 
         outcomes = await asyncio.gather(
             *(
-                _movement_matches(code, tgt)
-                for code, tgt in lookup_targets.items()
+                _journey_stops(code, journey_destination)
+                for code, (_, journey_destination) in candidates.items()
             ),
             return_exceptions=True,
         )
         matches: dict[str, bool] = {}
-        for code, outcome in zip(lookup_targets.keys(), outcomes, strict=True):
+        observed: set[str] = set()
+        for code, outcome in zip(candidates.keys(), outcomes, strict=True):
             if isinstance(outcome, BaseException):
                 # Unexpected failures (e.g. a parse bug raising something
                 # other than IrishRailError) prune this train exactly like
@@ -533,8 +666,16 @@ class IrishRailClient:
                     exc_info=outcome,
                 )
                 matches[code] = False
-            else:
-                matches[code] = outcome
+                continue
+            matches[code] = any(
+                stop.location.lower() == candidates[code][0] for stop in outcome
+            )
+            observed.update(
+                stop.location for stop in outcome if stop.location
+            )
+
+        if observed:
+            self.last_downstream_stop_names = frozenset(observed)
 
         pruned_data: list[TrainDueTime] = []
         for train in trains:

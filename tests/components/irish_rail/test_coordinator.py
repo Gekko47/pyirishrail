@@ -20,6 +20,9 @@ from custom_components.irish_rail.api import (
 )
 from custom_components.irish_rail.const import (
     BACKOFF_MULTIPLIER,
+    CONF_STATION,
+    CONF_STATION_CODE,
+    CONF_STOPS_AT,
     DOMAIN,
     EMPTY_DATA_ISSUE_THRESHOLD,
 )
@@ -821,3 +824,83 @@ def test_previous_unique_id_none_without_station_code(
     # Sanity check: a normal entry still produces its identity.
     healthy = IrishRailDataUpdateCoordinator(hass, mock_api_client, _entry_with())
     assert healthy.previous_unique_id() == "PEARS_northbound"
+
+
+# ── Downstream-stop learning persistence guards ─────────────────────────────
+
+
+def _stops_at_entry(hass: HomeAssistant) -> MockConfigEntry:
+    """Build an entry with an active ``stops_at`` filter."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Dublin Pearse",
+        data={
+            CONF_STATION: "Dublin Pearse",
+            CONF_STATION_CODE: "PEARS",
+            CONF_STOPS_AT: "Bray",
+        },
+        unique_id="PEARS_stopsat",
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+async def test_learn_downstream_stops_survives_storage_failure(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A persisting store failure warns but never breaks the poll path."""
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, _stops_at_entry(hass)
+    )
+    mock_api_client.last_downstream_stop_names = {"Greystones"}
+
+    failing_store = MagicMock()
+    failing_store.async_record = AsyncMock(side_effect=OSError("disk full"))
+
+    with (
+        patch(
+            "custom_components.irish_rail.coordinator.get_stops_store",
+            return_value=failing_store,
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        await coordinator._async_learn_downstream_stops()
+
+    failing_store.async_record.assert_awaited_once()
+    call_args = failing_store.async_record.await_args.args
+    assert call_args[0] == "PEARS"
+    assert call_args[1] == coordinator.direction
+    assert call_args[2] == ["Greystones"]
+    assert "Could not persist observed stops" in caplog.text
+
+
+async def test_learn_downstream_stops_logs_matrix_updates(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A changed matrix is recorded with sorted stops and a debug line."""
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, _stops_at_entry(hass)
+    )
+    mock_api_client.last_downstream_stop_names = {"Bray", "Greystones"}
+
+    changing_store = MagicMock()
+    changing_store.async_record = AsyncMock(return_value=True)
+
+    with (
+        patch(
+            "custom_components.irish_rail.coordinator.get_stops_store",
+            return_value=changing_store,
+        ),
+        caplog.at_level(logging.DEBUG),
+    ):
+        await coordinator._async_learn_downstream_stops()
+
+    changing_store.async_record.assert_awaited_once()
+    call_args = changing_store.async_record.await_args.args
+    assert call_args[0] == "PEARS"
+    assert call_args[2] == ["Bray", "Greystones"]
+    assert "Stops matrix updated" in caplog.text

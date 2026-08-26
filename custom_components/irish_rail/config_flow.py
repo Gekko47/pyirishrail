@@ -34,6 +34,7 @@ from .const import (
     MIN_NUM_TRAINS,
     MIN_SCAN_INTERVAL_SECONDS,
 )
+from .store import async_load_bundled_stops_matrix, get_stops_store, lookup_in_matrix
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -359,6 +360,37 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
             _LOGGER.warning("Could not discover stops for %s: %s", station_code, err)
             stops = None
 
+        if stops:
+            # Live discovery succeeded: heal the per-install matrix so the
+            # answer survives quiet hours (see store.py). A persistence
+            # failure must not dead-end setup — the live-discovered stops
+            # already found are still offered below, so degrade to a warning.
+            try:
+                await get_stops_store(self.hass).async_record(
+                    station_code, self._direction, stops
+                )
+            except Exception:
+                # Deliberate broad guard mirroring the coordinator: any
+                # storage failure degrades to "matrix not persisted", never
+                # to a failed setup step.
+                _LOGGER.warning(
+                    "Could not persist discovered stops for %s (%s)",
+                    station_name,
+                    station_code,
+                    exc_info=True,
+                )
+        else:
+            # No live services to sample (or discovery failed): fall back to
+            # this install's learned matrix, then the bundled seed, and only
+            # then degrade to the full cached station list instead of
+            # dead-ending setup.
+            stops = await get_stops_store(self.hass).async_lookup(
+                station_code, self._direction
+            )
+            if not stops:
+                seed = await async_load_bundled_stops_matrix()
+                stops = lookup_in_matrix(seed, station_code, self._direction)
+
         field: dict[Any, Any]
         if stops:
             options: dict[str, str] = {NO_FILTER_SENTINEL: NO_FILTER_SENTINEL}
@@ -370,8 +402,6 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
             }
         else:
-            # No live services to sample (or discovery failed): degrade to
-            # the full cached station list instead of dead-ending setup.
             field = build_stops_at_schema_field(self._stations, NO_FILTER_SENTINEL)
 
         schema = vol.Schema({**field})
