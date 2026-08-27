@@ -1269,8 +1269,10 @@ async def test_reconfigure_direction_change_drops_old_entities_and_device(
             ent_reg, entry.entry_id
         )
     ]
-    # Four station sensors plus the two shared globals (health sensor +
-    # rebuild button), which live on the hub device owned by this entry.
+    # Four station sensors plus the two shared service entities (health
+    # sensor + rebuild button) registered with this entry via the
+    # binary_sensor / button platforms. They carry no DeviceInfo so they
+    # never appear on any per-station device.
     assert len(old_entity_ids) == 6
     old_device_id = device_registry.async_get_device_id_by_identifier(
         hass, (DOMAIN, "PEARS_northbound"), config_entry_id=entry.entry_id
@@ -1307,8 +1309,8 @@ async def test_reconfigure_direction_change_drops_old_entities_and_device(
     assert result["reason"] == "reconfigure_successful"
 
     # The old station-sensor entities are gone from the live registry...
-    # (the two shared hub entities are excluded: they deliberately survive
-    # reconfigures, pinned to their owning entry by design)
+    # (the two shared service entities are excluded: they deliberately
+    # survive reconfigures, registered with this entry by design)
     for registry_entry in entity_registry.async_entries_for_config_entry(
         ent_reg, entry.entry_id
     ):
@@ -1325,7 +1327,7 @@ async def test_reconfigure_direction_change_drops_old_entities_and_device(
     assert len(deleted) == 4
 
     # The four new station-sensor entities carry the new identity; the two
-    # shared globals keep their fixed unique IDs on the same entry.
+    # shared service entities keep their fixed unique IDs on the same entry.
     live = entity_registry.async_entries_for_config_entry(ent_reg, entry.entry_id)
     southbound_sensors = [
         registry_entry
@@ -1512,7 +1514,8 @@ async def test_reconfigure_leaves_sibling_direction_entries_untouched(
 
     # The reconfigured side behaved as usual: its previous identity's sensor
     # entities were removed (restorable trash), replaced by four southbound
-    # ones; the two shared globals it owns simply persist across the change.
+    # ones; the two shared service entities registered with this entry
+    # simply persist across the change.
     southbound_live = entity_registry.async_entries_for_config_entry(
         ent_reg, northbound.entry_id
     )

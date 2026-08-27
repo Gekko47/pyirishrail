@@ -205,12 +205,22 @@ with `aresponses` for HTTP mocking.
 - Data is specific to the Republic of Ireland and Northern Ireland rail network.
 - The "stops at" filter fetches each candidate train's route: one extra API request per newly seen train per day, served from a per-day cache afterwards. Lookups run concurrently with a small concurrency cap, keeping the added latency per poll bounded even at busy stations.
 
-## Global "Irish Rail API" device: health sensor and matrix rebuild button
+## Integration-level service entities: health sensor and matrix rebuild button
 
-Every config entry shares one synthetic **"Irish Rail API"** hub device that
-carries two integration-wide entities:
+Two integration-wide entities exist exactly once no matter how many station
+config entries you install, and are intentionally **not** attached to any
+device. They live on the integration's **Services** page (and the
+"Entities" tab) instead of on a per-station device card:
 
-### API connectivity sensor (`binary_sensor.<entry>_status`)
+- The connectivity binary sensor is tagged `EntityCategory.DIAGNOSTIC`.
+- The rebuild button is tagged `EntityCategory.CONFIG`.
+
+The first config entry to set up claims providership and registers both
+entities plus the `irish_rail.rebuild_stops_matrix` service. They vanish
+when that entry is removed and return when the next entry claims first;
+a reloaded existing entry picks them back up.
+
+### API connectivity sensor (`binary_sensor.irish_rail_api_connectivity`)
 A lightweight probe (`getAllStationsXML`) pings the RTPI API every 5 minutes
 (plus once at startup). While the probe confirms the API is reachable, an
 empty board at your station is treated as *no scheduled services inside the
@@ -223,7 +233,7 @@ RTPI look-ahead window* instead of a fault:
 If the health probe itself starts failing, the original warning behaviour
 returns so genuine outages are still surfaced.
 
-### Rebuild stops-at matrix button (`button.<entry>_rebuild_stops_matrix`)
+### Rebuild stops-at matrix button (`button.irish_rail_rebuild_stops_matrix`)
 Pressing this runs the equivalent of `scripts/build_stops_matrix.py`
 in-process, without a Home Assistant restart:
 
@@ -241,10 +251,6 @@ action is available as the service `irish_rail.rebuild_stops_matrix` for
 automations.
 
 Notes:
-- The global entities are provided exactly once no matter how many config
-  entries you have; they disappear while their owning entry is unloaded and
-  return when it is reloaded or another entry claims providership after a
-  removal.
 - Because `stops_matrix.json` lives inside the integration folder, a HACS
   update overwrites a runtime-rebuilt seed. The per-install learning cache
   (`irish_rail.stops_matrix.json` in HA storage) is unaffected; re-run the

@@ -1,0 +1,14 @@
+# Describes the service actions exposed by the Irish Rail integration.
+# Referenced by ``button.py`` which registers the matching service handler
+# at runtime; the file must exist or hassfest fails the integration
+# with ``[SERVICES] Registers services but has no services.yaml``.
+
+rebuild_stops_matrix:
+  name: Rebuild stops at matrix
+  description: >-
+    Rebuild the bundled "stops at" matrix by sampling every Irish Rail
+    station in the background. The job runs to completion and reports
+    progress and outcome in the matching button's state attributes. The
+    service is the automation-facing alias of pressing the
+    "Rebuild stops at matrix" button.
+

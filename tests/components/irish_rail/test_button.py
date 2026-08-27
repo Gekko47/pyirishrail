@@ -144,6 +144,10 @@ async def test_press_runs_rebuild_and_reports_attributes(
 
     registry = er.async_get(hass)
     assert registry.entities[entity_id].unique_id == GLOBAL_REBUILD_UNIQUE_ID
+    # The button is an integration-level service entity: it must not be
+    # attached to any device, so it shows up on the integration's Services
+    # page rather than inside a per-station device.
+    assert registry.entities[entity_id].device_id is None
     assert hass.data[DOMAIN]["global_last_result"].total_stations == 1
 
 

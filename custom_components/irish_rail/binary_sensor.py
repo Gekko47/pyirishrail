@@ -1,9 +1,10 @@
 """Global Irish Rail API connectivity binary sensor.
 
-The integration's hub entity: one synthetic "Irish Rail API" device hosts
-this connectivity sensor plus the stops-matrix rebuild button regardless of
-how many station config entries are installed, with whichever config entry
-claims providership first supplying them (see ``health.py``).
+Integration-level service entity (no device) reporting whether the Irish Rail
+RTPI API answered its latest reachability probe. Registered exactly once
+per Home Assistant session by whichever config entry claims providership
+first (see ``health.py``); the ``DIAGNOSTIC`` entity category keeps it
+out of primary UI surfaces so per-station devices never have to carry it.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import GLOBAL_HEALTH_UNIQUE_ID
@@ -25,7 +27,6 @@ from .health import (
     async_claim_global_provider,
     ensure_health_monitor_started,
     get_health_monitor,
-    global_device_info,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -39,12 +40,12 @@ class IrishRailApiConnectivitySensor(BinarySensorEntity):
     _attr_translation_key = "status"
     _attr_unique_id = GLOBAL_HEALTH_UNIQUE_ID
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, hass: HomeAssistant, monitor: IrishRailApiHealthMonitor) -> None:
         """Initialize the global connectivity sensor."""
         self.hass = hass
         self._monitor = monitor
-        self._attr_device_info = global_device_info()
 
     async def async_added_to_hass(self) -> None:
         """Register for monitor updates while this entity is alive."""

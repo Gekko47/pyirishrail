@@ -86,13 +86,13 @@ MOVEMENT_CACHE_MAX_ENTRIES = 1024
 STOPS_MATRIX_FILENAME = "stops_matrix.json"
 
 # ── Shared API-health infrastructure ────────────────────────────────────────
-# Both global entities (connectivity binary_sensor + stops-matrix rebuild
-# button) hang off ONE synthetic hub device, so several config entries never
-# duplicate them. The first loaded config entry "claims" providership (see
-# health.py) for the lifetime of the Home Assistant session; if that entry is
-# unloaded the globals disappear with it until reload/restart rather than
+# The connectivity binary_sensor and the stops-matrix rebuild button are
+# registered as integration-level service entities (no device, with
+# EntityCategory.DIAGNOSTIC / CONFIG respectively) so the per-station devices
+# never have to carry them. The first loaded config entry "claims" providership
+# (see health.py) for the lifetime of the Home Assistant session; if that entry
+# is unloaded the globals disappear with it until reload/restart rather than
 # fighting over entity-registry ownership mid-session.
-API_DEVICE_ID = "irish_rail_api"
 
 # Fixed unique IDs (not derived from any config entry unique_id) so registry
 # identity survives reloads and ownership changes alike.

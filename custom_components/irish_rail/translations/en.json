@@ -121,5 +121,11 @@
       "title": "No train data received for {station}",
       "description": "The Irish Rail API has returned no trains at this station for an extended period during service hours. This may indicate an API or schedule data change rather than a genuine quiet period. If it persists, check whether other stations still report data, then try reloading or re-adding the entry."
     }
+  },
+  "services": {
+    "rebuild_stops_matrix": {
+      "name": "Rebuild stops at matrix",
+      "description": "Rebuild the bundled \"stops at\" matrix by sampling every Irish Rail station in the background. The job runs to completion and reports progress and outcome in the matching button's state attributes. The service is the automation-facing alias of pressing the \"Rebuild stops at matrix\" button."
+    }
   }
 }

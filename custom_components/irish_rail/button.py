@@ -1,10 +1,12 @@
 """Global button to rebuild the bundled "stops at" matrix at runtime.
 
-One press samples the whole network in-process (a port of
-``scripts/build_stops_matrix.py`` merged gap-fill style into
+Integration-level service entity (no device) registered exactly once per
+Home Assistant session by whichever config entry claims providership first
+(see ``health.py``). One press samples the whole network in-process (a port
+of ``scripts/build_stops_matrix.py`` merged gap-fill style into
 ``stops_matrix.json``) and refreshes the bundled-seed cache, all without a
-Home Assistant restart. Runs on the integration-wide "Irish Rail API" hub
-device next to the connectivity sensor.
+Home Assistant restart. The ``CONFIG`` entity category keeps it out of
+primary UI surfaces so per-station devices never have to carry it.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from typing import Any
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .api import IrishRailClient
@@ -23,7 +26,6 @@ from .const import DOMAIN, GLOBAL_LAST_REBUILD_KEY, GLOBAL_REBUILD_UNIQUE_ID
 from .health import (
     async_claim_global_provider,
     get_health_monitor,
-    global_device_info,
 )
 from .matrix_rebuild import RebuildResult, async_run_matrix_rebuild
 from .types import IrishRailRuntimeData
@@ -51,6 +53,7 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
     _attr_has_entity_name = True
     _attr_translation_key = "rebuild_stops_matrix"
     _attr_unique_id = GLOBAL_REBUILD_UNIQUE_ID
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, hass: HomeAssistant, client: IrishRailClient) -> None:
         """Initialize the rebuild button."""
@@ -59,7 +62,6 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
         self._lock = asyncio.Lock()
         self.running = False
         self.last_result: RebuildResult | None = None
-        self._attr_device_info = global_device_info()
 
     async def async_press(self) -> None:
         """Handle a press: run one guarded rebuild to completion."""

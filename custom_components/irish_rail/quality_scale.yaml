@@ -281,11 +281,13 @@ rules:
   devices:
     status: done
     comment: >
-      entity.py sets _attr_device_info on every entity with identifiers
-      (DOMAIN + config entry unique_id), station/direction name,
+      entity.py sets _attr_device_info on the four per-station sensors with
+      identifiers (DOMAIN + config entry unique_id), station/direction name,
       manufacturer "Iarnród Éireann / Irish Rail" and entry_type=
       DeviceEntryType.SERVICE, per the rule's guidance for service-type
-      devices.
+      devices. The two integration-level service entities (API connectivity
+      binary_sensor, stops-matrix rebuild button) intentionally have no
+      DeviceInfo and live on the integration's Services tab instead.
 
   discovery:
     status: exempt
@@ -339,19 +341,23 @@ rules:
   dynamic_devices:
     status: done
     comment: >
-      Device creation follows config entries dynamically: adding an entry
-      for a station/direction creates its service device immediately during
-      platform setup. The architecture has no hub or shared device list, so
-      no further devices can appear mid-life that would require listener-
-      based re-add logic.
+      Per-station device creation follows config entries dynamically: adding
+      an entry for a station/direction creates its service device immediately
+      during platform setup. The two integration-level service entities (API
+      connectivity binary_sensor, stops-matrix rebuild button) are static
+      service entities with no DeviceInfo; they appear under the integration's
+      Services tab and never on any per-station device, so no further
+      re-add listener logic is required.
 
   entity_category:
     status: done
     comment: >
-      Reviewed: all four entities are primary, user-facing train data
-      sensors for which the default category (None) is appropriate; no
-      diagnostic/config auxiliary entities exist, so no EntityCategory is
-      set anywhere in the package (verified by code search).
+      Reviewed: the four per-station sensors are primary user-facing train
+      data entities for which the default category (None) is appropriate.
+      The API connectivity binary_sensor is tagged EntityCategory.DIAGNOSTIC
+      and the stops-matrix rebuild button is tagged EntityCategory.CONFIG so
+      the UI treats them as integration-level service entities rather than
+      primary entities.
 
   entity_disabled_by_default:
     status: done

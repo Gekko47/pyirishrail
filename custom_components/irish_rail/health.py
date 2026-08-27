@@ -6,17 +6,17 @@ station config entries are installed:
 * the **connectivity binary sensor** driven by a periodic reachability probe;
 * the **stops-matrix rebuild button** (see ``matrix_rebuild.py``).
 
-Both are attached to one synthetic hub device and provided by whichever
-config entry *claims* providership first (arbitration below). This module
-hosts three concerns:
+Both are registered as integration-level service entities (no device, with
+``EntityCategory.DIAGNOSTIC`` / ``CONFIG`` respectively) by whichever config
+entry *claims* providership first (arbitration below). This module hosts
+two concerns:
 
 * :class:`IrishRailApiHealthMonitor` - pings a lightweight endpoint on a
   fixed interval and tracks recent reachability so the coordinator can tell
   "the whole API is down" apart from "this station simply has no services
   scheduled inside the RTPI look-ahead window";
 * providership arbitration for the global entities (sticky for the session,
-  transferred only when the owning entry is removed outright);
-* the shared hub-device :class:`DeviceInfo` factory.
+  transferred only when the owning entry is removed outright).
 """
 
 from __future__ import annotations
@@ -29,13 +29,11 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 from .api import IrishRailClient, IrishRailError
 from .const import (
-    API_DEVICE_ID,
     DOMAIN,
     GLOBAL_PROVIDER_KEY,
     HEALTH_CHECK_INTERVAL,
@@ -253,14 +251,3 @@ def async_claim_global_provider(hass: HomeAssistant, entry: ConfigEntry) -> bool
             return False
     domain_data[GLOBAL_PROVIDER_KEY] = entry.entry_id
     return True
-
-
-def global_device_info() -> DeviceInfo:
-    """Return the shared hub-device descriptor for the global entities."""
-    return DeviceInfo(
-        identifiers={(DOMAIN, API_DEVICE_ID)},
-        name="Irish Rail API",
-        manufacturer="Iarnród Éireann / Irish Rail",
-        model="Realtime Passenger Information API",
-        entry_type=DeviceEntryType.SERVICE,
-    )
