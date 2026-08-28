@@ -47,13 +47,23 @@ async def test_config_entry_diagnostics(hass: HomeAssistant) -> None:
     assert result["entry"]["unique_id"] == _mask_identifier("PEARS_northbound")
     assert result["entry"]["title"] != "**REDACTED**"
     assert result["entry"]["unique_id"] != "**REDACTED**"
-    # Station identifiers are redacted.
-    assert result["entry"]["data"]["station"] == "**REDACTED**"
-    assert result["entry"]["data"]["station_code"] == "**REDACTED**"
-    # Options are included and pass through the same redaction policy.
+    # Station identifiers are partially masked (so the maintainer can
+    # still tell which station the user is configuring) rather than
+    # fully redacted.
+    assert result["entry"]["data"]["station"] == _mask_identifier(
+        "Dublin Pearse"
+    )
+    assert result["entry"]["data"]["station_code"] == _mask_identifier("PEARS")
+    # Non-sensitive configuration choices pass through unchanged.
+    assert result["entry"]["data"]["direction"] == "Northbound"
+    # Options are included and pass through the same masking policy.
     assert "options" in result["entry"]
     assert result["coordinator"]["last_update_success"] is True
     assert result["coordinator"]["due_trains_count"] == 0
+    # The expanded coordinator diagnostic surface (issue #6) is present.
+    assert "last_exception" in result["coordinator"]
+    assert "failure_streak" in result["coordinator"]
+    assert "data_available" in result["coordinator"]
 
 
 # ── Redaction edge cases (roadmap Phase 3, Gold rule ``diagnostics``) ────────
@@ -93,9 +103,9 @@ async def test_diagnostics_without_runtime_data(hass: HomeAssistant) -> None:
     result = await async_get_config_entry_diagnostics(hass, entry)
 
     assert result["coordinator"] == {}
-    # Entry data still passes through redaction.
-    assert result["entry"]["data"]["station"] == "**REDACTED**"
-    assert result["entry"]["data"]["station_code"] == "**REDACTED**"
+    # Sensitive entry data is partially masked, not fully redacted.
+    assert result["entry"]["data"]["station"] == _mask_identifier("Cork Kent")
+    assert result["entry"]["data"]["station_code"] == _mask_identifier("KENT")
 
 
 async def test_diagnostics_redacts_sensitive_options(hass: HomeAssistant) -> None:
@@ -122,9 +132,13 @@ async def test_diagnostics_redacts_sensitive_options(hass: HomeAssistant) -> Non
 
     result = await async_get_config_entry_diagnostics(hass, entry)
 
-    # Sensitive option keys are redacted, non-sensitive ones kept useful.
-    assert result["entry"]["options"]["station"] == "**REDACTED**"
-    assert result["entry"]["options"]["station_code"] == "**REDACTED**"
+    # Sensitive option keys are partially masked; non-sensitive ones
+    # pass through unchanged so the maintainer can see the user's
+    # actual scan interval.
+    assert result["entry"]["options"]["station"] == _mask_identifier(
+        "Dublin Pearse"
+    )
+    assert result["entry"]["options"]["station_code"] == _mask_identifier("PEARS")
     assert result["entry"]["options"]["scan_interval"] == 120
     assert result["coordinator"]["last_update_success"] is True
 

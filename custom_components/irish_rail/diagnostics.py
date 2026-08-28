@@ -5,23 +5,25 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import (
     CONF_STATION,
     CONF_STATION_CODE,
-    CONF_STOPS_AT,
+    CONF_STATION_FILTER,
     DOMAIN,
     GLOBAL_LAST_REBUILD_KEY,
 )
 from .health import get_health_monitor
 from .types import IrishRailRuntimeData
 
-# Only truly sensitive fields are fully redacted. Entry-level identifiers
-# (title/unique_id) are kept useful for debugging by partial masking instead.
-TO_REDACT = {CONF_STATION, CONF_STATION_CODE, CONF_STOPS_AT}
+# Sensitive fields are partially masked (not fully redacted) so maintainers
+# can still tell what a user's setup looks like without exposing the full
+# station name. Non-sensitive configuration choices (scan interval, num
+# trains, direction, stops-at filter) are kept as-is because they are
+# never personally identifying.
+_SENSITIVE_KEYS = frozenset({CONF_STATION, CONF_STATION_CODE, CONF_STATION_FILTER})
 
 _MASK_PREFIX_LENGTH = 3
 _MASK_HASH_LENGTH = 8
@@ -40,6 +42,23 @@ def _mask_identifier(value: str | None) -> str | None:
     return f"{prefix}...{digest}"
 
 
+def _project_entry_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return a diagnostics-friendly view of entry ``data`` or ``options``.
+
+    Sensitive identifiers are partially masked, non-sensitive configuration
+    choices are kept as-is. ``None`` values and unknown keys are passed
+    through unchanged so newly-added options surface in the report without
+    a code change.
+    """
+    out: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in _SENSITIVE_KEYS and isinstance(value, str):
+            out[key] = _mask_identifier(value)
+        else:
+            out[key] = value
+    return out
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any]:
@@ -50,6 +69,14 @@ async def async_get_config_entry_diagnostics(
     if data is not None:
         coordinator = data.coordinator
         trains = coordinator.data or []
+        # The DataUpdateCoordinator base class exposes ``last_exception``
+        # (the most recent UpdateFailed reason) and ``last_update_success``
+        # (a bool). Capture both plus the configured scan interval, the
+        # failure-streak driving adaptive backoff, the effective backed-off
+        # interval, and whether the coordinator has ever produced data —
+        # a maintainer reading a "sensor stuck on unknown" report can
+        # finally tell whether the API is failing or the coordinator is
+        # wedged.
         coordinator_info = {
             "update_interval_seconds": (
                 coordinator.update_interval.total_seconds()
@@ -57,7 +84,14 @@ async def async_get_config_entry_diagnostics(
                 else None
             ),
             "last_update_success": coordinator.last_update_success,
+            "last_exception": (
+                str(coordinator.last_exception)
+                if coordinator.last_exception
+                else None
+            ),
+            "failure_streak": coordinator._failure_streak,
             "due_trains_count": len(trains),
+            "data_available": coordinator.data is not None,
         }
 
     monitor = get_health_monitor(hass)
@@ -71,10 +105,10 @@ async def async_get_config_entry_diagnostics(
             # diagnostics remain actionable.
             "title": _mask_identifier(entry.title),
             "unique_id": _mask_identifier(entry.unique_id),
-            "data": async_redact_data(dict(entry.data), TO_REDACT),
-            # Redact options through the same policy so any sensitive field
-            # added there later is covered automatically.
-            "options": async_redact_data(dict(entry.options), TO_REDACT),
+            "data": _project_entry_payload(dict(entry.data)),
+            # Non-sensitive options pass through unchanged; sensitive
+            # identifiers follow the same masking policy as ``data``.
+            "options": _project_entry_payload(dict(entry.options)),
         },
         "coordinator": coordinator_info,
         "api_health": health_info,

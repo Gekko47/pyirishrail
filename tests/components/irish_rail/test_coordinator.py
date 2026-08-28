@@ -639,6 +639,14 @@ async def test_persistent_empty_data_creates_issue_once_during_service_hours(
     assert issue.translation_placeholders == {"station": "Dublin Pearse"}
     assert issue.severity is ir.IssueSeverity.WARNING
     assert issue.is_fixable is False
+    # The repair issue carries a Learn-more link so users land on the
+    # README's "Known Limitations" section instead of staring at a bare
+    # warning. The exact URL is exposed for stable pinning — if it ever
+    # drifts, a maintainer can update both sides together.
+    assert issue.learn_more_url == (
+        "https://github.com/Gekko47/pyirishrail/blob/master/"
+        "README.md#known-limitations"
+    )
     assert create_spy.call_count == 1
     assert len(caplog.records) == 1
 

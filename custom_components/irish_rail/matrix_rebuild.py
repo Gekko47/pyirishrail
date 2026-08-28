@@ -9,10 +9,16 @@ resulting stops are unioned per direction bucket plus an ``_all`` union.
 
 Differences from the offline script, by design:
 
-* **Gap-fill merge** - existing buckets and stops in ``stops_matrix.json``
-  are NEVER removed or replaced; observed stops are unioned in. A quiet-
-  hours rebuild therefore cannot erase knowledge the script captured at
-  peak time (the script wholesale-replaces because git tracks its history).
+* **Gap-fill merge** - existing buckets and stops in the per-install runtime
+  matrix are NEVER removed or replaced; observed stops are unioned in. A
+  quiet-hours rebuild therefore cannot erase knowledge the script captured
+  at peak time (the script wholesale-replaces because git tracks its history).
+* **Two files, two roles.** The bundled, read-only seed lives at
+  ``stops_matrix.seed.json`` inside the integration folder; the per-install
+  runtime output lives at ``stops_matrix.json`` inside
+  ``hass.config.path()``. The runtime file is gitignored so HACS updates
+  never clobber a user's rebuild data; the seed is refreshed by HACS
+  itself when the upstream bundled matrix improves.
 * **Incremental dumps** mirror the script's behaviour so an interrupted run
   leaves a valid partial seed rather than nothing.
 * The bundled-seed cache is invalidated afterwards so the next config-flow
@@ -39,7 +45,12 @@ from .api import (
     TrainMovement,
     _scoped_journey_stops,
 )
-from .const import DUBLIN_TZ, REBUILD_DELAY_SECONDS, STOPS_MATRIX_FILENAME
+from .const import (
+    DUBLIN_TZ,
+    REBUILD_DELAY_SECONDS,
+    STOPS_MATRIX_FILENAME,
+    STOPS_MATRIX_SEED_FILENAME,
+)
 from .store import (
     ALL_DIRECTIONS_KEY,
     STOPS_STORE_VERSION,
@@ -49,7 +60,28 @@ from .store import (
 
 _LOGGER = logging.getLogger(__name__)
 
-_MATRIX_PATH = Path(__file__).parent / STOPS_MATRIX_FILENAME
+# Path is supplied at runtime via :func:`async_run_matrix_rebuild`; tests
+# patch this symbol to redirect writes into a temp directory.
+_MATRIX_PATH: Path | None = None
+
+
+def _matrix_path(hass: HomeAssistant) -> Path:
+    """Return the per-install runtime stops-matrix file.
+
+    The file lives inside ``hass.config.path()`` (a HACS install's
+    ``config/``) rather than inside the integration folder, so a HACS
+    update that overwrites the integration cannot clobber a user's
+    runtime rebuild output. The bundled seed at
+    ``stops_matrix.seed.json`` inside the integration folder is the
+    immutable baseline; the config-flow lookup merges the two layers
+    via :func:`custom_components.irish_rail.store.async_load_bundled_stops_matrix`.
+    """
+    return Path(hass.config.path(STOPS_MATRIX_FILENAME))
+
+
+def _seed_path() -> Path:
+    """Return the bundled, read-only seed file inside the integration dir."""
+    return Path(__file__).parent / STOPS_MATRIX_SEED_FILENAME
 
 _RUNTIME_NOTE = (
     "Snapshot maintained by the Irish Rail integration's rebuild button: "
@@ -99,10 +131,14 @@ def _empty_document(now_iso: str) -> dict[str, Any]:
     }
 
 
-def _load_base_document(raw_text: str | None, now_iso: str) -> dict[str, Any]:
-    """Parse the on-disk seed, degrading corrupt content to a skeleton.
+def _load_base_document(
+    raw_text: str | None, source_name: str, now_iso: str
+) -> dict[str, Any]:
+    """Parse the on-disk base, degrading corrupt content to a skeleton.
 
     Runs inside an executor thread; must stay synchronous and pure.
+    ``source_name`` appears in the warning log so a user can tell which
+    of the seed or runtime file was malformed.
     """
     if raw_text is None:
         return _empty_document(now_iso)
@@ -111,13 +147,13 @@ def _load_base_document(raw_text: str | None, now_iso: str) -> dict[str, Any]:
     except ValueError:
         _LOGGER.warning(
             "Existing %s is malformed; starting from an empty matrix",
-            STOPS_MATRIX_FILENAME,
+            source_name,
         )
         return _empty_document(now_iso)
     if not isinstance(parsed, dict) or not isinstance(parsed.get("stations"), dict):
         _LOGGER.warning(
             "Existing %s has an unexpected shape; starting from an empty matrix",
-            STOPS_MATRIX_FILENAME,
+            source_name,
         )
         return _empty_document(now_iso)
     parsed["schema_version"] = STOPS_STORE_VERSION
@@ -126,7 +162,7 @@ def _load_base_document(raw_text: str | None, now_iso: str) -> dict[str, Any]:
     return parsed
 
 
-def _dump_document(document: dict[str, Any]) -> None:
+def _dump_document(document: dict[str, Any], target_path: Path) -> None:
     """Write the seed document to a temp file, then atomically swap it in.
 
     The serialized JSON goes to a sibling temporary file first so a crash
@@ -134,13 +170,13 @@ def _dump_document(document: dict[str, Any]) -> None:
     path is replaced only after that write fully succeeds. In either case
     the temporary file is removed afterwards.
     """
-    temp_path = _MATRIX_PATH.with_suffix(_MATRIX_PATH.suffix + ".tmp")
+    temp_path = target_path.with_suffix(target_path.suffix + ".tmp")
     try:
         temp_path.write_text(
             json.dumps(document, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
-        os.replace(temp_path, _MATRIX_PATH)
+        os.replace(temp_path, target_path)
     finally:
         # Best-effort cleanup; the target path was already replaced or the
         # temp write failed, so no state is at risk here.
@@ -209,20 +245,44 @@ def _merge_station(
 async def async_run_matrix_rebuild(
     hass: HomeAssistant, client: IrishRailClient
 ) -> RebuildResult:
-    """Sample the whole network and gap-fill the bundled seed matrix."""
+    """Sample the whole network and gap-fill the bundled seed matrix.
+
+    The base document is read from the per-install runtime file (when
+    present, so a previous rebuild's data is preserved) and otherwise
+    falls back to the bundled ``stops_matrix.seed.json``; the merged
+    result is then written back to the per-install runtime file under
+    ``hass.config.path()``.
+    """
     started = dt_util.utcnow()
     result = RebuildResult(started=started.isoformat())
 
     loop = asyncio.get_running_loop()
-    try:
-        raw_text = await loop.run_in_executor(
-            None, lambda: _MATRIX_PATH.read_text(encoding="utf-8")
-        )
-    except OSError:
-        raw_text = None
+    runtime_path = _matrix_path(hass)
+    seed_path = _seed_path()
+
+    def _read_runtime() -> str | None:
+        try:
+            return runtime_path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+    def _read_seed() -> str | None:
+        try:
+            return seed_path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+    raw_text = await loop.run_in_executor(None, _read_runtime)
+    if raw_text is None:
+        # First rebuild on a fresh install (or after the runtime file was
+        # removed) — start from the bundled seed instead of an empty doc.
+        raw_text = await loop.run_in_executor(None, _read_seed)
+        source_name = seed_path.name
+    else:
+        source_name = runtime_path.name
     now_iso = started.isoformat()
     document = await loop.run_in_executor(
-        None, _load_base_document, raw_text, now_iso
+        None, _load_base_document, raw_text, source_name, now_iso
     )
 
     today = dt_util.now(DUBLIN_TZ).strftime("%d %b %Y")
@@ -300,14 +360,14 @@ async def async_run_matrix_rebuild(
                 summary,
             )
             # Incremental dump after every station keeps an interrupted run valid.
-            await asyncio.to_thread(_dump_document, document)
+            await asyncio.to_thread(_dump_document, document, runtime_path)
         finally:
             # Polite API pacing applies after every station — including ones
             # skipped for an error — so a burst of failures cannot hammer the
             # public endpoint without the usual pause.
             await asyncio.sleep(REBUILD_DELAY_SECONDS)
 
-    await asyncio.to_thread(_dump_document, document)
+    await asyncio.to_thread(_dump_document, document, runtime_path)
     reset_bundled_seed_cache()
 
     finished = dt_util.utcnow()

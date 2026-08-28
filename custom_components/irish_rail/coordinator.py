@@ -336,6 +336,15 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
                 severity=ir.IssueSeverity.WARNING,
                 translation_key="empty_data_during_service_hours",
                 translation_placeholders={"station": self.station_name},
+                # Direct users to the README's "Known Limitations" section
+                # so they can confirm whether the symptom is a real outage
+                # or an expected quiet period; the issue is raised only
+                # during service hours so this anchor is the relevant
+                # destination.
+                learn_more_url=(
+                    "https://github.com/Gekko47/pyirishrail/blob/master/"
+                    "README.md#known-limitations"
+                ),
             )
             self._empty_issue_reported = True
             _LOGGER.warning(

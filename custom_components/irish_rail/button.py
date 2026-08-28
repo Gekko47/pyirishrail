@@ -3,10 +3,11 @@
 Integration-level service entity (no device) registered exactly once per
 Home Assistant session by whichever config entry claims providership first
 (see ``health.py``). One press samples the whole network in-process (a port
-of ``scripts/build_stops_matrix.py`` merged gap-fill style into
-``stops_matrix.json``) and refreshes the bundled-seed cache, all without a
-Home Assistant restart. The ``CONFIG`` entity category keeps it out of
-primary UI surfaces so per-station devices never have to carry it.
+of ``scripts/build_stops_matrix.py`` merged gap-fill style into the
+per-install ``stops_matrix.json`` under ``hass.config.path()``) and
+refreshes the bundled-seed cache, all without a Home Assistant restart.
+The ``CONFIG`` entity category keeps it out of primary UI surfaces so
+per-station devices never have to carry it.
 """
 
 from __future__ import annotations
@@ -16,9 +17,18 @@ import logging
 from typing import Any
 
 from homeassistant.components.button import ButtonEntity
+from homeassistant.components.persistent_notification import (
+    async_create as pn_create,
+    async_dismiss as pn_dismiss,
+)
 from homeassistant.config_entries import ConfigEntry
+
+# The EntityCategory enum is added by Home Assistant itself but the
+# typeshed stub does not re-export it, so a plain import trips mypy.
+# ``EntityCategory`` lives in ``homeassistant.const`` in modern HA; the
+# typeshed re-exports it from there but not from ``homeassistant.helpers.entity``.
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, ServiceCall, callback
-from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .api import IrishRailClient
@@ -36,7 +46,32 @@ _LOGGER = logging.getLogger(__name__)
 # registered alongside the entity so either route works identically.
 SERVICE_REBUILD = "rebuild_stops_matrix"
 
+# Stable notification id so a rebuild that fires while another is still
+# running updates the same notification rather than piling up a stack of
+# "rebuild started" toasts.
+REBUILD_NOTIFICATION_ID = "irish_rail_stops_matrix_rebuild"
+
+# The on-disk key the service handler reaches the live button through.
+GLOBAL_REBUILD_ENTITY_KEY = "global_rebuild_entity"
+
 _UNSET_ATTRIBUTES: dict[str, Any] = {"status": "never run since startup"}
+
+
+def _create_notification(
+    hass: HomeAssistant, message: str, *, title: str = "Irish Rail"
+) -> None:
+    """Create (or refresh) the rebuild persistent notification."""
+    pn_create(
+        hass,
+        message,
+        title=title,
+        notification_id=REBUILD_NOTIFICATION_ID,
+    )
+
+
+def _dismiss_notification(hass: HomeAssistant) -> None:
+    """Dismiss the rebuild persistent notification, if it is still up."""
+    pn_dismiss(hass, REBUILD_NOTIFICATION_ID)
 
 
 class IrishRailRebuildStopsMatrixButton(ButtonEntity):
@@ -63,6 +98,17 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
         self.running = False
         self.last_result: RebuildResult | None = None
 
+    @property
+    def available(self) -> bool:
+        """Return ``False`` while a rebuild is in flight.
+
+        Greys out the button in the UI to give the user immediate visual
+        feedback that a press is already being processed; without this,
+        the only signal is the ``status: "running"`` attribute which
+        requires opening the entity.
+        """
+        return not self.running
+
     async def async_press(self) -> None:
         """Handle a press: run one guarded rebuild to completion."""
         if self.running or self._lock.locked():
@@ -74,6 +120,17 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
             )
         async with self._lock:
             self.running = True
+            _create_notification(
+                self.hass,
+                (
+                    "Sampling every Irish Rail station in the background to "
+                    "refresh the bundled \"stops at\" matrix. The job takes "
+                    "a few minutes; this notification will update when it "
+                    "finishes. Live progress is in the button's state "
+                    "attributes."
+                ),
+                title="Irish Rail · stops-matrix rebuild started",
+            )
             try:
                 self.last_result = None
                 self._write_state_if_added()
@@ -83,7 +140,35 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
             except Exception as err:  # button must never crash Home Assistant
                 _LOGGER.error("Stops-matrix rebuild failed: %s", err, exc_info=True)
                 self.last_result = RebuildResult(error=f"{type(err).__name__}: {err}")
+                _create_notification(
+                    self.hass,
+                    (
+                        f"Stops-matrix rebuild failed: {err}. See "
+                        f"`home-assistant.log` for the full traceback."
+                    ),
+                    title="Irish Rail · stops-matrix rebuild failed",
+                )
                 raise
+            else:
+                result = self.last_result
+                # ``async_run_matrix_rebuild`` always returns a real
+                # ``RebuildResult``; the ``None`` guard exists so direct
+                # unit tests that patch the function with a side effect
+                # (without a return value) do not crash the toast.
+                if result is not None:
+                    summary = (
+                        f"{result.stops_added} stop(s) added across "
+                        f"{result.buckets_updated} bucket(s); "
+                        f"{result.sampled}/{result.total_stations} "
+                        f"stations sampled in {result.duration_seconds:.1f}s."
+                    )
+                else:
+                    summary = "no result recorded (test stub?)"
+                _create_notification(
+                    self.hass,
+                    f"Stops-matrix rebuild finished: {summary}",
+                    title="Irish Rail · stops-matrix rebuild finished",
+                )
             finally:
                 self.running = False
                 self.hass.data.setdefault(DOMAIN, {})[
@@ -155,11 +240,24 @@ async def async_setup_entry(
     # Keep a session-wide handle so the service alias can reach the same
     # guarded job even though providership pins the entity to one entry.
     domain_data = hass.data.setdefault(DOMAIN, {})
-    domain_data["global_rebuild_entity"] = entity
+    domain_data[GLOBAL_REBUILD_ENTITY_KEY] = entity
+
+    # Drop the service/handle and dismiss any leftover notification when
+    # this entry is removed, so a re-add (or a sibling entry's claim)
+    # always starts from a clean slate and the user never sees a stale
+    # "rebuild finished" toast for an integration that is no longer loaded.
+    async def _async_cleanup() -> None:
+        if domain_data.get(GLOBAL_REBUILD_ENTITY_KEY) is entity:
+            domain_data.pop(GLOBAL_REBUILD_ENTITY_KEY, None)
+        if hass.services.has_service(DOMAIN, SERVICE_REBUILD):
+            hass.services.async_remove(DOMAIN, SERVICE_REBUILD)
+        _dismiss_notification(hass)
+
+    entry.async_on_unload(_async_cleanup)
 
     async def _async_handle_rebuild_service(call: ServiceCall) -> None:
         """Forward a service call onto the live button instance."""
-        button: Any | None = domain_data.get("global_rebuild_entity")
+        button: Any | None = domain_data.get(GLOBAL_REBUILD_ENTITY_KEY)
         if button is None:
             _LOGGER.warning(
                 "No Irish Rail rebuild button is currently loaded; "

@@ -157,8 +157,12 @@ async def test_all_entities_unavailable_after_failed_refresh_then_recover(
 
     due_state = hass.states.get(entity_ids["next_train_due"])
     assert due_state is not None
+    # DURATION sensor exposes the raw minute count as the state; HA's
+    # DURATION device class formats it as "X min" in the UI. The raw
+    # integer is also available as ``due_in_mins`` for templates.
     assert due_state.state == "15"
     assert due_state.attributes["api_reachable"] is True
+    assert due_state.attributes["due_in_mins"] == 15
     for key in keys:
         state = hass.states.get(entity_ids[key])
         assert state is not None
@@ -186,6 +190,10 @@ async def test_non_empty_data_keeps_next_train_attributes(
     assert state.attributes["api_reachable"] is True
     assert len(state.attributes["upcoming_trains"]) == 1
     if key == "next_train_due":
+        # ``next_train_due`` is a DURATION sensor (HA renders "X min" in
+        # the UI; the underlying state is the raw minute count).
+        # ``next_train_destination`` is plain text and stays as the API
+        # returned it.
         assert state.state == "10"
 
 

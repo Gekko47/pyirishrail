@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import ExitStack
 import json
 import logging
 from pathlib import Path
@@ -57,6 +58,30 @@ def _write(path: Path, document: object) -> Path:
     return path
 
 
+def _patch_paths(runtime_path: Path, seed_path: Path) -> ExitStack:
+    """Patch both ``_matrix_path`` and ``_seed_path`` to a known pair of files.
+
+    Returns an ``ExitStack`` that the caller enters as a single ``with``
+    block — patching a tuple of contexts at once is more concise than
+    nesting two ``with`` statements and matches how the rebuild tests
+    want to chain this together with the API-client patches.
+    """
+    stack = ExitStack()
+    stack.enter_context(
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._matrix_path",
+            return_value=runtime_path,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._seed_path",
+            return_value=seed_path,
+        )
+    )
+    return stack
+
+
 # ── Pure gap-fill merge ─────────────────────────────────────────────────────
 
 
@@ -104,16 +129,19 @@ def test_load_base_document_repairs_corrupt_files() -> None:
     """Malformed seeds degrade to skeletons carrying the runtime note."""
     now = "2026-08-24T12:00:00+00:00"
 
-    empty = _load_base_document(None, now)
+    empty = _load_base_document(None, "stops_matrix.json", now)
     assert empty["schema_version"] == STOPS_STORE_VERSION
     assert empty["stations"] == {}
     assert empty["generated"] == now
 
-    from_broken_shape = _load_base_document('{"stations": []}', now)
+    from_broken_shape = _load_base_document(
+        '{"stations": []}', "stops_matrix.json", now
+    )
     assert from_broken_shape["stations"] == {}
 
     from_valid = _load_base_document(
         json.dumps(_FIXTURE_DOC),
+        "stops_matrix.json",
         now,
     )
     assert from_valid["schema_version"] == STOPS_STORE_VERSION
@@ -122,10 +150,21 @@ def test_load_base_document_repairs_corrupt_files() -> None:
 
 @pytest.fixture(name="matrix_path")
 def matrix_path_fixture(tmp_path: Path) -> Path:
-    """Redirect the seed target into a temporary directory."""
+    """Redirect the runtime seed target into a temporary directory.
+
+    The bundled ``stops_matrix.seed.json`` is not modified — the fixture
+    is self-contained so tests do not depend on whatever happens to be
+    bundled at test time.
+    """
     path = tmp_path / "stops_matrix.json"
     _write(path, _FIXTURE_DOC)
     return path
+
+
+@pytest.fixture(name="seed_path")
+def seed_path_fixture(tmp_path: Path) -> Path:
+    """Return a temp path the tests can use as the bundled seed."""
+    return tmp_path / "stops_matrix.seed.json"
 
 
 
@@ -146,6 +185,7 @@ def _read_persisted(path: Path) -> dict[str, object]:
 async def test_rebuild_samples_network_and_gap_fills(
     hass: HomeAssistant,
     matrix_path: Path,
+    tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Happy path: healthy stations merge, errors skip, file stays valid."""
@@ -165,10 +205,7 @@ async def test_rebuild_samples_network_and_gap_fills(
         return [_FakeMovement("Craughill")]
 
     with (
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._MATRIX_PATH",
-            matrix_path,
-        ),
+        _patch_paths(matrix_path, tmp_path / "stops_matrix.seed.json"),
         patch(
             "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
             side_effect=fake_scoped,
@@ -204,13 +241,24 @@ async def test_rebuild_bootstraps_missing_seed(
     hass: HomeAssistant,
     tmp_path: Path,
 ) -> None:
-    """With no seed on disk the run writes a valid skeleton document."""
-    missing = tmp_path / "absent.json"
+    """With no runtime file the run reads the bundled seed and writes back."""
+    missing = tmp_path / "absent.json"  # never created on purpose
+    seed = tmp_path / "stops_matrix.seed.json"
+    # An empty seed mirrors the "fresh install" case; the fixture's
+    # ``_bogus`` station would otherwise survive and trip the equality
+    # assertion below.
+    _write(seed, {"stations": {}})
     client = _client_mock([MagicMock(code="PEARS", name="Dublin Pearse")])
 
-    with patch(
-        "custom_components.irish_rail.matrix_rebuild._MATRIX_PATH",
-        missing,
+    with (
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._matrix_path",
+            return_value=missing,
+        ),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._seed_path",
+            return_value=seed,
+        ),
     ):
         result = await async_run_matrix_rebuild(hass, client)
 
@@ -225,6 +273,7 @@ async def test_rebuild_bootstraps_missing_seed(
 async def test_rebuild_paces_itself_between_stations(
     hass: HomeAssistant,
     matrix_path: Path,
+    tmp_path: Path,
 ) -> None:
     """One polite pause happens per sampled station."""
     stations = [
@@ -243,10 +292,7 @@ async def test_rebuild_paces_itself_between_stations(
     from custom_components.irish_rail.const import REBUILD_DELAY_SECONDS
 
     with (
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._MATRIX_PATH",
-            matrix_path,
-        ),
+        _patch_paths(matrix_path, tmp_path / "stops_matrix.seed.json"),
         patch(
             "custom_components.irish_rail.matrix_rebuild.asyncio.sleep",
             side_effect=tracking_sleep,
@@ -261,6 +307,7 @@ async def test_rebuild_paces_itself_between_stations(
 async def test_rebuild_paces_after_failed_station(
     hass: HomeAssistant,
     matrix_path: Path,
+    tmp_path: Path,
 ) -> None:
     """A failed station still gets its pause before the next poll.
 
@@ -290,10 +337,7 @@ async def test_rebuild_paces_after_failed_station(
     from custom_components.irish_rail.const import REBUILD_DELAY_SECONDS
 
     with (
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._MATRIX_PATH",
-            matrix_path,
-        ),
+        _patch_paths(matrix_path, tmp_path / "stops_matrix.seed.json"),
         patch(
             "custom_components.irish_rail.matrix_rebuild.asyncio.sleep",
             side_effect=tracking_sleep,
@@ -322,7 +366,9 @@ def test_load_base_document_repairs_malformed_json(
 ) -> None:
     """Unparseable JSON degrades to a fresh skeleton with a warning."""
     with caplog.at_level(logging.WARNING):
-        skeleton = _load_base_document("{definitely not json", "now")
+        skeleton = _load_base_document(
+            "{definitely not json", "stops_matrix.json", "now"
+        )
     assert skeleton["stations"] == {}
     assert skeleton["generated"] == "now"
     assert "malformed" in caplog.text
@@ -362,14 +408,8 @@ def test_dump_document_survives_temp_cleanup_failure(
         "stations": {"PEARS": {"directions": {}}},
     }
 
-    with (
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._MATRIX_PATH",
-            target,
-        ),
-        patch("pathlib.Path.unlink", side_effect=OSError("locked")),
-    ):
-        _dump_document(document)
+    with patch("pathlib.Path.unlink", side_effect=OSError("locked")):
+        _dump_document(document, target)
 
     persisted = json.loads(target.read_text(encoding="utf-8"))
     assert persisted["schema_version"] == STOPS_STORE_VERSION
@@ -397,9 +437,9 @@ async def test_movement_lookup_failure_skips_train_without_failing(
         return []
 
     with (
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._MATRIX_PATH",
+        _patch_paths(
             tmp_path / "stops_matrix.json",
+            tmp_path / "stops_matrix.seed.json",
         ),
         patch(
             "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",

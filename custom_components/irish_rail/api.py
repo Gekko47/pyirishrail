@@ -712,13 +712,26 @@ def parse_station_data(root: Element) -> list[TrainDueTime]:
             try:
                 due_in_mins = int(due_str)
             except ValueError:
-                _LOGGER.debug("Non-numeric 'Duein' value: %s", due_str)
+                # Bumped from debug to warning: silently coercing to 0
+                # misreports a misformatted train as "due in 0 minutes"
+                # in the UI with no trace in `home-assistant.log`, which
+                # is exactly the kind of silent failure users hit when
+                # the upstream API changes a field's format.
+                _LOGGER.warning(
+                    "Non-numeric 'Duein' value from Irish Rail API, "
+                    "coerced to 0: %r",
+                    due_str,
+                )
                 due_in_mins = 0
 
             try:
                 late_mins = int(late_str)
             except ValueError:
-                _LOGGER.debug("Non-numeric 'Late' value: %s", late_str)
+                _LOGGER.warning(
+                    "Non-numeric 'Late' value from Irish Rail API, "
+                    "coerced to 0: %r",
+                    late_str,
+                )
                 late_mins = 0
 
             trains.append(

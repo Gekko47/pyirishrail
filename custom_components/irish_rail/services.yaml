@@ -8,7 +8,8 @@ rebuild_stops_matrix:
   description: >-
     Rebuild the bundled "stops at" matrix by sampling every Irish Rail
     station in the background. The job runs to completion and reports
-    progress and outcome in the matching button's state attributes. The
-    service is the automation-facing alias of pressing the
-    "Rebuild stops at matrix" button.
+    progress and outcome via a persistent notification and the matching
+    button's state attributes. The button is an integration-level
+    service entity (no device) tagged as CONFIG; this service is its
+    automation-facing alias.
 

@@ -33,7 +33,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, STOPS_MATRIX_FILENAME
+from .const import DOMAIN, STOPS_MATRIX_FILENAME, STOPS_MATRIX_SEED_FILENAME
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -175,8 +175,14 @@ _SEED_CACHE: StopsMatrix | None = None
 
 
 def _read_bundled_matrix() -> StopsMatrix:
-    """Read and validate the bundled seed matrix (blocking; run in executor)."""
-    path = Path(__file__).parent / STOPS_MATRIX_FILENAME
+    """Read and validate the bundled seed matrix (blocking; run in executor).
+
+    The seed lives at a fixed name inside the integration folder
+    (``stops_matrix.seed.json``) so the runtime file
+    (``stops_matrix.json``) can hold per-install rebuild state without
+    being clobbered by every HACS update.
+    """
+    path = Path(__file__).parent / STOPS_MATRIX_SEED_FILENAME
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"{path.name} must contain a JSON object")
@@ -198,7 +204,7 @@ async def async_load_bundled_stops_matrix() -> StopsMatrix:
         except (OSError, ValueError) as err:
             _LOGGER.warning(
                 "Could not load bundled stops matrix %s: %s",
-                STOPS_MATRIX_FILENAME,
+                STOPS_MATRIX_SEED_FILENAME,
                 err,
             )
             _SEED_CACHE = {}

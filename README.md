@@ -29,6 +29,11 @@ Monitor live trains at any Irish Rail station from Home Assistant. This custom i
 2. Copy `custom_components/irish_rail` into your Home Assistant `config/custom_components` directory.
 3. Restart Home Assistant.
 
+## Removal
+
+1. Go to **Settings → Devices & Services → Irish Rail**, click each station entry, and use the ⋮ menu's **Delete** option. Removing the last station entry automatically tears down the API-health probe, the stops-matrix rebuild button, and the `irish_rail.rebuild_stops_matrix` service.
+2. Optional: delete `irish_rail.stops_matrix.json` from HA storage to drop the per-install runtime rebuild data. Keep the bundled `stops_matrix.seed.json` inside the integration folder.3. For a HACS install, remove the **Irish Rail** entry from HACS.
+
 ## Configuration
 
 Add one entry per station via **Settings → Devices & Services → Add Integration → Irish Rail**:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
@@ -161,3 +161,111 @@ async def test_unload_removes_pending_empty_data_repair_issue(
     assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
     await hass.async_block_till_done()
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+async def test_global_provider_purges_orphan_entities_when_owner_removed(
+    hass: HomeAssistant,
+) -> None:
+    """A removed claiming entry's entity rows are wiped so the next claim is clean.
+
+    With the global entities decoupled from any device, the only thing
+    pinning them to the original config entry is the entity registry's
+    ``config_entry_id`` column. Removing the original entry leaves an
+    orphan row whose entity_id renders as "not available" in the UI
+    forever. The new claiming entry's ``async_add_entities`` would
+    otherwise trigger a "restore?" prompt instead of cleanly
+    re-registering. The fix in ``health.py`` removes the orphan row
+    before granting the new claim.
+    """
+    from homeassistant.helpers import entity_registry as er
+
+    from custom_components.irish_rail.const import (
+        GLOBAL_HEALTH_UNIQUE_ID,
+        GLOBAL_REBUILD_UNIQUE_ID,
+    )
+
+    def _find_by_unique_id(reg, unique_id):
+        for entry in reg.entities.values():
+            if entry.unique_id == unique_id:
+                return entry.entity_id
+        return None
+
+    first = MockConfigEntry(
+        domain=DOMAIN,
+        title="Dublin Pearse (Northbound)",
+        data={"station": "Dublin Pearse", "station_code": "PEARS"},
+        unique_id="PEARS_northbound",
+    )
+    first.add_to_hass(hass)
+    with patch(
+        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        return_value=[],
+    ):
+        assert await hass.config_entries.async_setup(first.entry_id)
+        await hass.async_block_till_done()
+
+    registry = er.async_get(hass)
+    assert _find_by_unique_id(registry, GLOBAL_HEALTH_UNIQUE_ID) is not None
+    assert _find_by_unique_id(registry, GLOBAL_REBUILD_UNIQUE_ID) is not None
+
+    assert await hass.config_entries.async_remove(first.entry_id)
+    await hass.async_block_till_done()
+
+    second = MockConfigEntry(
+        domain=DOMAIN,
+        title="Cork Kent",
+        data={"station": "Cork Kent", "station_code": "KENT"},
+        unique_id="KENT_all",
+    )
+    second.add_to_hass(hass)
+    with patch(
+        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        return_value=[],
+    ):
+        assert await hass.config_entries.async_setup(second.entry_id)
+        await hass.async_block_till_done()
+
+    health_id = _find_by_unique_id(registry, GLOBAL_HEALTH_UNIQUE_ID)
+    rebuild_id = _find_by_unique_id(registry, GLOBAL_REBUILD_UNIQUE_ID)
+    assert health_id is not None
+    assert rebuild_id is not None
+    assert registry.entities[health_id].config_entry_id == second.entry_id
+    assert registry.entities[rebuild_id].config_entry_id == second.entry_id
+
+    assert await hass.config_entries.async_unload(second.entry_id)
+    await hass.async_block_till_done()
+async def test_connectivity_sensor_is_unavailable_before_first_probe(
+    hass: HomeAssistant,
+) -> None:
+    """The connectivity sensor renders as ``unavailable`` until a probe lands.
+
+    The sensor's ``is_on`` returns ``None`` until the first successful
+    probe. Without an ``available`` override, HA renders ``is_on=None``
+    as "Off" with the connectivity-class ``mdi:lan-disconnect`` icon —
+    falsely signalling an outage during the five-minute startup window.
+    The override returns ``False`` until a probe has actually landed,
+    which HA renders as the grey "unavailable" state with a question-
+    mark tooltip, the correct semantic for "I haven't checked yet".
+    """
+    from custom_components.irish_rail.binary_sensor import (
+        IrishRailApiConnectivitySensor,
+    )
+    from custom_components.irish_rail.health import IrishRailApiHealthMonitor
+
+    monitor = IrishRailApiHealthMonitor(hass, MagicMock())
+    sensor = IrishRailApiConnectivitySensor(hass, monitor)
+
+    # No probe has landed yet.
+    assert sensor.available is False
+    assert sensor.is_on is None
+
+    # A successful probe flips both flags.
+    monitor.healthy = True
+    assert sensor.available is True
+    assert sensor.is_on is True
+
+    # A failed probe keeps availability but reports ``is_on=False``.
+    monitor.healthy = False
+    assert sensor.available is True
+    assert sensor.is_on is False
+
+

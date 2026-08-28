@@ -102,8 +102,12 @@ async def test_press_runs_rebuild_and_reports_attributes(
 
     with (
         patch(
-            "custom_components.irish_rail.matrix_rebuild._MATRIX_PATH",
-            tmp_path / "stops_matrix.json",
+            "custom_components.irish_rail.matrix_rebuild._matrix_path",
+            return_value=tmp_path / "stops_matrix.json",
+        ),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._seed_path",
+            return_value=tmp_path / "stops_matrix.seed.json",
         ),
         patch(
             "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
@@ -149,6 +153,23 @@ async def test_press_runs_rebuild_and_reports_attributes(
     # page rather than inside a per-station device.
     assert registry.entities[entity_id].device_id is None
     assert hass.data[DOMAIN]["global_last_result"].total_stations == 1
+
+
+def test_button_is_unavailable_while_running() -> None:
+    """The button greys out in the UI while a rebuild is in flight.
+
+    Without this, the only signal that a press is being processed is the
+    ``status: "running"`` attribute, which requires opening the entity.
+    Setting ``available`` to ``False`` while ``running`` is set makes the
+    UI render the button as unpressable, which is the standard idiom for
+    "I am busy, wait" feedback.
+    """
+    button = IrishRailRebuildStopsMatrixButton(MagicMock(), MagicMock())
+    assert button.available is True
+    button.running = True
+    assert button.available is False
+    button.running = False
+    assert button.available is True
 
 
 async def test_press_serializes_concurrent_invocations(
@@ -238,8 +259,12 @@ async def test_service_call_drives_the_loaded_button(
 
     with (
         patch(
-            "custom_components.irish_rail.matrix_rebuild._MATRIX_PATH",
-            tmp_path / "stops_matrix.json",
+            "custom_components.irish_rail.matrix_rebuild._matrix_path",
+            return_value=tmp_path / "stops_matrix.json",
+        ),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._seed_path",
+            return_value=tmp_path / "stops_matrix.seed.json",
         ),
         patch(
             "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",

@@ -105,6 +105,33 @@ async def test_ping_catches_unexpected_exceptions(hass: HomeAssistant) -> None:
     assert monitor.consecutive_failures == 1
 
 
+async def test_as_dict_reports_monitor_lifecycle_flags() -> None:
+    """The diagnostics snapshot distinguishes "timer on" from "probe in flight".
+
+    A maintainer reading a "sensor is stuck on unknown" report needs to
+    know whether the periodic probe is actually still running and
+    whether one is in flight; both pieces of state are surfaced in
+    ``as_dict()`` as ``timer_active`` and ``probe_in_flight``.
+    """
+    monitor = IrishRailApiHealthMonitor(MagicMock(), _client())
+    snapshot = monitor.as_dict()
+    assert snapshot["timer_active"] is False
+    assert snapshot["probe_in_flight"] is False
+
+    fake_task = MagicMock()
+    fake_task.done.return_value = False
+    monitor._unsub_interval = lambda: None
+    monitor._ping_task = fake_task
+    snapshot = monitor.as_dict()
+    assert snapshot["timer_active"] is True
+    assert snapshot["probe_in_flight"] is True
+
+    # A done task is no longer "in flight".
+    fake_task.done.return_value = True
+    snapshot = monitor.as_dict()
+    assert snapshot["probe_in_flight"] is False
+
+
 async def test_async_start_is_idempotent_and_probes_immediately(
     hass: HomeAssistant,
 ) -> None:

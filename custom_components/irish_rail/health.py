@@ -29,19 +29,27 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 from .api import IrishRailClient, IrishRailError
 from .const import (
     DOMAIN,
+    GLOBAL_HEALTH_UNIQUE_ID,
     GLOBAL_PROVIDER_KEY,
+    GLOBAL_REBUILD_UNIQUE_ID,
     HEALTH_CHECK_INTERVAL,
     HEALTH_MONITOR_INSTANCE,
     HEALTH_PROBE_STATION_CODE,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Unique IDs the global entities register under; cleared from the entity
+# registry when providership transfers to a new owner so the new entry's
+# ``async_add_entities`` does not collide with a stale orphan row.
+_GLOBAL_UNIQUE_IDS = (GLOBAL_HEALTH_UNIQUE_ID, GLOBAL_REBUILD_UNIQUE_ID)
 
 
 class IrishRailApiHealthMonitor:
@@ -170,6 +178,13 @@ class IrishRailApiHealthMonitor:
             "consecutive_failures": self.consecutive_failures,
             "last_error": self.last_error,
             "interval_minutes": HEALTH_CHECK_INTERVAL.total_seconds() / 60,
+            # Monitor lifecycle flags: a maintainer reading a "sensor is
+            # stuck" report needs to know whether the periodic probe is
+            # actually still running and whether one is in flight.
+            "timer_active": self._unsub_interval is not None,
+            "probe_in_flight": (
+                self._ping_task is not None and not self._ping_task.done()
+            ),
         }
 
 
@@ -232,11 +247,12 @@ def async_claim_global_provider(hass: HomeAssistant, entry: ConfigEntry) -> bool
     """Claim (once per session) providership of the global entities.
 
     Returns ``True`` when ``entry`` should add them. The first successful
-    claim sticks until the owning entry disappears entirely or HA restarts:
-    entity-registry rows permanently reference their original config entry,
-    so transferring mid-session would duplicate or rename entities instead.
-    Unloading the owner therefore hides the globals temporarily (documented
-    behaviour), while removing it frees the claim for the next setup.
+    claim sticks until the owning entry disappears entirely or HA restarts.
+    If the previous owner was removed, its orphan entity-registry rows for
+    the two global unique IDs are wiped before the new claim is granted
+    so the new entry's ``async_add_entities`` does not collide (and the
+    user does not end up with a "Entity already exists, restore?" prompt
+    every reload).
     """
     domain_data = hass.data.setdefault(DOMAIN, {})
     current_owner = domain_data.get(GLOBAL_PROVIDER_KEY)
@@ -249,5 +265,37 @@ def async_claim_global_provider(hass: HomeAssistant, entry: ConfigEntry) -> bool
         )
         if owner_still_installed:
             return False
+        # The previous owner is gone. Wipe the orphan entity rows so the
+        # new claiming entry starts from a clean slate — without this the
+        # global entities would re-bind to a config entry that no longer
+        # exists in the registry, rendering as "entity not available" in
+        # the integrations page.
+        _purge_orphan_global_entities(hass, expected_owner=current_owner)
     domain_data[GLOBAL_PROVIDER_KEY] = entry.entry_id
     return True
+
+
+@callback
+def _purge_orphan_global_entities(
+    hass: HomeAssistant, *, expected_owner: str
+) -> None:
+    """Remove global entity rows still pinned to a removed config entry."""
+    entity_registry = er.async_get(hass)
+    for unique_id in _GLOBAL_UNIQUE_IDS:
+        entity_id = entity_registry.async_get_entity_id(DOMAIN, DOMAIN, unique_id)
+        if entity_id is None:
+            continue
+        registry_entry = entity_registry.entities.get(entity_id)
+        if registry_entry is None:
+            continue
+        # Only remove if the row still points at the dead owner; a manual
+        # reassignment by the user (which HA does not currently expose)
+        # would be left alone.
+        if registry_entry.config_entry_id != expected_owner:
+            continue
+        _LOGGER.info(
+            "Removing orphan global entity %s (config_entry_id=%s)",
+            entity_id,
+            expected_owner,
+        )
+        entity_registry.async_remove(entity_id)

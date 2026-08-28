@@ -113,3 +113,8 @@ venv.bak/
 # vscode
 .vscode/
 
+
+# Per-install stops-matrix rebuild output (lives in the HA config dir,
+# not in the integration folder; written by the rebuild button and
+# ignored so HACS updates never clobber a user's runtime data).
+stops_matrix.json

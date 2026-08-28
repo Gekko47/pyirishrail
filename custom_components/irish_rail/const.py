@@ -81,8 +81,16 @@ MOVEMENT_CACHE_MAX_ENTRIES = 1024
 # the source of truth; its results are persisted per install in a versioned
 # Store file and layered over a bundled seed matrix so the config flow can
 # still offer valid options when no services are currently due (e.g.
-# overnight). The seed file lives inside the integration directory because
-# HACS installs only that folder.
+# overnight).
+#
+# Two distinct files now exist:
+# * ``stops_matrix.seed.json`` ships inside the integration folder (read-
+#   only; the HACS update overwrites it with the upstream bundled seed).
+# * ``stops_matrix.json`` is the per-install runtime file the rebuild
+#   button writes into ``hass.config.path()``; it is gitignored and
+#   survives HACS updates, so a user-triggered rebuild is never silently
+#   clobbered when the integration is updated.
+STOPS_MATRIX_SEED_FILENAME = "stops_matrix.seed.json"
 STOPS_MATRIX_FILENAME = "stops_matrix.json"
 
 # ── Shared API-health infrastructure ────────────────────────────────────────

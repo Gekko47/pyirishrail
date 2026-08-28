@@ -15,10 +15,18 @@ from typing import Any
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
+    BinarySensorEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
+
+# The EntityCategory enum is added by Home Assistant itself but the
+# typeshed stub does not re-export it, so a plain import trips mypy.
+# ``type: ignore[attr-defined]`` suppresses the false positive without
+# hiding a real mistake (the attribute is present at runtime in HA 2024+).
+# ``EntityCategory`` lives in ``homeassistant.const`` in modern HA; the
+# typeshed re-exports it from there but not from ``homeassistant.helpers.entity``.
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import GLOBAL_HEALTH_UNIQUE_ID
@@ -31,16 +39,28 @@ from .health import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# A standalone ``mdi:api`` icon makes the entity unambiguous in the
+# integrations page alongside the station sensors (which all use the
+# ``mdi:train`` family). The ``DeviceClass.CONNECTIVITY`` default would
+# otherwise be ``mdi:lan-connect`` / ``mdi:lan-disconnect`` — semantically
+# correct for a network adapter, but misleading for a public RTPI
+# reachability probe.
+_CONNECTIVITY_DESCRIPTION = BinarySensorEntityDescription(
+    key="irish_rail_api_connectivity",
+    translation_key="status",
+    device_class=BinarySensorDeviceClass.CONNECTIVITY,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    icon="mdi:api",
+)
+
 
 class IrishRailApiConnectivitySensor(BinarySensorEntity):
     """Reports whether the RTPI API answered its latest reachability probe."""
 
+    entity_description = _CONNECTIVITY_DESCRIPTION
     _attr_should_poll = False
     _attr_has_entity_name = True
-    _attr_translation_key = "status"
     _attr_unique_id = GLOBAL_HEALTH_UNIQUE_ID
-    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, hass: HomeAssistant, monitor: IrishRailApiHealthMonitor) -> None:
         """Initialize the global connectivity sensor."""
@@ -67,6 +87,19 @@ class IrishRailApiConnectivitySensor(BinarySensorEntity):
     def is_on(self) -> bool | None:
         """True when the latest probe succeeded; unknown until then."""
         return self._monitor.healthy
+
+    @property
+    def available(self) -> bool:
+        """Return ``False`` until the first probe has landed.
+
+        A connectivity sensor that hasn't been probed yet is not "on" or
+        "off" — it's *unknown*. HA renders the ``False`` return here as
+        ``unavailable`` (grey badge with a question-mark tooltip), which is
+        the correct visual cue during the first five-minute window after
+        startup. Without this, ``is_on=None`` is rendered as "Off" with
+        the ``mdi:lan-disconnect`` icon, falsely signalling an outage.
+        """
+        return self._monitor.healthy is not None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:

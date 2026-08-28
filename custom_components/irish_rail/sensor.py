@@ -7,7 +7,6 @@ from typing import Any
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
-    SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTime
@@ -58,14 +57,27 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
         super().__init__(coordinator, entity_key)
         self._attr_translation_key = entity_key
 
-        if entity_key == "next_train_due" or entity_key == "next_train_delay":
+        if entity_key in ("next_train_due", "next_train_delay"):
+            # The Irish Rail API exposes times in whole minutes, so we
+            # publish the raw minute count as a plain int with the DURATION
+            # device class and ``UnitOfTime.MINUTES``; HA's modern DURATION
+            # rendering then formats the value live as "X min" (or
+            # "H h M min" over an hour) in the UI and in template results.
+            # This is the supported HA 2026.x path for a DURATION sensor
+            # with a minute unit — ``timedelta`` values are rejected by the
+            # numeric-rendering fast path the moment a unit is declared.
             self._attr_device_class = SensorDeviceClass.DURATION
             self._attr_native_unit_of_measurement = UnitOfTime.MINUTES
-            self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def native_value(self) -> str | int | None:
-        """Return the state of the sensor."""
+        """Return the state of the sensor.
+
+        The DURATION sensors (``next_train_due`` and ``next_train_delay``)
+        return a whole-minute ``int``; HA's modern DURATION device class
+        formats the value live as "X min" in the UI. Textual sensors
+        return the raw API value.
+        """
         if not self.coordinator.data:
             return None
 
@@ -109,6 +121,13 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
             "direction": next_train.direction,
             "train_code": next_train.code,
         }
+
+        # Expose the raw minute counts as attributes so automations and
+        # templates that need an integer (e.g. ``{{ states('sensor.x') |
+        # int }}``) keep working even though the primary state is now a
+        # ``timedelta`` rendered by HA's DURATION device class.
+        attrs["due_in_mins"] = next_train.due_in_mins
+        attrs["late_mins"] = next_train.late_mins
 
         # Explicitly distinguish "API reachable, zero trains scheduled"
         # (this attribute is present and True) from an API failure. On a
