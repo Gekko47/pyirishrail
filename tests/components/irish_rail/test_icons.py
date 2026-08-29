@@ -14,7 +14,6 @@ EXPECTED_SENSOR_KEYS = {
     "next_train_due",
     "next_train_destination",
     "next_train_delay",
-    "next_train_type",
 }
 
 

@@ -5,15 +5,22 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import timedelta
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util import dt as dt_util
+import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.irish_rail.api import IrishRailConnectionError
 from custom_components.irish_rail.const import (
     DOMAIN,
+    GLOBAL_HEALTH_UNIQUE_ID,
+    GLOBAL_PROVIDER_KEY,
+    GLOBAL_REBUILD_UNIQUE_ID,
+    GLOBAL_SERVICES_IDENTIFIER,
     HEALTH_CHECK_INTERVAL,
 )
 from custom_components.irish_rail.health import (
@@ -23,6 +30,7 @@ from custom_components.irish_rail.health import (
     async_note_entry_unloaded,
     get_health_monitor,
 )
+from pyirishrail import IrishRailConnectionError
 
 
 def _client(error: Exception | None = None) -> MagicMock:
@@ -241,6 +249,240 @@ async def test_claim_is_freed_when_owner_is_removed(
     # Full removal frees the claim for the next setup.
     await hass.config_entries.async_remove(entry_one.entry_id)
     assert async_claim_global_provider(hass, entry_two) is True
+
+
+async def test_claim_purges_orphan_global_entity_rows(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A dead owner's leftover entity rows are wiped before the new claim is granted.
+
+    The common path through ``async_claim_global_provider`` (the live
+    entry still installed) takes the "owner is here" branch and never
+    touches ``_purge_orphan_global_entities``. That fallback only runs
+    when a *previous* owner is gone but its entity-registry rows
+    somehow survive — for example a manual registry edit, a buggy
+    removal tool, or a future HA release where ``async_remove`` stops
+    clearing the rows automatically.
+
+    The HA entity registry's modern ``async_update_entity`` validates
+    that the target ``config_entry_id`` resolves to a real config
+    entry, so we cannot seed the orphan state through the public API.
+    Instead the test patches ``entity_registry.async_get`` and
+    ``device_registry.async_get`` to MagicMocks that simulate the
+    post-orphan shape and asserts both the call from
+    ``async_claim_global_provider`` and the underlying
+    ``_purge_orphan_global_entities`` behaviour in one combined pass.
+    The fake device registry exposes a single dead-owned device
+    row pinned to the expected owner so the new device-purge branch
+    runs alongside the entity-purge branches.
+    """
+
+    from custom_components.irish_rail.health import _purge_orphan_global_entities
+
+    dead_owner = "DEAD_OWNER_ID"
+
+    # A fake device registry that exposes a single dead-owned device
+    # row pinned to the expected owner. ``config_entries`` is a set
+    # of config-entry ids, mirroring the real DeviceEntry shape; the
+    # purger removes the row only when this set equals ``{expected_owner}``
+    # exactly (no live co-owners).
+    fake_device_row = SimpleNamespace(
+        id="DEAD_DEVICE_ID",
+        identifiers={GLOBAL_SERVICES_IDENTIFIER},
+        config_entries={dead_owner},
+    )
+    fake_device_registry = MagicMock()
+    fake_device_registry.devices = {"DEAD_DEVICE_ID": fake_device_row}
+    removed_devices: list[str] = []
+
+    def _record_remove_device(device_id: str) -> None:
+        removed_devices.append(device_id)
+        del fake_device_registry.devices[device_id]
+
+    fake_device_registry.async_remove_device.side_effect = _record_remove_device
+
+    # A fake entity registry that exposes the three attributes the
+    # purger actually reads: ``async_get_entity_id`` (per unique id),
+    # ``entities`` (mapping entity_id -> object with
+    # ``config_entry_id``), and ``async_remove`` (mutation).
+    fake_rows: dict[str, Any] = {
+        "irish_rail.irish_rail_irish_rail_api_connectivity": SimpleNamespace(
+            config_entry_id=dead_owner
+        ),
+        "irish_rail.irish_rail_already_belongs_to_live": SimpleNamespace(
+            config_entry_id="LIVE_OWNER_ID"
+        ),
+    }
+    fake_registry = MagicMock()
+    fake_registry.entities = fake_rows
+    # ``async_get_entity_id`` returns an entity_id for both real
+    # global unique ids, but only the first one is present in the
+    # ``entities`` dict — the second resolves to a stale id that
+    # ``entities.get(...)`` then returns ``None`` for (covers the
+    # ``registry_entry is None`` short-circuit, the rare TOCTOU
+    # window between ``async_get_entity_id`` and ``entities.get``).
+    fake_registry.async_get_entity_id.side_effect = (
+        lambda domain, platform, unique_id: {
+            GLOBAL_HEALTH_UNIQUE_ID: (
+                "irish_rail.irish_rail_irish_rail_api_connectivity"
+            ),
+            GLOBAL_REBUILD_UNIQUE_ID: "irish_rail.irish_rail_rebuild_stops_matrix",
+        }.get(unique_id)
+    )
+    removed: list[str] = []
+
+    def _record_remove(entity_id: str) -> None:
+        removed.append(entity_id)
+        del fake_rows[entity_id]
+
+    fake_registry.async_remove.side_effect = _record_remove
+
+    # Direct unit test of the purger: the two dead-owned rows must be
+    # removed, the live-owned row must be left alone, and an INFO log
+    # must be emitted per removal. ``caplog`` is the test's own
+    # fixture, so the assertion is on the integration's logger.
+    with (
+        patch.object(er, "async_get", return_value=fake_registry),
+        patch.object(dr, "async_get", return_value=fake_device_registry),
+        caplog.at_level("INFO", logger="custom_components.irish_rail.health"),
+    ):
+        _purge_orphan_global_entities(hass, expected_owner=dead_owner)
+
+    assert (
+        fake_registry.async_get_entity_id.call_count == 2
+    ), "purger should consult the registry for each global unique id"
+    # Only the connectivity row is dead-owned and present in
+    # ``entities``; the rebuild row's entity_id is the stale one
+    # (``registry_entry is None`` short-circuit) and the
+    # already-belongs-to-live row is left alone.
+    assert removed == [
+        "irish_rail.irish_rail_irish_rail_api_connectivity",
+    ]
+    assert "irish_rail.irish_rail_already_belongs_to_live" in fake_rows
+    assert fake_registry.entities.get(
+        "irish_rail.irish_rail_rebuild_stops_matrix"
+    ) is None
+    # The device row is removed alongside the entity rows; the device
+    # registry was the sole config-entry link, so the purger matches
+    # the strict-equality branch and removes it.
+    assert removed_devices == ["DEAD_DEVICE_ID"]
+    assert len(caplog.records) == 2
+    entity_log_count = sum(
+        1
+        for record in caplog.records
+        if "Removing orphan global entity" in record.getMessage()
+    )
+    device_log_count = sum(
+        1
+        for record in caplog.records
+        if "Removing orphan Irish Rail Services device" in record.getMessage()
+    )
+    assert entity_log_count == 1
+    assert device_log_count == 1
+
+
+async def test_purge_skips_rows_pinned_to_a_live_owner(
+    hass: HomeAssistant,
+) -> None:
+    """Rows that point at the new claim's owner are not touched.
+
+    Defence in depth: even if a stale ``expected_owner`` slot somehow
+    points at an entry that *is* still installed, the purger must
+    leave rows owned by other live entries alone (the early branch in
+    ``async_claim_global_provider`` would normally short-circuit
+    before we get here, but the function must still be safe to call
+    directly with a stale key).
+    """
+
+    from custom_components.irish_rail.health import _purge_orphan_global_entities
+
+    live_entry = _entry(hass, unique_id="PEARS_Northbound")
+    entity_registry = er.async_get(hass)
+    created = entity_registry.async_get_or_create(
+        domain=DOMAIN,
+        platform=DOMAIN,
+        unique_id=GLOBAL_HEALTH_UNIQUE_ID,
+        config_entry=live_entry,
+    )
+    seeded_entity_id = created.entity_id
+    assert (
+        entity_registry.async_get_entity_id(DOMAIN, DOMAIN, GLOBAL_HEALTH_UNIQUE_ID)
+        == seeded_entity_id
+    )
+
+    # Force the purger to think the live entry is a "dead" expected
+    # owner; the row is still pinned to the live entry, so the
+    # purger's owner-equality check must skip it.
+    hass.data.setdefault(DOMAIN, {})[GLOBAL_PROVIDER_KEY] = live_entry.entry_id
+    _purge_orphan_global_entities(hass, expected_owner="SOMEONE_ELSE")
+
+
+def test_purge_skips_device_rows_with_unrelated_identifier_or_co_owners(
+    hass: HomeAssistant,
+) -> None:
+    """The device-purge branch leaves alone devices that are not ``our`` device.
+
+    Two skip cases the device-purge branch must handle correctly:
+
+    1. A device whose ``identifiers`` set does *not* contain
+       ``GLOBAL_SERVICES_IDENTIFIER`` (i.e. some other device in
+       the registry — the purger must not touch it).
+    2. A device pinned to the dead owner but *co-owned* by a live
+       config entry too (i.e. ``config_entries`` is the strict
+       set ``{dead, live}`` rather than ``{dead}`` exactly — the
+       purger must not touch it because removing it would orphan
+       the live entry's pins).
+
+    Both cases flow through the ``continue`` branches in the
+    device-purge loop; the test exercises them via the
+    ``MagicMock`` device registry and asserts that no device is
+    removed and no log is emitted.
+    """
+    from homeassistant.helpers import device_registry as dr
+
+    from custom_components.irish_rail.health import _purge_orphan_global_entities
+
+    dead_owner = "DEAD_OWNER_ID"
+    live_owner = "LIVE_OWNER_ID"
+
+    # Case 1: unrelated device identifier — not ``GLOBAL_SERVICES_IDENTIFIER``.
+    # Case 2: our identifier, but config_entries is ``{dead_owner, live_owner}``
+    # (co-owned, not strictly the dead owner).
+    fake_devices: dict[str, Any] = {
+        "unrelated_device_id": SimpleNamespace(
+            id="unrelated_device_id",
+            identifiers={(DOMAIN, "some_other_device")},
+            config_entries={dead_owner},
+        ),
+        "co_owned_device_id": SimpleNamespace(
+            id="co_owned_device_id",
+            identifiers={GLOBAL_SERVICES_IDENTIFIER},
+            config_entries={dead_owner, live_owner},
+        ),
+    }
+    fake_device_registry = MagicMock()
+    fake_device_registry.devices = fake_devices
+
+    # Force the entity-side of the purger to be a no-op so only the
+    # device-side branches are exercised.
+    fake_entity_registry = MagicMock()
+    fake_entity_registry.entities = {}
+    fake_entity_registry.async_get_entity_id.return_value = None
+
+    with (
+        patch.object(er, "async_get", return_value=fake_entity_registry),
+        patch.object(dr, "async_get", return_value=fake_device_registry),
+    ):
+        _purge_orphan_global_entities(hass, expected_owner=dead_owner)
+
+    # Neither device was removed.
+    fake_device_registry.async_remove_device.assert_not_called()
+    # The unrelated device is still there, the co-owned device is
+    # still there.
+    assert set(fake_device_registry.devices) == {
+        "unrelated_device_id",
+        "co_owned_device_id",
+    }
 
 
 # ── Scheduling internals ────────────────────────────────────────────────────

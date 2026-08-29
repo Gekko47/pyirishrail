@@ -11,7 +11,7 @@ Monitor live trains at any Irish Rail station from Home Assistant. This custom i
 |---|---|
 | Domain | `irish_rail` |
 | Type · IoT class | Service · cloud polling |
-| Quality scale | Gold — every Bronze/Silver/Gold rule done or exempt; remaining Platinum items tracked in [quality_scale.yaml](custom_components/irish_rail/quality_scale.yaml) |
+| Quality scale | **Platinum** — every Bronze/Silver/Gold/Platinum rule done or exempt; evidence in [quality_scale.yaml](custom_components/irish_rail/quality_scale.yaml) |
 | Minimum HA version | 2026.8.2 |
 
 ## Installation
@@ -32,7 +32,8 @@ Monitor live trains at any Irish Rail station from Home Assistant. This custom i
 ## Removal
 
 1. Go to **Settings → Devices & Services → Irish Rail**, click each station entry, and use the ⋮ menu's **Delete** option. Removing the last station entry automatically tears down the API-health probe, the stops-matrix rebuild button, and the `irish_rail.rebuild_stops_matrix` service.
-2. Optional: delete `irish_rail.stops_matrix.json` from HA storage to drop the per-install runtime rebuild data. Keep the bundled `stops_matrix.seed.json` inside the integration folder.3. For a HACS install, remove the **Irish Rail** entry from HACS.
+2. Optional: delete `irish_rail.stops_matrix.json` from HA storage to drop the per-install runtime rebuild data. Keep the bundled `stops_matrix.seed.json` inside the integration folder.
+3. For a HACS install, remove the **Irish Rail** entry from HACS.
 
 ## Configuration
 
@@ -197,7 +198,7 @@ pip install -e ".[dev]"                    # installs test/lint tooling only
 pytest                                     # run the test suite
 ruff check .                               # lint
 mypy custom_components/irish_rail          # strict type checking (as CI)
-pytest --cov=custom_components/irish_rail --cov-fail-under=95   # CI coverage gate
+pytest --cov=custom_components/irish_rail --cov-fail-under=100  # CI coverage gate
 ```
 
 The test suite lives under `tests/` and uses
@@ -213,9 +214,10 @@ with `aresponses` for HTTP mocking.
 ## Integration-level service entities: health sensor and matrix rebuild button
 
 Two integration-wide entities exist exactly once no matter how many station
-config entries you install, and are intentionally **not** attached to any
-device. They live on the integration's **Services** page (and the
-"Entities" tab) instead of on a per-station device card:
+config entries you install. They share a single **Irish Rail Services**
+device card (separate from the per-station devices) on the integration
+page, so they appear together as one service unit rather than as detached
+rows in the Entities tab:
 
 - The connectivity binary sensor is tagged `EntityCategory.DIAGNOSTIC`.
 - The rebuild button is tagged `EntityCategory.CONFIG`.
@@ -256,10 +258,11 @@ action is available as the service `irish_rail.rebuild_stops_matrix` for
 automations.
 
 Notes:
-- Because `stops_matrix.json` lives inside the integration folder, a HACS
-  update overwrites a runtime-rebuilt seed. The per-install learning cache
-  (`irish_rail.stops_matrix.json` in HA storage) is unaffected; re-run the
-  rebuild after an update if needed.
+- The per-install learning cache is `irish_rail.stops_matrix.json` in HA
+  storage (the runtime file the rebuild button writes). HACS updates
+  never touch it, so a runtime rebuild is preserved across upgrades.
+  The bundled seed is `stops_matrix.seed.json` inside the integration
+  folder; that file *is* overwritten on each HACS update by design.
 
 ## License
 This project is licensed under the **Apache License 2.0** — the same license used by

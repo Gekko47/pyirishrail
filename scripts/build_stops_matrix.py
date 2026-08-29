@@ -36,17 +36,17 @@ import aiohttp
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
-from custom_components.irish_rail import api as ir_api  # noqa: E402
-from custom_components.irish_rail.api import (  # noqa: E402
-    IrishRailClient,
-    IrishRailError,
-    TrainMovement,
-)
 from custom_components.irish_rail.store import (  # noqa: E402
     ALL_DIRECTIONS_KEY,
     STOPS_STORE_VERSION,
     normalize_direction_key,
 )
+from pyirishrail import (  # noqa: E402
+    IrishRailClient,
+    IrishRailError,
+    TrainMovement,
+)
+import pyirishrail.api as ir_api  # noqa: E402
 
 _LOGGER = logging.getLogger(__name__)
 

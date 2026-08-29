@@ -11,8 +11,7 @@ import aiohttp
 from aresponses import ResponsesMockServer
 import pytest
 
-from custom_components.irish_rail import api as ir_api
-from custom_components.irish_rail.api import (
+from pyirishrail import (
     IrishRailClient,
     IrishRailConnectionError,
     IrishRailParseError,
@@ -21,10 +20,11 @@ from custom_components.irish_rail.api import (
     TrainMovement,
     parse_station_data,
 )
-from custom_components.irish_rail.const import (
+from pyirishrail._const import (
     MAX_CONCURRENT_MOVEMENT_LOOKUPS,
     MOVEMENT_CACHE_MAX_ENTRIES,
 )
+import pyirishrail.api as ir_api
 
 SAMPLE_STATIONS_XML = """
 <ArrayOfObjStation xmlns="http://api.irishrail.ie/realtime/">

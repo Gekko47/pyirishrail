@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import ExitStack
 import json
 import logging
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.core import HomeAssistant
 import pytest
 
-from custom_components.irish_rail.api import IrishRailConnectionError
 from custom_components.irish_rail.matrix_rebuild import (
     RebuildResult,
     _dump_document,
@@ -23,6 +22,10 @@ from custom_components.irish_rail.matrix_rebuild import (
 from custom_components.irish_rail.store import (
     STOPS_STORE_VERSION,
     normalize_direction_key,
+)
+from pyirishrail import (
+    IrishRailConnectionError,
+    TrainMovement,
 )
 
 
@@ -58,28 +61,6 @@ def _write(path: Path, document: object) -> Path:
     return path
 
 
-def _patch_paths(runtime_path: Path, seed_path: Path) -> ExitStack:
-    """Patch both ``_matrix_path`` and ``_seed_path`` to a known pair of files.
-
-    Returns an ``ExitStack`` that the caller enters as a single ``with``
-    block — patching a tuple of contexts at once is more concise than
-    nesting two ``with`` statements and matches how the rebuild tests
-    want to chain this together with the API-client patches.
-    """
-    stack = ExitStack()
-    stack.enter_context(
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._matrix_path",
-            return_value=runtime_path,
-        )
-    )
-    stack.enter_context(
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._seed_path",
-            return_value=seed_path,
-        )
-    )
-    return stack
 
 
 # ── Pure gap-fill merge ─────────────────────────────────────────────────────
@@ -177,9 +158,10 @@ def _client_mock(stations: list[MagicMock]) -> MagicMock:
     return client
 
 
-def _read_persisted(path: Path) -> dict[str, object]:
+def _read_persisted(path: Path) -> dict[str, Any]:
     """Blocking JSON read kept out of async scope (ASYNC240 hygiene)."""
-    return json.loads(path.read_text(encoding="utf-8"))
+    result: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return result
 
 
 async def test_rebuild_samples_network_and_gap_fills(
@@ -201,11 +183,23 @@ async def test_rebuild_samples_network_and_gap_fills(
         ]
     )
 
-    def fake_scoped(movements, destination, station_code, station_name):
+    def fake_scoped(
+        movements: list[TrainMovement],
+        destination: str | None,
+        station_code: str | None,
+        station_name: str | None,
+    ) -> list[_FakeMovement]:
         return [_FakeMovement("Craughill")]
 
     with (
-        _patch_paths(matrix_path, tmp_path / "stops_matrix.seed.json"),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._matrix_path",
+            return_value=matrix_path,
+        ),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._seed_path",
+            return_value=tmp_path / "stops_matrix.seed.json",
+        ),
         patch(
             "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
             side_effect=fake_scoped,
@@ -292,7 +286,14 @@ async def test_rebuild_paces_itself_between_stations(
     from custom_components.irish_rail.const import REBUILD_DELAY_SECONDS
 
     with (
-        _patch_paths(matrix_path, tmp_path / "stops_matrix.seed.json"),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._matrix_path",
+            return_value=matrix_path,
+        ),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._seed_path",
+            return_value=tmp_path / "stops_matrix.seed.json",
+        ),
         patch(
             "custom_components.irish_rail.matrix_rebuild.asyncio.sleep",
             side_effect=tracking_sleep,
@@ -337,7 +338,14 @@ async def test_rebuild_paces_after_failed_station(
     from custom_components.irish_rail.const import REBUILD_DELAY_SECONDS
 
     with (
-        _patch_paths(matrix_path, tmp_path / "stops_matrix.seed.json"),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._matrix_path",
+            return_value=matrix_path,
+        ),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._seed_path",
+            return_value=tmp_path / "stops_matrix.seed.json",
+        ),
         patch(
             "custom_components.irish_rail.matrix_rebuild.asyncio.sleep",
             side_effect=tracking_sleep,
@@ -376,19 +384,50 @@ def test_load_base_document_repairs_malformed_json(
 
 def test_merge_station_repairs_corrupt_container_shapes() -> None:
     """Non-dict station entries and direction layers are rebuilt in place."""
-    document = {"stations": {"PEARS": "garbage"}}
+    # The deliberately-malformed values seed the repair path; declaring
+    # the documents as ``dict[str, Any]`` keeps mypy from inferring a
+    # narrower concrete value type for the entry before the merge.
+    document: dict[str, Any] = {"stations": {"PEARS": "garbage"}}
     touched, added = _merge_station(
         document, "PEARS", {normalize_direction_key("Northbound"): {"Bray"}}, "now"
     )
     assert (touched, added) == (1, 1)
     assert document["stations"]["PEARS"]["directions"]["northbound"] == ["Bray"]
 
-    document_two = {"stations": {"TARA": {"directions": "also garbage"}}}
+    document_two: dict[str, Any] = {
+        "stations": {"TARA": {"directions": "also garbage"}}
+    }
     touched, added = _merge_station(
         document_two, "TARA", {normalize_direction_key(None): {"Howth"}}, "now"
     )
     assert (touched, added) == (1, 1)
     assert document_two["stations"]["TARA"]["directions"]["_all"] == ["Howth"]
+
+
+def test_matrix_path_uses_hass_config_path(hass: HomeAssistant) -> None:
+    """The runtime rebuild file lives under ``hass.config.path()``."""
+    from custom_components.irish_rail.matrix_rebuild import _matrix_path
+
+    expected = Path(hass.config.path("stops_matrix.json"))
+    assert _matrix_path(hass) == expected
+
+
+def test_seed_path_lives_next_to_the_integration_folder() -> None:
+    """The bundled seed is a sibling of the integration's own modules.
+
+    Verified by importing the helper from the same module and
+    confirming the path ends in the documented filename; this is the
+    line that HACS overwrites on every integration update and that
+    the runtime matrix is layered on top of.
+    """
+    from custom_components.irish_rail.matrix_rebuild import _seed_path
+
+    seed_path = _seed_path()
+    assert seed_path.name == "stops_matrix.seed.json"
+    # The seed lives inside the integration folder, not under the
+    # user's HA config dir.
+    assert "custom_components" in seed_path.parts
+    assert seed_path.parent.name == "irish_rail"
 
 
 def test_dump_document_survives_temp_cleanup_failure(
@@ -433,13 +472,22 @@ async def test_movement_lookup_failure_skips_train_without_failing(
         side_effect=IrishRailConnectionError("movements down")
     )
 
-    def fake_scoped(movements, destination, station_code, station_name):
+    def fake_scoped(
+        movements: list[TrainMovement],
+        destination: str | None,
+        station_code: str | None,
+        station_name: str | None,
+    ) -> list[TrainMovement]:
         return []
 
     with (
-        _patch_paths(
-            tmp_path / "stops_matrix.json",
-            tmp_path / "stops_matrix.seed.json",
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._matrix_path",
+            return_value=tmp_path / "stops_matrix.json",
+        ),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._seed_path",
+            return_value=tmp_path / "stops_matrix.seed.json",
         ),
         patch(
             "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",

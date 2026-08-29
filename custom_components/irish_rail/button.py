@@ -1,13 +1,17 @@
 """Global button to rebuild the bundled "stops at" matrix at runtime.
 
-Integration-level service entity (no device) registered exactly once per
-Home Assistant session by whichever config entry claims providership first
-(see ``health.py``). One press samples the whole network in-process (a port
-of ``scripts/build_stops_matrix.py`` merged gap-fill style into the
-per-install ``stops_matrix.json`` under ``hass.config.path()``) and
-refreshes the bundled-seed cache, all without a Home Assistant restart.
-The ``CONFIG`` entity category keeps it out of primary UI surfaces so
-per-station devices never have to carry it.
+Integration-level service entity registered exactly once per Home
+Assistant session by whichever config entry claims providership first
+(see ``health.py``). One press samples the whole network in-process
+(a port of ``scripts/build_stops_matrix.py`` merged gap-fill style
+into the per-install ``stops_matrix.json`` under
+``hass.config.path()``) and refreshes the bundled-seed cache, all
+without a Home Assistant restart. The ``CONFIG`` entity category
+keeps it out of primary UI surfaces so per-station devices never
+have to carry it. The entity is attached to a fixed "Irish Rail
+Services" device (shared with the API connectivity binary sensor)
+so the two integration-level entities appear together on a single
+device card rather than as unattached rows in the Entities tab.
 """
 
 from __future__ import annotations
@@ -21,7 +25,6 @@ from homeassistant.components.persistent_notification import (
     async_create as pn_create,
     async_dismiss as pn_dismiss,
 )
-from homeassistant.config_entries import ConfigEntry
 
 # The EntityCategory enum is added by Home Assistant itself but the
 # typeshed stub does not re-export it, so a plain import trips mypy.
@@ -29,16 +32,24 @@ from homeassistant.config_entries import ConfigEntry
 # typeshed re-exports it from there but not from ``homeassistant.helpers.entity``.
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .api import IrishRailClient
-from .const import DOMAIN, GLOBAL_LAST_REBUILD_KEY, GLOBAL_REBUILD_UNIQUE_ID
+from pyirishrail import IrishRailClient
+
+from .const import (
+    DOMAIN,
+    GLOBAL_LAST_REBUILD_KEY,
+    GLOBAL_REBUILD_UNIQUE_ID,
+    GLOBAL_SERVICES_DEVICE_NAME,
+    GLOBAL_SERVICES_IDENTIFIER,
+)
 from .health import (
     async_claim_global_provider,
     get_health_monitor,
 )
 from .matrix_rebuild import RebuildResult, async_run_matrix_rebuild
-from .types import IrishRailRuntimeData
+from .types import IrishRailConfigEntry, IrishRailRuntimeData
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -89,6 +100,18 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
     _attr_translation_key = "rebuild_stops_matrix"
     _attr_unique_id = GLOBAL_REBUILD_UNIQUE_ID
     _attr_entity_category = EntityCategory.CONFIG
+    # The rebuild button and the API connectivity binary sensor share
+    # a single fixed-identifier service device so they render together
+    # on the integration page (see ``health.py`` for the matching
+    # orphan-purge on ownership transfer).
+    _attr_device_info = DeviceInfo(
+        identifiers={GLOBAL_SERVICES_IDENTIFIER},
+        name=GLOBAL_SERVICES_DEVICE_NAME,
+        manufacturer="Iarnród Éireann / Irish Rail",
+        model="RTPI integration services",
+        entry_type=DeviceEntryType.SERVICE,
+        configuration_url="https://api.irishrail.ie",
+    )
 
     def __init__(self, hass: HomeAssistant, client: IrishRailClient) -> None:
         """Initialize the rebuild button."""
@@ -204,7 +227,7 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
         return dict(_UNSET_ATTRIBUTES)
 
 
-def _runtime_client(entry: ConfigEntry) -> IrishRailClient | None:
+def _runtime_client(entry: IrishRailConfigEntry) -> IrishRailClient | None:
     """Best-effort fetch of the shared client from entry runtime data."""
     runtime = getattr(entry, "runtime_data", None)
     if isinstance(runtime, IrishRailRuntimeData):
@@ -214,7 +237,7 @@ def _runtime_client(entry: ConfigEntry) -> IrishRailClient | None:
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: IrishRailConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the global rebuild button exactly once per session."""

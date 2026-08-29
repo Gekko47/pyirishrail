@@ -6,7 +6,6 @@ from collections.abc import Generator, Iterator
 from typing import cast
 from unittest.mock import MagicMock, patch
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -18,6 +17,7 @@ from custom_components.irish_rail.const import (
     CONF_STATION_CODE,
     DOMAIN,
 )
+from custom_components.irish_rail.types import IrishRailConfigEntry
 
 
 @pytest.fixture(autouse=True)
@@ -45,10 +45,10 @@ def _allow_aresponses_sockets(request: pytest.FixtureRequest) -> Iterator[None]:
 
 
 @pytest.fixture
-def mock_config_entry(hass: HomeAssistant) -> ConfigEntry:
+def mock_config_entry(hass: HomeAssistant) -> IrishRailConfigEntry:
     """Create a mock config entry for the Irish Rail integration."""
     return cast(
-        ConfigEntry,
+        IrishRailConfigEntry,
         MockConfigEntry(
             domain=DOMAIN,
             title="Dublin Pearse",

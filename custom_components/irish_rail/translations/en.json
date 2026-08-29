@@ -110,9 +110,6 @@
       },
       "next_train_delay": {
         "name": "Next train delay"
-      },
-      "next_train_type": {
-        "name": "Next train type"
       }
     }
   },

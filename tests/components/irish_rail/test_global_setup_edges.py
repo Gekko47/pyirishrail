@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irish_rail import (
@@ -26,9 +26,13 @@ from custom_components.irish_rail.health import (
     ensure_health_monitor_started,
     get_health_monitor,
 )
+from custom_components.irish_rail.types import (
+    IrishRailConfigEntry,
+    IrishRailRuntimeData,
+)
 
 
-def _bare_entry(hass: HomeAssistant, unique_id: str) -> ConfigEntry:
+def _bare_entry(hass: HomeAssistant, unique_id: str) -> IrishRailConfigEntry:
     """Register a minimal entry with no runtime data attached."""
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -37,7 +41,7 @@ def _bare_entry(hass: HomeAssistant, unique_id: str) -> ConfigEntry:
         unique_id=unique_id,
     )
     entry.add_to_hass(hass)
-    return entry
+    return cast(IrishRailConfigEntry, entry)
 
 
 def _collector() -> tuple[list[Any], Any]:
@@ -58,7 +62,15 @@ async def test_binary_sensor_setup_bootstraps_monitor_from_runtime_client(
 ) -> None:
     """A platform-only setup mints the shared monitor from runtime client."""
     entry = _bare_entry(hass, "PEARS_northbound")
-    entry.runtime_data = SimpleNamespace(client=MagicMock(name="runtime-client"))
+    # The ``cast`` is necessary because the test deliberately bypasses
+    # the ``IrishRailRuntimeData`` dataclass: the binary sensor's
+    # ``async_setup_entry`` reads ``entry.runtime_data.client`` and
+    # must cope with any duck-typed container, so the test exercises
+    # that fallback.
+    entry.runtime_data = cast(
+        IrishRailRuntimeData,
+        SimpleNamespace(client=MagicMock(name="runtime-client")),
+    )
     added, add_entities = _collector()
 
     await ir_binary_sensor.async_setup_entry(hass, entry, add_entities)
@@ -71,7 +83,7 @@ async def test_binary_sensor_setup_bootstraps_monitor_from_runtime_client(
 
 async def test_binary_sensor_setup_without_client_warns_and_skips(
     hass: HomeAssistant,
-    caplog: logging.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """No runtime client and no monitor means no sensor, just a warning."""
     entry = _bare_entry(hass, "PEARS_southbound")
@@ -95,7 +107,12 @@ async def test_button_setup_falls_back_to_monitor_client(
     ensure_health_monitor_started(hass, sentinel_client)
 
     entry = _bare_entry(hass, "KENT_all")
-    entry.runtime_data = SimpleNamespace(client=None)
+    # Duck-typed runtime container: see the comment in
+    # ``test_binary_sensor_setup_bootstraps_monitor_from_runtime_client``.
+    entry.runtime_data = cast(
+        IrishRailRuntimeData,
+        SimpleNamespace(client=None),
+    )
     added, add_entities = _collector()
 
     await ir_button.async_setup_entry(hass, entry, add_entities)
@@ -107,7 +124,7 @@ async def test_button_setup_falls_back_to_monitor_client(
 
 async def test_button_setup_without_any_client_warns_and_skips(
     hass: HomeAssistant,
-    caplog: logging.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Neither a runtime client nor a monitor leaves nothing registered."""
     entry = _bare_entry(hass, "TARA_all")

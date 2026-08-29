@@ -34,7 +34,7 @@ async def test_config_entry_diagnostics(hass: HomeAssistant) -> None:
     entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -124,7 +124,7 @@ async def test_diagnostics_redacts_sensitive_options(hass: HomeAssistant) -> Non
     entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)

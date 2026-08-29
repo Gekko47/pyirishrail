@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import (
@@ -14,7 +13,8 @@ from homeassistant.helpers import (
 )
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import IrishRailClient
+from pyirishrail import IrishRailClient
+
 from .const import DOMAIN
 from .coordinator import (
     IrishRailDataUpdateCoordinator,
@@ -22,7 +22,7 @@ from .coordinator import (
     resolve_scan_interval,
 )
 from .health import async_note_entry_loaded, async_note_entry_unloaded
-from .types import IrishRailRuntimeData
+from .types import IrishRailConfigEntry, IrishRailRuntimeData
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,7 +33,9 @@ PLATFORMS: list[Platform] = [
 ]
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(
+    hass: HomeAssistant, entry: IrishRailConfigEntry
+) -> bool:
     """Set up Irish Rail from a config entry."""
     session = async_get_clientsession(hass)
     client = IrishRailClient(session)
@@ -64,7 +66,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 @callback
 def _async_drop_stale_identity_registries(
-    hass: HomeAssistant, entry: ConfigEntry, previous_uid: str
+    hass: HomeAssistant, entry: IrishRailConfigEntry, previous_uid: str
 ) -> None:
     """Remove registry entries belonging to the entry's previous identity.
 
@@ -100,7 +102,9 @@ def _async_drop_stale_identity_registries(
             device_registry.async_remove_device(device_entry.id)
 
 
-async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def _async_update_listener(
+    hass: HomeAssistant, entry: IrishRailConfigEntry
+) -> None:
     """Handle config-entry updates: reload on data changes, options in place.
 
     Since HA 2026.6 an integration with an update listener must own reload
@@ -124,7 +128,9 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     coordinator.update_interval = resolve_scan_interval(entry)
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(
+    hass: HomeAssistant, entry: IrishRailConfigEntry
+) -> bool:
     """Unload a config entry."""
     # Remove any pending empty-data repair issue so a stale warning is not
     # left behind for an unloaded entry; a reload re-evaluates from scratch.

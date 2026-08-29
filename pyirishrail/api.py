@@ -3,108 +3,53 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 import datetime
 import logging
-from typing import Final
 from xml.etree.ElementTree import Element
 
 import aiohttp
 from defusedxml.common import DefusedXmlException
 import defusedxml.ElementTree as ET
 
-from .const import (
+from ._const import (
+    API_BASE_URL,
     DEFAULT_TIMEOUT,
     MAX_CONCURRENT_MOVEMENT_LOOKUPS,
     MOVEMENT_CACHE_MAX_ENTRIES,
+    STATION_TYPE_TO_CODE_DICT,
+)
+from .errors import (
+    IrishRailConnectionError,
+    IrishRailError,
+    IrishRailParseError,
+    IrishRailTimeoutError,
+)
+from .models import (
+    Station,
+    TrainDueTime,
+    TrainMovement,
+    TrainPosition,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-API_BASE_URL: Final = "https://api.irishrail.ie/realtime/realtime.asmx/"
-
-STATION_TYPE_TO_CODE_DICT: Final[dict[str, str]] = {
-    "mainline": "M",
-    "suburban": "S",
-    "dart": "D",
-}
-
-
-class IrishRailError(Exception):
-    """Base exception for Irish Rail API errors."""
-
-
-class IrishRailConnectionError(IrishRailError):
-    """Exception to indicate a connection error."""
-
-
-class IrishRailTimeoutError(IrishRailError):
-    """Exception to indicate an API timeout."""
-
-
-class IrishRailParseError(IrishRailError):
-    """Exception to indicate an XML parsing error."""
-
-
-@dataclass(frozen=True)
-class Station:
-    """Represents an Irish Rail station."""
-
-    name: str
-    alias: str | None
-    latitude: float
-    longitude: float
-    code: str
-    id: str
-
-
-@dataclass(frozen=True)
-class TrainDueTime:
-    """Represents a train due at a station."""
-
-    code: str
-    origin: str
-    destination: str
-    origin_time: str
-    destination_time: str
-    due_in_mins: int
-    late_mins: int
-    expected_arrival_time: str
-    expected_departure_time: str
-    scheduled_arrival_time: str
-    scheduled_departure_time: str
-    type: str
-    direction: str
-    location_type: str
-
-
-@dataclass(frozen=True)
-class TrainPosition:
-    """Represents the real-time position of a train."""
-
-    status: str
-    latitude: float
-    longitude: float
-    code: str
-    date: str
-    message: str
-    direction: str
-
-
-@dataclass(frozen=True)
-class TrainMovement:
-    """Represents a movement/stop of a train."""
-
-    code: str
-    date: str
-    location_code: str
-    location: str
-    origin: str
-    destination: str
-    expected_arrival_time: str
-    expected_departure_time: str
-    scheduled_arrival_time: str
-    scheduled_departure_time: str
+__all__ = [
+    'API_BASE_URL',
+    'DEFAULT_TIMEOUT',
+    'MAX_CONCURRENT_MOVEMENT_LOOKUPS',
+    'MOVEMENT_CACHE_MAX_ENTRIES',
+    'STATION_TYPE_TO_CODE_DICT',
+    'IrishRailClient',
+    'IrishRailConnectionError',
+    'IrishRailError',
+    'IrishRailParseError',
+    'IrishRailTimeoutError',
+    'Station',
+    'TrainDueTime',
+    'TrainMovement',
+    'TrainPosition',
+    'parse_station_data',
+]
 
 
 def _strip_namespaces(root: Element) -> Element:

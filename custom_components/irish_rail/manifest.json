@@ -8,7 +8,7 @@
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/Gekko47/pyirishrail/issues",
-  "quality_scale": "gold",
-  "requirements": ["defusedxml>=0.7.1"],
-  "version": "0.1.9"
+  "quality_scale": "platinum",
+  "requirements": ["pyirishrail>=0.2,<1.0"],
+  "version": "0.2.0"
 }

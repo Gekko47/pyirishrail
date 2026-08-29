@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 import logging
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 from homeassistant.core import HomeAssistant
@@ -22,7 +24,7 @@ from custom_components.irish_rail.store import (
 
 
 @pytest.fixture(autouse=True)
-def _reset_seed_cache() -> None:
+def _reset_seed_cache() -> Generator[None]:
     """Keep the module-level seed cache isolated between tests."""
     ir_store._SEED_CACHE = None
     yield
@@ -40,8 +42,13 @@ def test_normalize_direction_key_buckets_directionless_filters() -> None:
 def test_lookup_in_matrix_tolerates_malformed_shapes() -> None:
     """Every malformed layer yields ``None`` instead of raising."""
     assert lookup_in_matrix(None, "PEARS", None) is None
-    assert lookup_in_matrix([], "PEARS", None) is None
-    assert lookup_in_matrix({}, "PEARS", None) is None
+    # The two malformed inputs below are deliberately typed as the
+    # static ``dict[str, Any] | None`` the function expects, so mypy's
+    # strict check on the contract still holds. At runtime the function
+    # inspects the value's shape and returns ``None`` when it is not
+    # the expected dict.
+    assert lookup_in_matrix(cast("dict[str, Any] | None", []), "PEARS", None) is None
+    assert lookup_in_matrix(cast("dict[str, Any] | None", {}), "PEARS", None) is None
     assert lookup_in_matrix({"stations": []}, "PEARS", None) is None
     assert lookup_in_matrix({"stations": {"PEARS": None}}, "PEARS", None) is None
 
@@ -173,6 +180,11 @@ async def test_bundled_seed_with_nondict_json_degrades_to_empty(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A seed file holding a JSON array is rejected by validation."""
-    with patch.object(ir_store.json, "loads", return_value=["not", "a", "dict"]):
+    # Patch the stdlib ``json.loads`` the store module imported, not
+    # ``ir_store.json``: the latter is a mypy-inferred attribute and
+    # patching it triggers ``attr-defined`` complaints.
+    import json as json_module
+
+    with patch.object(json_module, "loads", return_value=["not", "a", "dict"]):
         assert await async_load_bundled_stops_matrix() == {}
     assert "Could not load bundled stops matrix" in caplog.text

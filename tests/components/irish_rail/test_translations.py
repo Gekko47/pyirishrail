@@ -16,6 +16,7 @@ stay structurally aligned (standing requirement, Skill 09).
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import json
 from pathlib import Path
 import re
@@ -29,7 +30,6 @@ ENTITY_SENSOR_KEYS = {
     "next_train_due",
     "next_train_destination",
     "next_train_delay",
-    "next_train_type",
 }
 
 
@@ -116,7 +116,7 @@ def test_translations_contain_no_unclosed_html_tags(file_name: str) -> None:
     """
     data = _load_json(file_name)
 
-    def _walk(value: Any):
+    def _walk(value: Any) -> Iterator[str]:
         if isinstance(value, dict):
             for sub in value.values():
                 yield from _walk(sub)

@@ -24,7 +24,7 @@ async def test_setup_unload_entry(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
@@ -78,7 +78,7 @@ async def test_unload_and_reload_restores_entities(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
@@ -88,7 +88,10 @@ async def test_unload_and_reload_restores_entities(
     entity_ids_before = sorted(
         state.entity_id for state in hass.states.async_all("sensor")
     )
-    assert len(entity_ids_before) == 4
+    # Three sensor entities per station: arrival timestamp,
+    # destination, and delay. ``next_train_type`` was retired; the
+    # train type now lives on the device's attributes.
+    assert len(entity_ids_before) == 3
 
     # Unload: platforms unloaded and entities removed from the state machine.
     assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
@@ -105,7 +108,7 @@ async def test_unload_and_reload_restores_entities(
 
     # Reload: setup runs again and the same entities are restored.
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_reload(mock_config_entry.entry_id)
@@ -129,7 +132,7 @@ async def test_unload_removes_pending_empty_data_repair_issue(
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[],
         ),
         patch(
@@ -183,7 +186,9 @@ async def test_global_provider_purges_orphan_entities_when_owner_removed(
         GLOBAL_REBUILD_UNIQUE_ID,
     )
 
-    def _find_by_unique_id(reg, unique_id):
+    def _find_by_unique_id(
+        reg: er.EntityRegistry, unique_id: str
+    ) -> str | None:
         for entry in reg.entities.values():
             if entry.unique_id == unique_id:
                 return entry.entity_id
@@ -197,7 +202,7 @@ async def test_global_provider_purges_orphan_entities_when_owner_removed(
     )
     first.add_to_hass(hass)
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_setup(first.entry_id)
@@ -210,6 +215,23 @@ async def test_global_provider_purges_orphan_entities_when_owner_removed(
     assert await hass.config_entries.async_remove(first.entry_id)
     await hass.async_block_till_done()
 
+    # ``ConfigEntries.async_remove`` calls ``ent_reg.async_clear_config_entry``,
+    # which sweeps every entity-registry row pinned to the removed
+    # ``first.entry_id`` -- so the two global-entity rows are gone before
+    # the next entry's ``async_claim_global_provider`` even runs. The
+    # ``_purge_orphan_global_entities`` path in ``health.py`` is the
+    # fallback that handles the *uncommon* case where a row is left
+    # pinned to a dead owner through some other channel (e.g. a manual
+    # registry edit or a future removal path that bypasses HA core's
+    # cleanup). Asserting the clean state here pins the contract and
+    # would catch a regression that re-introduced a stale orphan row.
+    assert _find_by_unique_id(registry, GLOBAL_HEALTH_UNIQUE_ID) is None
+    assert _find_by_unique_id(registry, GLOBAL_REBUILD_UNIQUE_ID) is None
+    assert not any(
+        candidate.entry_id == first.entry_id
+        for candidate in hass.config_entries.async_entries(DOMAIN)
+    )
+
     second = MockConfigEntry(
         domain=DOMAIN,
         title="Cork Kent",
@@ -218,7 +240,7 @@ async def test_global_provider_purges_orphan_entities_when_owner_removed(
     )
     second.add_to_hass(hass)
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_setup(second.entry_id)

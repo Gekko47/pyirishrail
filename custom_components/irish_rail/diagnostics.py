@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import (
@@ -16,7 +15,7 @@ from .const import (
     GLOBAL_LAST_REBUILD_KEY,
 )
 from .health import get_health_monitor
-from .types import IrishRailRuntimeData
+from .types import IrishRailConfigEntry, IrishRailRuntimeData
 
 # Sensitive fields are partially masked (not fully redacted) so maintainers
 # can still tell what a user's setup looks like without exposing the full
@@ -60,7 +59,7 @@ def _project_entry_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 async def async_get_config_entry_diagnostics(
-    hass: HomeAssistant, entry: ConfigEntry
+    hass: HomeAssistant, entry: IrishRailConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry, redacting station identifiers."""
     data: IrishRailRuntimeData | None = getattr(entry, "runtime_data", None)

@@ -5,17 +5,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from homeassistant.config_entries import (
-    ConfigEntry,
-    ConfigFlow,
-    ConfigFlowResult,
-    OptionsFlow,
-)
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import voluptuous as vol
 
-from .api import IrishRailClient, IrishRailError, Station
+from pyirishrail import IrishRailClient, IrishRailError, Station
+
 from .const import (
     CONF_DIRECTION,
     CONF_ENABLE_DIRECTION_FILTER,
@@ -35,6 +31,7 @@ from .const import (
     MIN_SCAN_INTERVAL_SECONDS,
 )
 from .store import async_load_bundled_stops_matrix, get_stops_store, lookup_in_matrix
+from .types import IrishRailConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -115,7 +112,9 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> IrishRailOptionsFlow:
+    def async_get_options_flow(
+        config_entry: IrishRailConfigEntry,
+    ) -> IrishRailOptionsFlow:
         """Create the options flow handler."""
         return IrishRailOptionsFlow()
 
@@ -638,7 +637,7 @@ class IrishRailOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Manage the integration options."""
-        entry: ConfigEntry = self.config_entry
+        entry: IrishRailConfigEntry = self.config_entry
         current_interval = int(
             entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL.total_seconds())
         )

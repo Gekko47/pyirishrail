@@ -1,8 +1,18 @@
 name: CI
 
+# Two-job matrix (roadmap Phase 5.3): the ``library`` job covers the
+# published ``pyirishrail`` package (lint + strict mypy + pytest +
+# wheel build) and the ``integration`` job covers the Home Assistant
+# integration that depends on it (lint + strict mypy on the
+# integration *and* its tests, mirroring the home-assistant/core
+# ``.strict-typing`` convention, plus pytest with a 100% line
+# coverage gate). Both jobs share a single ``hassfest`` validation pass.
+
 on:
   push:
     branches: [master]
+    tags:
+      - "v*"
   pull_request:
     branches: [master]
 
@@ -10,7 +20,8 @@ permissions:
   contents: read
 
 jobs:
-  lint-and-test:
+  library:
+    name: pyirishrail (library)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -27,16 +38,67 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Ruff lint
-        run: ruff check .
+      - name: Ruff lint (library)
+        run: ruff check pyirishrail
 
-      - name: Mypy (strict)
-        run: mypy custom_components/irish_rail
+      - name: Mypy strict (library)
+        run: mypy pyirishrail
 
-      - name: Pytest with coverage
-        run: pytest --cov=custom_components/irish_rail --cov-report=term-missing --cov-fail-under=100
+      - name: Pytest (library) with coverage
+        run: |
+          pytest tests/pyirishrail tests/test_win_stubs.py \
+            --cov=pyirishrail \
+            --cov-report=term-missing \
+            --cov-fail-under=100
+
+      - name: Build wheel
+        run: python -m build --wheel
+
+      - name: Inspect wheel contents
+        run: |
+          python -m zipfile -l dist/pyirishrail-*.whl
+
+  integration:
+    name: irish_rail (integration)
+    runs-on: ubuntu-latest
+    # The integration job installs the same editable checkout the
+    # library job produced; the package boundary is honest at install
+    # time (it would also accept a built wheel artifact in a future
+    # refinement). Running it after ``library`` keeps the two
+    # workspaces in lockstep without forcing a hard dependency on
+    # the matrix ordering.
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff lint (integration + tests)
+        run: ruff check custom_components/irish_rail tests/components/irish_rail scripts
+
+      # Phase 5.2: mypy now covers the integration *and* its tests,
+      # mirroring the home-assistant/core ``.strict-typing`` convention.
+      - name: Mypy strict (integration + tests)
+        run: mypy custom_components/irish_rail tests/components/irish_rail
+
+      - name: Pytest (integration) with coverage
+        run: |
+          pytest tests/components/irish_rail tests/test_win_stubs.py \
+            --cov=custom_components/irish_rail \
+            --cov-report=term-missing \
+            --cov-fail-under=100
 
   hassfest:
+    name: hassfest
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

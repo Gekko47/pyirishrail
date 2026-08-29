@@ -14,10 +14,6 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.irish_rail.api import (
-    IrishRailConnectionError,
-    TrainDueTime,
-)
 from custom_components.irish_rail.const import (
     BACKOFF_MULTIPLIER,
     CONF_STATION,
@@ -32,6 +28,10 @@ from custom_components.irish_rail.coordinator import (
     resolve_num_trains,
     resolve_scan_interval,
     resolve_stops_at,
+)
+from pyirishrail import (
+    IrishRailConnectionError,
+    TrainDueTime,
 )
 
 
@@ -822,7 +822,7 @@ async def test_recovery_deletes_issue_raised_by_previous_coordinator_instance(
 
 
 def test_previous_unique_id_none_without_station_code(
-    hass: HomeAssistant, mock_api_client
+    hass: HomeAssistant, mock_api_client: MagicMock
 ) -> None:
     """previous_unique_id() yields None when applied data lacks a code."""
     entry = _entry_with(data={"station_code": ""})

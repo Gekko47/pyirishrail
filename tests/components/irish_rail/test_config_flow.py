@@ -15,11 +15,6 @@ from homeassistant.helpers import device_registry, entity_registry
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.irish_rail.api import (
-    IrishRailConnectionError,
-    Station,
-    TrainDueTime,
-)
 from custom_components.irish_rail.config_flow import IrishRailConfigFlow
 from custom_components.irish_rail.const import (
     CONF_DIRECTION,
@@ -30,6 +25,11 @@ from custom_components.irish_rail.const import (
     DOMAIN,
 )
 from custom_components.irish_rail.store import get_stops_store
+from pyirishrail import (
+    IrishRailConnectionError,
+    Station,
+    TrainDueTime,
+)
 
 
 def _mock_station() -> Station:
@@ -110,7 +110,7 @@ async def _setup_entry(hass: HomeAssistant) -> MockConfigEntry:
     """Add and fully set up a mock config entry."""
     entry = _add_entry(hass)
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[_mock_train()],
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -122,11 +122,11 @@ async def test_config_flow_success(hass: HomeAssistant) -> None:
     """Test successful config flow."""
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
     ):
@@ -171,7 +171,7 @@ async def test_config_flow_success(hass: HomeAssistant) -> None:
 async def test_config_flow_connection_error(hass: HomeAssistant) -> None:
     """Test config flow with connection error on form render."""
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+        "pyirishrail.api.IrishRailClient.async_get_all_stations",
         side_effect=IrishRailConnectionError,
     ):
         result = await hass.config_entries.flow.async_init(
@@ -186,7 +186,7 @@ async def test_config_flow_submit_when_stations_unavailable_preserves_error(
 ) -> None:
     """Test that submitting while stations are unavailable keeps cannot_connect."""
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+        "pyirishrail.api.IrishRailClient.async_get_all_stations",
         side_effect=IrishRailConnectionError,
     ):
         result = await hass.config_entries.flow.async_init(
@@ -209,11 +209,11 @@ async def test_config_flow_no_matching_stations(hass: HomeAssistant) -> None:
     """A filter matching nothing re-shows the search with an error."""
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
     ):
@@ -254,11 +254,11 @@ async def test_config_flow_duplicate_abort(hass: HomeAssistant) -> None:
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
     ):
@@ -294,11 +294,11 @@ async def test_config_flow_stores_num_trains(hass: HomeAssistant) -> None:
     """Test the user step stores the requested number of upcoming trains."""
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
     ):
@@ -333,11 +333,11 @@ async def test_user_step_offers_only_discovered_directions(
     """A non-corridor station sees its own "To ..." values, never N/S."""
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_cork_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[
                 _train_with_direction("To Cobh"),
                 _train_with_direction("To Dublin Heuston", 20),
@@ -361,7 +361,9 @@ async def test_user_step_offers_only_discovered_directions(
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "directions"
 
-        schema = result["data_schema"].schema
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        schema = data_schema.schema
         direction_key = next(
             k for k in schema if getattr(k, "schema", None) == CONF_DIRECTION
         )
@@ -388,11 +390,11 @@ async def test_directions_step_falls_back_to_free_text_on_discovery_error(
     """Discovery failure degrades to free text instead of wrong guesses."""
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_directions",
+            "pyirishrail.api.IrishRailClient.async_get_station_directions",
             side_effect=IrishRailConnectionError,
         ),
     ):
@@ -413,7 +415,9 @@ async def test_directions_step_falls_back_to_free_text_on_discovery_error(
         assert result["step_id"] == "directions"
 
         # Without discovered values the field accepts arbitrary text.
-        schema = result["data_schema"].schema
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        schema = data_schema.schema
         direction_key = next(
             k for k in schema if getattr(k, "schema", None) == CONF_DIRECTION
         )
@@ -434,15 +438,15 @@ async def test_reconfigure_flow_success(hass: HomeAssistant) -> None:
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=_both_direction_trains(),
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_directions",
+            "pyirishrail.api.IrishRailClient.async_get_station_directions",
             return_value=["Northbound", "Southbound"],
         ),
     ):
@@ -475,11 +479,11 @@ async def test_reconfigure_flow_direction_all_clears_filter(
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
     ):
@@ -508,11 +512,11 @@ async def test_directions_step_defaults_to_all_when_no_trains_due(
     """An empty due-train list (overnight quiet period) also degrades."""
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_directions",
+            "pyirishrail.api.IrishRailClient.async_get_station_directions",
             return_value=[],
         ),
     ):
@@ -557,15 +561,15 @@ async def test_stops_at_step_lists_discovered_relevant_stops(
     )
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station(), bray],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            "pyirishrail.api.IrishRailClient.async_get_station_stops_at_options",
             return_value=["Bray", "Howth"],
         ),
     ):
@@ -593,7 +597,9 @@ async def test_stops_at_step_lists_discovered_relevant_stops(
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "stops_at"
 
-        schema = result["data_schema"].schema
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        schema = data_schema.schema
         stops_at_key = next(
             k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
         )
@@ -620,11 +626,11 @@ async def test_filter_options_both_off_creates_unfiltered_entry(
     """Unticked checkboxes finalize immediately with no filter keys."""
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
     ):
@@ -667,7 +673,7 @@ async def test_reconfigure_preserves_seeded_stops_at(
     )
     entry.add_to_hass(hass)
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[_mock_train()],
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -675,11 +681,11 @@ async def test_reconfigure_preserves_seeded_stops_at(
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_directions",
+            "pyirishrail.api.IrishRailClient.async_get_station_directions",
             return_value=["Northbound", "Southbound"],
         ),
     ):
@@ -718,7 +724,7 @@ async def test_reconfigure_keeps_stored_value_selectable_when_unsampled(
     )
     entry.add_to_hass(hass)
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[_mock_train()],
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -726,11 +732,11 @@ async def test_reconfigure_keeps_stored_value_selectable_when_unsampled(
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_directions",
+            "pyirishrail.api.IrishRailClient.async_get_station_directions",
             return_value=["Northbound"],
         ),
         patch.object(
@@ -748,7 +754,9 @@ async def test_reconfigure_keeps_stored_value_selectable_when_unsampled(
         )
         assert result["type"] == data_entry_flow.FlowResultType.FORM
 
-        schema = result["data_schema"].schema
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        schema = data_schema.schema
         direction_key = next(
             k for k in schema if getattr(k, "schema", None) == CONF_DIRECTION
         )
@@ -786,11 +794,11 @@ async def test_reconfigure_flow_rejects_duplicate_identity(
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_directions",
+            "pyirishrail.api.IrishRailClient.async_get_station_directions",
             return_value=["Northbound", "Southbound"],
         ),
     ):
@@ -817,7 +825,7 @@ async def test_reconfigure_flow_cannot_connect(hass: HomeAssistant) -> None:
     entry = _add_entry(hass)
 
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+        "pyirishrail.api.IrishRailClient.async_get_all_stations",
         side_effect=IrishRailConnectionError,
     ):
         result = await hass.config_entries.flow.async_init(
@@ -863,7 +871,7 @@ async def test_reconfigure_flow_invalid_station(hass: HomeAssistant) -> None:
     }
 
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+        "pyirishrail.api.IrishRailClient.async_get_all_stations",
         return_value=[_mock_station()],
     ):
         result = await flow.async_step_reconfigure({"direction": "All"})
@@ -881,15 +889,15 @@ async def test_reconfigure_flow_reload_failure_still_updates_data(
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_directions",
+            "pyirishrail.api.IrishRailClient.async_get_station_directions",
             return_value=["Northbound", "Southbound"],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             side_effect=Exception("boom"),
         ),
     ):
@@ -915,7 +923,7 @@ async def test_options_flow_updates_interval_and_num_trains(
     entry = await _setup_entry(hass)
 
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+        "pyirishrail.api.IrishRailClient.async_get_all_stations",
         return_value=[_mock_station()],
     ):
         result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -951,7 +959,7 @@ async def test_options_flow_rejects_out_of_range_values(
         {"scan_interval": 60, "num_trains": 0},  # train count below 1
     )
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+        "pyirishrail.api.IrishRailClient.async_get_all_stations",
         return_value=[_mock_station()],
     ):
         for bad_input in bad_inputs:
@@ -988,7 +996,7 @@ async def test_options_flow_defaults_reflect_current_settings(
     entry = await _setup_entry(hass)
 
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+        "pyirishrail.api.IrishRailClient.async_get_all_stations",
         return_value=[_mock_station()],
     ):
         result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -1038,7 +1046,7 @@ async def test_options_flow_stops_at_dropdown_and_selection(
     entry = await _setup_entry(hass)
 
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+        "pyirishrail.api.IrishRailClient.async_get_all_stations",
         return_value=[_mock_station()],
     ):
         result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -1046,7 +1054,9 @@ async def test_options_flow_stops_at_dropdown_and_selection(
         assert result["step_id"] == "init"
 
         # The stops_at field is a dropdown of station names plus "All".
-        schema = result["data_schema"].schema
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        schema = data_schema.schema
         stops_at_key = next(
             k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
         )
@@ -1069,13 +1079,15 @@ async def test_options_flow_stops_at_all_clears_filter(
     entry = _add_entry_with_options(hass, {CONF_STOPS_AT: "Bray"})
 
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+        "pyirishrail.api.IrishRailClient.async_get_all_stations",
         return_value=[_mock_station()],
     ):
         result = await hass.config_entries.options.async_init(entry.entry_id)
 
         # The form pre-fills the currently configured filter.
-        schema = result["data_schema"].schema
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        schema = data_schema.schema
         stops_at_key = next(
             k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
         )
@@ -1097,7 +1109,7 @@ async def test_options_flow_stops_at_free_text_fallback_on_connection_error(
     entry = _add_entry_with_options(hass, {})
 
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+        "pyirishrail.api.IrishRailClient.async_get_all_stations",
         side_effect=IrishRailConnectionError,
     ):
         result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -1105,7 +1117,9 @@ async def test_options_flow_stops_at_free_text_fallback_on_connection_error(
         assert result["step_id"] == "init"
 
         # Without a station list the field accepts arbitrary text.
-        schema = result["data_schema"].schema
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        schema = data_schema.schema
         stops_at_key = next(
             k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
         )
@@ -1139,15 +1153,15 @@ async def test_reconfigure_schedules_single_reload_via_listener(
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=_both_direction_trains(),
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_directions",
+            "pyirishrail.api.IrishRailClient.async_get_station_directions",
             return_value=["Northbound", "Southbound"],
         ),
         patch.object(
@@ -1186,7 +1200,7 @@ async def test_options_change_does_not_schedule_reload(
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch.object(
@@ -1221,11 +1235,11 @@ async def test_reconfigure_unchanged_direction_skips_reload(
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_directions",
+            "pyirishrail.api.IrishRailClient.async_get_station_directions",
             return_value=["Northbound"],
         ),
         patch.object(
@@ -1269,11 +1283,12 @@ async def test_reconfigure_direction_change_drops_old_entities_and_device(
             ent_reg, entry.entry_id
         )
     ]
-    # Four station sensors plus the two shared service entities (health
+    # Three station sensors plus the two shared service entities (health
     # sensor + rebuild button) registered with this entry via the
-    # binary_sensor / button platforms. They carry no DeviceInfo so they
-    # never appear on any per-station device.
-    assert len(old_entity_ids) == 6
+    # binary_sensor / button platforms. ``next_train_type`` was retired
+    # and now lives on the device's attributes rather than as a
+    # standalone sensor entity.
+    assert len(old_entity_ids) == 5
     old_device_id = device_registry.async_get_device_id_by_identifier(
         hass, (DOMAIN, "PEARS_northbound"), config_entry_id=entry.entry_id
     )
@@ -1281,15 +1296,15 @@ async def test_reconfigure_direction_change_drops_old_entities_and_device(
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=_both_direction_trains(),
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_directions",
+            "pyirishrail.api.IrishRailClient.async_get_station_directions",
             return_value=["Northbound", "Southbound"],
         ),
     ):
@@ -1324,9 +1339,9 @@ async def test_reconfigure_direction_change_drops_old_entities_and_device(
         if deleted_entry.config_entry_id == entry.entry_id
         and str(deleted_entry.unique_id).startswith("PEARS_northbound")
     ]
-    assert len(deleted) == 4
+    assert len(deleted) == 3
 
-    # The four new station-sensor entities carry the new identity; the two
+    # The three new station-sensor entities carry the new identity; the two
     # shared service entities keep their fixed unique IDs on the same entry.
     live = entity_registry.async_entries_for_config_entry(ent_reg, entry.entry_id)
     southbound_sensors = [
@@ -1334,7 +1349,8 @@ async def test_reconfigure_direction_change_drops_old_entities_and_device(
         for registry_entry in live
         if str(registry_entry.unique_id).startswith("PEARS_southbound")
     ]
-    assert len(southbound_sensors) == 4
+    # Three station sensors per entry: ``next_train_type`` was retired.
+    assert len(southbound_sensors) == 3
     assert all(
         str(registry_entry.unique_id).startswith("PEARS_southbound")
         for registry_entry in southbound_sensors
@@ -1377,15 +1393,15 @@ async def test_direction_flip_back_restores_prior_customization(
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=_both_direction_trains(),
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_directions",
+            "pyirishrail.api.IrishRailClient.async_get_station_directions",
             return_value=["Northbound", "Southbound"],
         ),
     ):
@@ -1455,7 +1471,7 @@ async def test_reconfigure_leaves_sibling_direction_entries_untouched(
     )
     all_entry.add_to_hass(hass)
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[_mock_train()],
     ):
         assert await hass.config_entries.async_setup(all_entry.entry_id)
@@ -1470,7 +1486,9 @@ async def test_reconfigure_leaves_sibling_direction_entries_untouched(
             ent_reg, all_entry.entry_id
         )
     )
-    assert len(all_entity_ids) == 4
+    # Three station sensors per entry: ``next_train_type`` was retired
+    # (the train type now lives on the device's attributes).
+    assert len(all_entity_ids) == 3
 
     northbound_entity_ids = sorted(
         registry_entry.entity_id
@@ -1478,21 +1496,23 @@ async def test_reconfigure_leaves_sibling_direction_entries_untouched(
             ent_reg, northbound.entry_id
         )
     )
-    # Owner of the two shared globals plus its own four station sensors.
-    assert len(northbound_entity_ids) == 6
+    # Owner of the two shared globals plus its own three station sensors.
+    # ``next_train_type`` was retired; the train type now lives on the
+    # device's attributes rather than as a standalone sensor entity.
+    assert len(northbound_entity_ids) == 5
 
     # Reconfigure the Northbound entry to Southbound (identity change).
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=_both_direction_trains(),
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_directions",
+            "pyirishrail.api.IrishRailClient.async_get_station_directions",
             return_value=["Northbound", "Southbound"],
         ),
     ):
@@ -1529,7 +1549,8 @@ async def test_reconfigure_leaves_sibling_direction_entries_untouched(
         for registry_entry in southbound_live
         if str(registry_entry.unique_id).startswith("PEARS_southbound")
     ]
-    assert len(southbound_sensors) == 4
+    # Three station sensors per entry: ``next_train_type`` was retired.
+    assert len(southbound_sensors) == 3
     assert all(
         str(registry_entry.unique_id).startswith("PEARS_southbound")
         for registry_entry in southbound_sensors
@@ -1573,11 +1594,11 @@ async def test_blank_filter_shows_pick_screen_listing_all(
     )
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station(), cork, bray],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
     ):
@@ -1590,7 +1611,9 @@ async def test_blank_filter_shows_pick_screen_listing_all(
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "station_pick"
 
-        schema = result["data_schema"].schema
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        schema = data_schema.schema
         station_key = next(
             k for k in schema if getattr(k, "schema", None) == CONF_STATION_CODE
         )
@@ -1628,7 +1651,7 @@ async def test_pick_step_out_of_order_restarts_to_user_step(
     flow.context = {}
 
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+        "pyirishrail.api.IrishRailClient.async_get_all_stations",
         return_value=[_mock_station()],
     ):
         result = await flow.async_step_station_pick(None)
@@ -1660,15 +1683,15 @@ async def test_stops_at_step_falls_back_to_full_list(
     )
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            "pyirishrail.api.IrishRailClient.async_get_station_stops_at_options",
             **kwargs,
         ),
     ):
@@ -1687,7 +1710,9 @@ async def test_stops_at_step_falls_back_to_full_list(
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "stops_at"
 
-        schema = result["data_schema"].schema
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        schema = data_schema.schema
         stops_at_key = next(
             k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
         )
@@ -1717,7 +1742,7 @@ async def test_stops_at_step_out_of_order_restarts_to_user_step(
     flow.context = {}
 
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+        "pyirishrail.api.IrishRailClient.async_get_all_stations",
         return_value=[_mock_station()],
     ):
         result = await flow.async_step_stops_at(None)
@@ -1732,15 +1757,15 @@ async def test_filter_options_both_on_chains_direction_then_stops(
     """Direction submit chains into relevant stops when both are opted in."""
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            "pyirishrail.api.IrishRailClient.async_get_station_stops_at_options",
             return_value=["Howth"],
         ) as mock_stops,
     ):
@@ -1793,7 +1818,7 @@ async def test_directions_step_out_of_order_restarts_to_user_step(
     flow.context = {}
 
     with patch(
-        "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+        "pyirishrail.api.IrishRailClient.async_get_all_stations",
         return_value=[_mock_station()],
     ):
         result = await flow.async_step_directions(None)
@@ -1814,11 +1839,11 @@ async def test_station_filter_word_prefix_and_multi_term(
     )
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station(), cork, bray],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
     ):
@@ -1878,11 +1903,11 @@ async def test_station_filter_matches_alias_tokens(
     )
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station(), junction],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
     ):
@@ -1916,15 +1941,15 @@ async def test_stops_at_step_persists_live_discovery(hass: HomeAssistant) -> Non
     """A successful live discovery is learned into the per-install matrix."""
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            "pyirishrail.api.IrishRailClient.async_get_station_stops_at_options",
             return_value=["Bray", "Howth"],
         ),
     ):
@@ -1956,15 +1981,15 @@ async def test_stops_at_step_survives_persistence_failure(
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            "pyirishrail.api.IrishRailClient.async_get_station_stops_at_options",
             return_value=["Bray", "Howth"],
         ),
         patch(
@@ -2006,15 +2031,15 @@ async def test_stops_at_step_prefers_cached_matrix_when_live_unavailable(
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            "pyirishrail.api.IrishRailClient.async_get_station_stops_at_options",
             side_effect=IrishRailConnectionError,
         ),
         patch(
@@ -2033,7 +2058,9 @@ async def test_stops_at_step_prefers_cached_matrix_when_live_unavailable(
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "stops_at"
 
-        schema = result["data_schema"].schema
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        schema = data_schema.schema
         stops_at_key = next(
             k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
         )
@@ -2065,15 +2092,15 @@ async def test_stops_at_step_uses_bundled_seed_before_full_list(
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            "pyirishrail.api.IrishRailClient.async_get_station_stops_at_options",
             side_effect=IrishRailConnectionError,
         ),
         patch(
@@ -2091,7 +2118,9 @@ async def test_stops_at_step_uses_bundled_seed_before_full_list(
         )
         assert result["step_id"] == "stops_at"
 
-        schema = result["data_schema"].schema
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        schema = data_schema.schema
         stops_at_key = next(
             k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
         )
@@ -2116,19 +2145,19 @@ async def test_stops_matrix_cache_is_direction_scoped(hass: HomeAssistant) -> No
 
     with (
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_all_stations",
+            "pyirishrail.api.IrishRailClient.async_get_all_stations",
             return_value=[_mock_station()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_by_code",
+            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[_mock_train()],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_directions",
+            "pyirishrail.api.IrishRailClient.async_get_station_directions",
             return_value=["Northbound", "Southbound"],
         ),
         patch(
-            "custom_components.irish_rail.api.IrishRailClient.async_get_station_stops_at_options",
+            "pyirishrail.api.IrishRailClient.async_get_station_stops_at_options",
             side_effect=IrishRailConnectionError,
         ),
         patch(
@@ -2153,7 +2182,9 @@ async def test_stops_matrix_cache_is_direction_scoped(hass: HomeAssistant) -> No
         )
         assert result["step_id"] == "stops_at"
 
-        schema = result["data_schema"].schema
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        schema = data_schema.schema
         stops_at_key = next(
             k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
         )

@@ -1,9 +1,13 @@
-"""Constants for the Irish Rail integration."""
+"""Constants for the Irish Rail integration.
+
+Library-level constants used by the async client (timeouts, semaphore
+caps, movement cache bounds) now live in :mod:`pyirishrail._const`; this
+module only carries integration-level concerns (Home Assistant config
+keys, options-flow bounds, service-hours gate, etc.).
+"""
 
 from datetime import timedelta
 from zoneinfo import ZoneInfo
-
-import aiohttp
 
 DOMAIN = "irish_rail"
 
@@ -43,12 +47,6 @@ SERVICE_HOURS_END_HOUR = 24
 # Consecutive successful-but-empty polls required before the repair issue is
 # raised (about 10 minutes at the default 60-second polling interval).
 EMPTY_DATA_ISSUE_THRESHOLD = 10
-
-# HTTP timeout for a single Irish Rail API request.
-# The RTPI endpoints are lightweight XML documents; 10 seconds is generous
-# enough for slow mobile connections while ensuring the event loop never
-# waits indefinitely on a hung connection.
-DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=10)
 
 # Scan interval.
 # Real-time train updates generally change roughly once a minute server-side
@@ -106,6 +104,21 @@ STOPS_MATRIX_FILENAME = "stops_matrix.json"
 # identity survives reloads and ownership changes alike.
 GLOBAL_HEALTH_UNIQUE_ID = "irish_rail_api_connectivity"
 GLOBAL_REBUILD_UNIQUE_ID = "irish_rail_rebuild_stops_matrix"
+
+# Fixed device identifier for the two integration-level service
+# entities (API connectivity binary sensor + stops-matrix rebuild
+# button). Both entities share the same ``DeviceInfo`` keyed on this
+# tuple, so they appear together on a single "Irish Rail Services"
+# device card in the HA UI rather than as unattached rows in the
+# Entities tab. The identifier is intentionally independent of any
+# config entry's ``unique_id`` so it survives ownership transfers
+# across station config entries (the device entry itself is
+# recreated under the new claiming entry).
+GLOBAL_SERVICES_IDENTIFIER: tuple[str, str] = (
+    DOMAIN,
+    "irish_rail_global_services",
+)
+GLOBAL_SERVICES_DEVICE_NAME: str = "Irish Rail Services"
 
 # How often the reachability probe fires. Independent from station polling
 # because its job is distinguishing "the whole API is down" from "this

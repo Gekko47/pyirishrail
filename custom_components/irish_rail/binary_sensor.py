@@ -1,10 +1,14 @@
 """Global Irish Rail API connectivity binary sensor.
 
-Integration-level service entity (no device) reporting whether the Irish Rail
-RTPI API answered its latest reachability probe. Registered exactly once
-per Home Assistant session by whichever config entry claims providership
-first (see ``health.py``); the ``DIAGNOSTIC`` entity category keeps it
-out of primary UI surfaces so per-station devices never have to carry it.
+Integration-level service entity reporting whether the Irish Rail
+RTPI API answered its latest reachability probe. Registered exactly
+once per Home Assistant session by whichever config entry claims
+providership first (see ``health.py``); the ``DIAGNOSTIC`` entity
+category keeps it out of primary UI surfaces so per-station devices
+never have to carry it. The entity is attached to a fixed
+"Irish Rail Services" device (shared with the stops-matrix rebuild
+button) so the two integration-level entities appear together on a
+single device card rather than as unattached rows in the Entities tab.
 """
 
 from __future__ import annotations
@@ -17,7 +21,6 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
-from homeassistant.config_entries import ConfigEntry
 
 # The EntityCategory enum is added by Home Assistant itself but the
 # typeshed stub does not re-export it, so a plain import trips mypy.
@@ -27,15 +30,21 @@ from homeassistant.config_entries import ConfigEntry
 # typeshed re-exports it from there but not from ``homeassistant.helpers.entity``.
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import GLOBAL_HEALTH_UNIQUE_ID
+from .const import (
+    GLOBAL_HEALTH_UNIQUE_ID,
+    GLOBAL_SERVICES_DEVICE_NAME,
+    GLOBAL_SERVICES_IDENTIFIER,
+)
 from .health import (
     IrishRailApiHealthMonitor,
     async_claim_global_provider,
     ensure_health_monitor_started,
     get_health_monitor,
 )
+from .types import IrishRailConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,6 +70,18 @@ class IrishRailApiConnectivitySensor(BinarySensorEntity):
     _attr_should_poll = False
     _attr_has_entity_name = True
     _attr_unique_id = GLOBAL_HEALTH_UNIQUE_ID
+    # The connectivity sensor and the stops-matrix rebuild button share
+    # a single fixed-identifier service device so they render together
+    # on the integration page (see ``health.py`` for the matching
+    # orphan-purge on ownership transfer).
+    _attr_device_info = DeviceInfo(
+        identifiers={GLOBAL_SERVICES_IDENTIFIER},
+        name=GLOBAL_SERVICES_DEVICE_NAME,
+        manufacturer="Iarnród Éireann / Irish Rail",
+        model="RTPI integration services",
+        entry_type=DeviceEntryType.SERVICE,
+        configuration_url="https://api.irishrail.ie",
+    )
 
     def __init__(self, hass: HomeAssistant, monitor: IrishRailApiHealthMonitor) -> None:
         """Initialize the global connectivity sensor."""
@@ -113,7 +134,7 @@ class IrishRailApiConnectivitySensor(BinarySensorEntity):
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: IrishRailConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the global connectivity sensor exactly once per session."""

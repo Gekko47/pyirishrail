@@ -19,9 +19,6 @@
       },
       "next_train_delay": {
         "default": "mdi:clock-alert-outline"
-      },
-      "next_train_type": {
-        "default": "mdi:ticket"
       }
     }
   }

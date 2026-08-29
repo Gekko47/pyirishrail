@@ -27,22 +27,24 @@ from contextlib import suppress
 from datetime import datetime
 import logging
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
-from .api import IrishRailClient, IrishRailError
+from pyirishrail import IrishRailClient, IrishRailError
+
 from .const import (
     DOMAIN,
     GLOBAL_HEALTH_UNIQUE_ID,
     GLOBAL_PROVIDER_KEY,
     GLOBAL_REBUILD_UNIQUE_ID,
+    GLOBAL_SERVICES_IDENTIFIER,
     HEALTH_CHECK_INTERVAL,
     HEALTH_MONITOR_INSTANCE,
     HEALTH_PROBE_STATION_CODE,
 )
+from .types import IrishRailConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -243,7 +245,9 @@ async def async_note_entry_unloaded(hass: HomeAssistant) -> None:
 
 
 @callback
-def async_claim_global_provider(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+def async_claim_global_provider(
+    hass: HomeAssistant, entry: IrishRailConfigEntry
+) -> bool:
     """Claim (once per session) providership of the global entities.
 
     Returns ``True`` when ``entry`` should add them. The first successful
@@ -279,7 +283,17 @@ def async_claim_global_provider(hass: HomeAssistant, entry: ConfigEntry) -> bool
 def _purge_orphan_global_entities(
     hass: HomeAssistant, *, expected_owner: str
 ) -> None:
-    """Remove global entity rows still pinned to a removed config entry."""
+    """Remove global entity rows still pinned to a removed config entry.
+
+    The two global entities share a fixed-identifier "Irish Rail
+    Services" device (see ``const.GLOBAL_SERVICES_IDENTIFIER``). The
+    matching device-registry row is wiped alongside the entity rows
+    so a dead owner does not leave a stray service device behind after
+    an ownership transfer. The membership check is the same as for
+    entity rows: only device entries whose ``config_entries`` set
+    references the dead owner are removed, so a live co-owned device
+    is left alone.
+    """
     entity_registry = er.async_get(hass)
     for unique_id in _GLOBAL_UNIQUE_IDS:
         entity_id = entity_registry.async_get_entity_id(DOMAIN, DOMAIN, unique_id)
@@ -299,3 +313,22 @@ def _purge_orphan_global_entities(
             expected_owner,
         )
         entity_registry.async_remove(entity_id)
+
+    # Wipe the shared service device if the dead owner was its sole
+    # config-entry link. A live co-owner would mean the device still
+    # belongs to the integration, so we leave it alone. Iteration is
+    # over a snapshot of ``devices.values()`` because the purge call
+    # mutates the registry's internal mapping.
+    device_registry = dr.async_get(hass)
+    for device_entry in list(device_registry.devices.values()):
+        if GLOBAL_SERVICES_IDENTIFIER not in device_entry.identifiers:
+            continue
+        if device_entry.config_entries != {expected_owner}:
+            continue
+        _LOGGER.info(
+            "Removing orphan Irish Rail Services device %s "
+            "(config_entry_id=%s)",
+            device_entry.id,
+            expected_owner,
+        )
+        device_registry.async_remove_device(device_entry.id)

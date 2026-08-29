@@ -6,13 +6,13 @@ from datetime import timedelta
 import logging
 from zoneinfo import ZoneInfo
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .api import IrishRailClient, IrishRailError, TrainDueTime
+from pyirishrail import IrishRailClient, IrishRailError, TrainDueTime
+
 from .config_flow import build_unique_id
 from .const import (
     BACKOFF_MULTIPLIER,
@@ -36,6 +36,7 @@ from .const import (
 )
 from .health import get_health_monitor
 from .store import get_stops_store
+from .types import IrishRailConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,12 +46,12 @@ _LOGGER = logging.getLogger(__name__)
 DUBLIN_TZ = ZoneInfo("Europe/Dublin")
 
 
-def empty_data_issue_id(config_entry: ConfigEntry) -> str:
+def empty_data_issue_id(config_entry: IrishRailConfigEntry) -> str:
     """Return the repair-issue ID for an entry's persistent-empty-data state."""
     return f"empty_data_{config_entry.entry_id}"
 
 
-def resolve_scan_interval(config_entry: ConfigEntry) -> timedelta:
+def resolve_scan_interval(config_entry: IrishRailConfigEntry) -> timedelta:
     """Return the configured polling interval for an entry.
 
     Reads ``entry.options`` first (set via the options flow), falling back to
@@ -69,7 +70,7 @@ def resolve_scan_interval(config_entry: ConfigEntry) -> timedelta:
     return timedelta(seconds=seconds)
 
 
-def resolve_num_trains(config_entry: ConfigEntry) -> int:
+def resolve_num_trains(config_entry: IrishRailConfigEntry) -> int:
     """Return the number of upcoming trains to expose for an entry.
 
     Precedence: ``entry.options`` (options flow) → ``entry.data``
@@ -86,7 +87,7 @@ def resolve_num_trains(config_entry: ConfigEntry) -> int:
     return max(MIN_NUM_TRAINS, min(MAX_NUM_TRAINS, num))
 
 
-def resolve_stops_at(config_entry: ConfigEntry) -> str | None:
+def resolve_stops_at(config_entry: IrishRailConfigEntry) -> str | None:
     """Return the "only show trains stopping at" filter for an entry.
 
     Precedence: ``entry.options`` (options flow) → ``entry.data``
@@ -105,13 +106,13 @@ def resolve_stops_at(config_entry: ConfigEntry) -> str | None:
 class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
     """Class to manage fetching Irish Rail station data."""
 
-    config_entry: ConfigEntry
+    config_entry: IrishRailConfigEntry
 
     def __init__(
         self,
         hass: HomeAssistant,
         client: IrishRailClient,
-        config_entry: ConfigEntry,
+        config_entry: IrishRailConfigEntry,
     ) -> None:
         """Initialize the coordinator."""
         self.client = client

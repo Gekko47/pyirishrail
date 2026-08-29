@@ -39,12 +39,13 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from .api import (
+from pyirishrail import (
     IrishRailClient,
     IrishRailError,
     TrainMovement,
-    _scoped_journey_stops,
 )
+from pyirishrail.api import _scoped_journey_stops
+
 from .const import (
     DUBLIN_TZ,
     REBUILD_DELAY_SECONDS,
