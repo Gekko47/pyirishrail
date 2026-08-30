@@ -164,6 +164,87 @@ async def test_api_parse_error(aresponses: ResponsesMockServer) -> None:
             await client.async_get_all_stations()
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # Internal-entity bomb: a small fake bomb the guard must refuse
+        # before the parser is even called. (The real billion-laughs
+        # 10x10x... chain is rejected by stdlib ``ET`` too, but failing
+        # closed at the guard avoids handing the malicious payload to
+        # the parser in the first place.)
+        b'<!DOCTYPE b [<!ENTITY a "aaaaaaaaaa">]><b>&a;&a;&a;</b>',
+        # External entity over HTTP — classic XXE.
+        b'<!DOCTYPE a [<!ENTITY e SYSTEM "http://[IP_ADDRESS]:9/xxe">]><a>&e;</a>',
+        # External entity over file://.
+        b'<!DOCTYPE a [<!ENTITY e SYSTEM "file:///etc/passwd">]><a>&e;</a>',
+        # DTD without entities (the case stdlib ET would silently allow).
+        b'<!DOCTYPE a [<!ELEMENT a EMPTY>]><a/>',
+        # Uppercase DOCTYPE (XML is case-sensitive on the keyword, but
+        # the guard is intentionally case-insensitive to match the spec).
+        b'<!DOCTYPE a [<!ELEMENT a EMPTY>]><a/>'.upper(),
+    ],
+    ids=[
+        "internal-entity-bomb",
+        "external-entity-http",
+        "external-entity-file",
+        "dtd-without-entities",
+        "uppercase-doctype",
+    ],
+)
+async def test_dtd_or_entity_payload_is_rejected(
+    aresponses: ResponsesMockServer, payload: bytes
+) -> None:
+    """Any DTD/entity declaration raises :class:`IrishRailParseError`.
+
+    The pre-parse guard fails closed on every enabling construct for the
+    classic XML attack classes, before the stdlib parser ever sees the
+    bytes. The guard's case-insensitive match keeps the policy explicit
+    and version-independent.
+    """
+    aresponses.add(
+        "api.irishrail.ie",
+        "/realtime/realtime.asmx/getAllStationsXML",
+        "GET",
+        aresponses.Response(body=payload, status=200),
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = IrishRailClient(session)
+        with pytest.raises(IrishRailParseError):
+            await client.async_get_all_stations()
+
+
+async def test_valid_namespaced_response_still_parses(
+    aresponses: ResponsesMockServer,
+) -> None:
+    """Namespaced valid XML still parses end-to-end.
+
+    Pin the parse path the client must keep working: ``_strip_namespaces``
+    handles the namespace, the pre-parse guard lets it through, and
+    ``ET.fromstring`` returns the document.
+    """
+    body = (
+        '<ArrayOfObjStation xmlns="http://api.irishrail.ie/realtime/">'
+        "<objStation>"
+        "<StationDesc>Dublin Pearse</StationDesc>"
+        "<StationCode>PEARS</StationCode>"
+        "</objStation>"
+        "</ArrayOfObjStation>"
+    )
+    aresponses.add(
+        "api.irishrail.ie",
+        "/realtime/realtime.asmx/getAllStationsXML",
+        "GET",
+        aresponses.Response(text=body, status=200),
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = IrishRailClient(session)
+        stations = await client.async_get_all_stations()
+
+    assert [s.code for s in stations] == ["PEARS"]
+
+
 async def test_get_station_by_name(aresponses: ResponsesMockServer) -> None:
     """Test getting station data by name."""
     aresponses.add(

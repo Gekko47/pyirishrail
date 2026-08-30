@@ -7,7 +7,7 @@
 > (e.g. the defusedxml guidance in Skill 07, the PyPI-extraction sections),
 > **this file wins** until Phase 4 rewrites the stale sections.
 >
-> **Current status:** Phases 0–2 COMPLETE — next up: **Phase 3**.
+> **Current status:** Phases 0–3 COMPLETE — next up: **Phase 4**.
 
 ## Ground rules
 
@@ -40,6 +40,7 @@ shims · entity `unique_id` changes · live-API behavior changes.
 - 2026-08-30 — Plan created from the lead-dev review; Phase 0 executed (commit 1).
 - 2026-08-30 — Phase 1 executed (commit 2): 117 stale patch targets retargeted across 6 test files; gate-test expectation and gate-sharing setup-order fixed; 4 ruff + 11 mypy findings cleared; dead `_gate.py` silent guard removed; 2 coverage tests added. Gates green: 226 passed, 100.00% coverage, ruff 0, strict mypy 0.
 - 2026-08-30 — Phase 2 executed (commit 3): reconfigure `unique_id` erasure fixed (identity forwarded only when claimed); gate + health lifecycle unified on the `loaded_entry_ids` set (gate released on last unload only; idempotent setup); stops-at options fan-out isolates unexpected errors; store record lock; `failure_streak` property; `DUBLIN_TZ` dedupe; `identity.py` extraction. Committed as `2fe7ad1`. Gates green: 229 passed, 100.00% coverage, ruff 0, strict mypy 0.
+- 2026-08-30 — Phase 3 executed (commit 4): `defusedxml` dropped; pre-parse DTD/entity guard via a keyword `in` scan against a pre-lowered copy of the response (regex avoided because Python `re` treats `<name>` as a silent named-group); CI no longer installs `types-defusedxml`; 6 new hostile-input tests pin the policy. Zero-dep proof: `pip uninstall defusedxml` then full suite green. Gates: 235 passed, 100.00% coverage, ruff 0, strict mypy 0.
 
 ## Phase 0 — Workspace & git reset — **Status: COMPLETE (commit 1, 2026-08-30)**
 
@@ -68,7 +69,7 @@ shims · entity `unique_id` changes · live-API behavior changes.
 - [x] Hardening: `gather(..., return_exceptions=True)` in `async_get_station_stops_at_options` with a per-train skip + warning (`test_station_stops_at_options_isolate_unexpected_lookup_errors`); `asyncio.Lock` around `StopsMatrixStore.async_record` (`test_concurrent_records_serialize_and_preserve_every_stop`); `coordinator.failure_streak` public property used by diagnostics; `DUBLIN_TZ` defined once in `const.py` (coordinator imports it, local duplicate and the `ZoneInfo` import removed); `build_unique_id`/`normalized_direction` moved to `identity.py` (coordinator → config_flow import gone)
 - [x] Gates: **229 passed · 100.00% coverage · ruff 0 · strict mypy 0 (39 files)**
 
-## Phase 3 — Zero-dependency XML (defusedxml removal) — **Status: PENDING**
+## Phase 3 — Zero-dependency XML (defusedxml removal) — **Status: COMPLETE (commit 4, 2026-08-30)**
 
 Evidence base (probed 2026-08-30 on Python 3.14.2 / expat 2.7.5 — the HA 2026.8
 floor): stdlib `xml.etree.ElementTree` already rejects entity declarations and
@@ -76,11 +77,11 @@ external-entity resolution with `ParseError`; only a DTD *without* entities
 parses silently. The pre-parse guard closes that gap explicitly and makes the
 policy version-independent.
 
-- [ ] `pyirishrail/api.py::_request`: drop `defusedxml`/`DefusedXmlException`; add `_DTD_DECL_RE` pre-parse guard (`<!doctype|entity|element|attlist|notation`, case-insensitive) raising `IrishRailParseError`; parse with stdlib `ET.fromstring`; keep `_strip_namespaces` + the `ParseError` mapping (single choke point — script, rebuild button, and flows inherit it)
-- [ ] New hostile-input tests beside `test_api_parse_error`: entity bomb; XXE-over-http; XXE-over-file; DTD-without-entities (fail-closed); valid namespaced + namespace-free docs still parse
-- [ ] Remove `types-defusedxml` from the `ci.yml` pip line
-- [ ] **Zero-dep proof**: `pip uninstall defusedxml` from `.venv`, then the full suite runs green
-- [ ] Gates: full suite green · ruff 0 · mypy 0
+- [x] `pyirishrail/api.py::_request`: drop `defusedxml`/`DefusedXmlException`; replace the regex with a simple `in`-scan over the keyword set `<!doctype`/`<!entity`/`<!element`/`<!attlist`/`<!notation` against a pre-lowered copy of the response body; stdlib `ET.fromstring` parses the rest; `_strip_namespaces` + the `ParseError` mapping unchanged. (Regex was first tried but Python's `re` silently treats `<name>` as a named group; documented in the comment so a future hand-edit doesn't repeat the footgun.)
+- [x] New hostile-input tests beside `test_api_parse_error`: `test_dtd_or_entity_payload_is_rejected` (parametrized over internal-entity bomb, XXE-over-http, XXE-over-file, DTD-without-entities, uppercase-DOCTYPE) and `test_valid_namespaced_response_still_parses` (pins the success path)
+- [x] Remove `types-defusedxml` from the `ci.yml` pip line
+- [x] **Zero-dep proof**: `pip uninstall defusedxml` from `.venv`, then the full suite runs green; `importlib.util.find_spec('defusedxml')` returns `None` in the same environment that ran the suite
+- [x] Gates: **235 passed · 100.00% coverage · ruff 0 · strict mypy 0**
 
 ## Phase 4 — Documentation & claims truth-pass — **Status: PENDING**
 

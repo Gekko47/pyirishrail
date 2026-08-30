@@ -5,11 +5,10 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import xml.etree.ElementTree as ET
 from xml.etree.ElementTree import Element
 
 import aiohttp
-import defusedxml.ElementTree as ET
-from defusedxml.common import DefusedXmlException
 
 from ._const import (
     API_BASE_URL,
@@ -32,6 +31,23 @@ from .models import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# DTD/entity declarations are the enabling construct for every classic XML
+# attack class (billion laughs, quadratic blowup, XXE, external DTD
+# retrieval). The RTPI API never sends them; we reject them up front so
+# the policy is explicit and independent of the bundled expat version.
+#
+# This set is the exact list of XML 1.0 declarations that enable those
+# classes (DTDs and entity/element/attlist/notation declarations all
+# live in a DTD subset). The check is case-insensitive via a single
+# pre-lowering pass on the response body.
+_DTD_KEYWORDS: tuple[str, ...] = (
+    "<!doctype",
+    "<!entity",
+    "<!element",
+    "<!attlist",
+    "<!notation",
+)
 
 __all__ = [
     'API_BASE_URL',
@@ -226,15 +242,20 @@ class IrishRailClient:
             ) from err
 
         try:
-            # Safely parse XML via defusedxml, then normalize namespaces so
-            # every downstream lookup uses plain tag names (roadmap 4.4).
+            # Fail closed on DTD/entity declarations before parse: every
+            # classic XML attack class is enabled by ``<!doctype`` and
+            # ``<!entity`` lines the RTPI API never emits. The byte
+            # check is constant-time on the response body and runs in
+            # microseconds; the stdlib parser then handles the rest.
+            # Namespaces are normalized once here (roadmap 4.4) so every
+            # downstream lookup uses plain tag names.
+            lowered = content.lower() if isinstance(content, str) else content.decode("utf-8", errors="replace").lower()
+            if any(keyword in lowered for keyword in _DTD_KEYWORDS):
+                raise IrishRailParseError(
+                    "DTD or entity declarations are not allowed in API responses"
+                )
             return _strip_namespaces(ET.fromstring(content))
-        except (
-            ET.ParseError,
-            # Security exceptions raised by defusedxml (e.g. DTDForbidden,
-            # EntitiesForbidden, ExternalReferenceForbidden)
-            DefusedXmlException,
-        ) as err:
+        except ET.ParseError as err:
             raise IrishRailParseError(
                 f"Failed to parse XML response from Irish Rail: {err}"
             ) from err

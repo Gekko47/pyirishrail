@@ -87,4 +87,35 @@ migration path. Entries are appended as each phase lands.
   `coordinator.failure_streak` property. Full suite: 229 passed at
   100.00% coverage with ruff and strict mypy clean.
 
+### Removed (Phase 3)
+
+- The `defusedxml` runtime dependency. The integration no longer lists
+  any third-party requirements in its `manifest.json`; XML parsing is
+  performed by Python's standard library `xml.etree.ElementTree`, which
+  on the Home Assistant 2026.8 floor (Python 3.14.2's bundled expat
+  2.7.5) already rejects entity declarations and external-entity
+  resolution with `ParseError`.
+
+### Added (Phase 3)
+
+- An explicit pre-parse DTD/entity guard on the single XML parse choke
+  point (`pyirishrail/api.py::_request`). The guard runs against a
+  pre-lowered copy of the response body and rejects any `<!doctype`,
+  `<!entity`, `<!element`, `<!attlist`, or `<!notation` keyword,
+  closing the one gap the stdlib parser leaves open (DTDs without
+  entities). The policy is now independent of the bundled expat
+  version.
+- Hostile-input tests parametrized over internal-entity bombs, XXE
+  (http and `file://`), DTD-without-entities, and an uppercase DOCTYPE
+  payload, plus a positive test pinning the namespaced-valid path.
+
+### Changed (Phase 3)
+
+- CI workflow no longer installs the `types-defusedxml` type stub.
+- `pyirishrail` package docstrings document the zero-dependency XML
+  policy and the rationale for the explicit pre-parse guard. Full
+  suite: 235 passed at 100.00% coverage with ruff and strict mypy
+  clean, and verified to run green with `defusedxml` uninstalled from
+  the venv (the zero-dep proof).
+
 <!-- Phases 1–5 append their entries here as they land. -->

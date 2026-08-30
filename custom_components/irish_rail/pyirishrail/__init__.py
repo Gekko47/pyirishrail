@@ -34,21 +34,53 @@ genuinely need them should import from the submodule explicitly
 (``from custom_components.irish_rail.pyirishrail.api import
 _scoped_journey_stops``).
 
-Defusedxml / async-dependency justification
--------------------------------------------
+Internal package: framework-agnostic async client for the Irish Rail RTPI
+API. Importing the package gives you the client, the gate, the four public
+exception classes, the four public dataclasses, and the pure parser
+helper::
 
-The Platinum ``async-dependency`` rule states that every declared
-dependency in the integration's ``manifest.json`` must be async, and
-the rule has no exceptions clause. ``defusedxml`` is a *pure XML
-parser*; it never opens a socket and never blocks. The client
-retrieves the response body via ``await session.get(...)`` and
-``await response.text()`` on an injected ``aiohttp.ClientSession``
-(``inject-websession``), then passes the already-fetched ``str`` to
-``defusedxml.ElementTree.fromstring(...)``. The dependency is therefore
-async at the transport boundary and only the parser — which is
-deliberately synchronous and runs in microseconds on small XML
-documents — sees the bytes. This is the same pattern the Home
-Assistant core codebase uses for its own XML integrations.
+    from custom_components.irish_rail.pyirishrail import (
+        IrishRailClient,            # the async client
+        RequestGate,                # concurrency-and-pacing gate
+        IrishRailError,             # base exception
+        IrishRailConnectionError,   # network failures
+        IrishRailTimeoutError,      # aiohttp timeouts
+        IrishRailParseError,        # XML/security errors
+        Station, TrainDueTime, TrainMovement, TrainPosition,
+        parse_station_data,         # pure parser helper
+    )
+
+The pure XML helper ``parse_station_data`` is re-exported here because
+it is used by external code (notably the integration's ``matrix_rebuild``
+button). Private helpers in :mod:`pyirishrail.api` (prefixed with
+``_``) are deliberately not re-exported; cross-package consumers that
+genuinely need them should import from the submodule explicitly
+(``from custom_components.irish_rail.pyirishrail.api import
+_scoped_journey_stops``).
+
+Zero-dep XML parsing
+--------------------
+
+The client uses Python's standard library
+``xml.etree.ElementTree`` for XML parsing — there is no third-party
+dependency. On the Home Assistant 2026.8 floor (Python 3.14.2's bundled
+expat 2.7.5) stdlib ET already rejects entity declarations and
+external-entity resolution with ``ParseError``; the only gap it leaves
+open is silently allowing a DTD *without* entities, which is harmless
+by itself but weakens the policy to be version-dependent on the bundled
+expat. The client closes that gap with an explicit pre-parse guard
+(:data:`pyirishrail.api._DTD_DECL_RE`) that rejects ``<!doctype``,
+``<!entity``, ``<!element``, ``<!attlist`` and ``<!notation`` before the
+parser is invoked, raising :class:`IrishRailParseError` on match. The
+guard runs in microseconds on the small XML documents the RTPI
+endpoints return, keeps the integration's manifest requirements
+intentionally empty, and makes the policy independent of whichever
+expat version ships with the target Python.
+
+The pre-parse guard is the integration's only XML policy surface; every
+``IrishRailClient._request`` path goes through it, so the rebuild
+button, the config flow's live discovery and the script
+``scripts/build_stops_matrix.py`` inherit the hardening automatically.
 
 Shared ``RequestGate``
 ----------------------
