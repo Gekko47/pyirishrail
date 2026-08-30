@@ -22,10 +22,6 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntityDescription,
 )
 
-# The EntityCategory enum is added by Home Assistant itself but the
-# typeshed stub does not re-export it, so a plain import trips mypy.
-# ``type: ignore[attr-defined]`` suppresses the false positive without
-# hiding a real mistake (the attribute is present at runtime in HA 2024+).
 # ``EntityCategory`` lives in ``homeassistant.const`` in modern HA; the
 # typeshed re-exports it from there but not from ``homeassistant.helpers.entity``.
 from homeassistant.const import EntityCategory

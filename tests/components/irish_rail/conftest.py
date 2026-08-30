@@ -6,10 +6,10 @@ from collections.abc import Generator, Iterator
 from typing import cast
 from unittest.mock import MagicMock, patch
 
-from homeassistant.core import HomeAssistant
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 import pytest_socket
+from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irish_rail.const import (
     CONF_DIRECTION,

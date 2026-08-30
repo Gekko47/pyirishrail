@@ -9,10 +9,11 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr, entity_registry as er
-from homeassistant.util import dt as dt_util
 import pytest
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irish_rail.button import (
@@ -25,8 +26,8 @@ from custom_components.irish_rail.const import (
     GLOBAL_HEALTH_UNIQUE_ID,
     GLOBAL_REBUILD_UNIQUE_ID,
 )
+from custom_components.irish_rail.pyirishrail import IrishRailClient, TrainMovement
 from custom_components.irish_rail.types import IrishRailConfigEntry
-from pyirishrail import IrishRailClient, TrainMovement
 
 
 class _FakeMovement:
@@ -114,14 +115,6 @@ async def test_press_runs_rebuild_and_reports_attributes(
         return list(patches["scoped"])
 
     with (
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._matrix_path",
-            return_value=tmp_path / "stops_matrix.json",
-        ),
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._seed_path",
-            return_value=tmp_path / "stops_matrix.seed.json",
-        ),
         patch(
             "pyirishrail.api.IrishRailClient.async_get_all_stations",
             new=patches["get_all"],
@@ -323,14 +316,6 @@ async def test_service_call_drives_the_loaded_button(
         return list(patches["scoped"])
 
     with (
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._matrix_path",
-            return_value=tmp_path / "stops_matrix.json",
-        ),
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._seed_path",
-            return_value=tmp_path / "stops_matrix.seed.json",
-        ),
         patch(
             "pyirishrail.api.IrishRailClient.async_get_all_stations",
             new=patches["get_all"],

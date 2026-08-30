@@ -35,13 +35,15 @@ rules:
   common_modules:
     status: done
     comment: >
-      The published async client lives at ``pyirishrail/api.py`` (with
-      ``pyirishrail/errors.py`` and ``pyirishrail/models.py``); it has no
-      Home Assistant imports. ``entity.py`` holds the shared entity base,
-      ``types.py`` holds the shared ``IrishRailRuntimeData`` runtime-data
-      container and the ``IrishRailConfigEntry`` type alias. The
-      integration only consumes the library via ``from pyirishrail import
-      ...``; the client code is no longer in ``custom_components/irish_rail/``.
+      The async client lives at ``custom_components/irish_rail/pyirishrail/api.py``
+      (with ``custom_components/irish_rail/pyirishrail/errors.py`` and
+      ``custom_components/irish_rail/pyirishrail/models.py``) as an internal
+      module of the integration; it has no Home Assistant imports. ``entity.py``
+      holds the shared entity base, ``types.py`` holds the shared
+      ``IrishRailRuntimeData`` runtime-data container and the
+      ``IrishRailConfigEntry`` type alias. The integration consumes the client
+      via ``from .pyirishrail import ...``; the package is not separately
+      published (manifest.json's requirements array is empty).
 
   config_flow_test_coverage:
     status: done
@@ -63,8 +65,10 @@ rules:
   dependency_transparency:
     status: done
     comment: >
-      defusedxml pinned in manifest.json requirements; aiohttp supplied by HA
-      core; no hidden dependencies.
+      manifest.json requirements pin ``pyirishrail>=0.2,<1.0`` only; the
+      underlying aiohttp client and defusedxml XML parser arrive as
+      transitive dependencies of that published package, so no hidden
+      runtime deps leak into the integration.
 
   docs_actions:
     status: done
@@ -137,7 +141,7 @@ rules:
     status: done
     comment: >
       sensor.py declares PARALLEL_UPDATES = 0: the platform is read-only and
-      all four entities share one DataUpdateCoordinator refresh, so
+      all three entities share one DataUpdateCoordinator refresh, so
       per-entity updates are pure property reads with no outbound calls
       (official rule guidance for coordinator-based read-only platforms).
 
@@ -292,13 +296,16 @@ rules:
   devices:
     status: done
     comment: >
-      entity.py sets _attr_device_info on the four per-station sensors with
+      entity.py sets _attr_device_info on the three per-station sensors with
       identifiers (DOMAIN + config entry unique_id), station/direction name,
       manufacturer "Iarnród Éireann / Irish Rail" and entry_type=
       DeviceEntryType.SERVICE, per the rule's guidance for service-type
       devices. The two integration-level service entities (API connectivity
-      binary_sensor, stops-matrix rebuild button) intentionally have no
-      DeviceInfo and live on the integration's Services tab instead.
+      binary_sensor, stops-matrix rebuild button) also set their own
+      DeviceInfo on a shared fixed-identifier "Irish Rail Services" device
+      (GLOBAL_SERVICES_IDENTIFIER), so the connectivity diagnostic and the
+      rebuild button render together on the integration's Services tab
+      instead of appearing as orphan rows.
 
   discovery:
     status: exempt
@@ -356,14 +363,15 @@ rules:
       an entry for a station/direction creates its service device immediately
       during platform setup. The two integration-level service entities (API
       connectivity binary_sensor, stops-matrix rebuild button) are static
-      service entities with no DeviceInfo; they appear under the integration's
-      Services tab and never on any per-station device, so no further
-      re-add listener logic is required.
+      service entities that share their own fixed-identifier DeviceInfo on
+      the integration's "Irish Rail Services" device; they appear under the
+      integration's Services tab and never on any per-station device, so no
+      further re-add listener logic is required.
 
   entity_category:
     status: done
     comment: >
-      Reviewed: the four per-station sensors are primary user-facing train
+      Reviewed: the three per-station sensors are primary user-facing train
       data entities for which the default category (None) is appropriate.
       The API connectivity binary_sensor is tagged EntityCategory.DIAGNOSTIC
       and the stops-matrix rebuild button is tagged EntityCategory.CONFIG.
@@ -377,7 +385,7 @@ rules:
   entity_disabled_by_default:
     status: done
     comment: >
-      Reviewed against the rule's noisy/unpopular criterion: all four
+      Reviewed against the rule's noisy/unpopular criterion: all three
       sensors are the integration's core value, update at most once per poll
       (~1/min), and none are auxiliary diagnostics (e.g. signal strength),
       so enabling them by default is correct.
@@ -408,19 +416,20 @@ rules:
   async_dependency:
     status: done
     comment: >
-      The integration's declared dependency set is now async by construction:
-      manifest.json's only requirement is ``pyirishrail>=0.2,<1.0`` (the
-      published async client library), and the previously-standalone
-      ``defusedxml`` requirement has been dropped because it is a transitive
-      dependency of ``pyirishrail``. Every network call in the published
-      client goes through ``await session.get(...)`` on the injected
-      aiohttp session (``pyirishrail/api.py::IrishRailClient._request``);
-      the defusedxml parser is invoked only on bytes already fetched by
-      aiohttp and performs no I/O of its own, which is the standard
-      async-transport + sync-parser pattern. The full justification
-      (including the rule's no-exceptions clause) is recorded in
-      ``pyirishrail/README.md`` and cross-linked from the
-      ``inject-websession`` entry below. Implemented 2026-08-28 (Phase 5.3).
+      The integration has no declared PyPI dependencies (manifest.json's
+      requirements array is empty). The async HTTP client lives at
+      ``custom_components/irish_rail/pyirishrail/`` as an internal module
+      of the integration; every network call goes through
+      ``await session.get(...)`` on the injected aiohttp session
+      (``custom_components/irish_rail/pyirishrail/api.py::IrishRailClient._request``).
+      The ``defusedxml`` parser is invoked only on bytes already fetched
+      by aiohttp and performs no I/O of its own, which is the standard
+      async-transport + sync-parser pattern used by Home Assistant core
+      for its own XML integrations. The package is not separately
+      published (the name ``pyirishrail`` on PyPI is owned by an
+      unrelated project, so the client was moved back inside the
+      integration directory to keep HACS installs self-contained).
+      Implemented 2026-08-29 (revert of Phase 5.3 extraction).
 
   inject_websession:
     status: done

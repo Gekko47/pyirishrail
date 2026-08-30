@@ -16,10 +16,10 @@ stay structurally aligned (standing requirement, Skill 09).
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 import json
-from pathlib import Path
 import re
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest

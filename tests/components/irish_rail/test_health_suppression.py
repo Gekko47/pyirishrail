@@ -8,17 +8,17 @@ warning behaviour when the API genuinely looks broken.
 
 from __future__ import annotations
 
+import logging
+import zoneinfo
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
-import zoneinfo
 
+import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
-import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irish_rail.const import (
@@ -30,7 +30,7 @@ from custom_components.irish_rail.coordinator import (
     IrishRailDataUpdateCoordinator,
     empty_data_issue_id,
 )
-from pyirishrail import IrishRailConnectionError
+from custom_components.irish_rail.pyirishrail import IrishRailConnectionError
 
 
 def _fake_now_factory(stamp_utc: datetime) -> Any:

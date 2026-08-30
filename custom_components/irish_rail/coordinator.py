@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
 import logging
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
-
-from pyirishrail import IrishRailClient, IrishRailError, TrainDueTime
 
 from .config_flow import build_unique_id
 from .const import (
@@ -35,6 +33,7 @@ from .const import (
     SERVICE_HOURS_START_HOUR,
 )
 from .health import get_health_monitor
+from .pyirishrail import IrishRailClient, IrishRailError, TrainDueTime
 from .store import get_stops_store
 from .types import IrishRailConfigEntry
 

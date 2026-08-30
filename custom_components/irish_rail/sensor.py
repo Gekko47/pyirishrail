@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
 import logging
+from datetime import datetime, time, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -15,10 +15,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
-from pyirishrail import TrainDueTime
-
 from .coordinator import IrishRailDataUpdateCoordinator, resolve_num_trains
 from .entity import IrishRailEntity
+from .pyirishrail import TrainDueTime
 from .types import IrishRailConfigEntry, IrishRailRuntimeData
 
 _LOGGER = logging.getLogger(__name__)
@@ -33,35 +32,51 @@ PARALLEL_UPDATES = 0
 
 
 def _parse_expected_arrival(
-    expected_arrival_time: str, now: datetime
+    train: TrainDueTime, now: datetime
 ) -> datetime | None:
-    """Convert the API's ``HH:MM`` expected-arrival string into a real datetime.
+    """Convert an API train record into a real ``datetime`` of expected arrival.
 
-    The Irish Rail API only exposes the wall-clock time of day, not a full
-    timestamp. The date has to be inferred:
+    The Irish Rail API exposes the wall-clock ``expected_arrival_time``
+    (``HH:MM``) **and** a signed ``due_in_mins`` offset measured from the
+    API's server clock. The offset is the canonical source of truth for
+    the *date direction*: a positive value means the service is due in
+    the future, a negative value means it has already passed (or the
+    poll crossed midnight and is reporting yesterday's last service).
 
-    * If the parsed ``HH:MM`` is in the **future** relative to ``now``,
-      the service runs today — the date is ``now.date()``.
-    * If the parsed ``HH:MM`` is already in the **past**, the service is
-      either (a) overdue (it should have arrived minutes ago) or (b) a
-      service that was scheduled for an earlier day. The honest
-      representation of both is to keep the date as ``now.date()`` and let
-      the timestamp land in the past — HA's "Time" card will then render
-      "5 min ago" for the overdue case and an absolute past datetime for
-      the scheduled-elsewhere case, both of which are user-visible and
-      correct.
+    The function therefore builds the absolute arrival as
+    ``now + timedelta(minutes=due_in_mins)``:
 
-    The function never wraps into a different day: a poll at 00:15 that
-    catches a 00:30 service sees the 00:30 timestamp as future and the
-    state holds today's date. The overnight-edge case is the *past*
-    branch, which is also covered: a 23:55 service observed at 00:05 is
-    in the past, the timestamp lands in the past, and HA renders it as
-    "departed".
+    * A future service (positive offset) lands in the future, regardless
+      of whether its ``HH:MM`` is before or after the current wall-clock
+      time — so a 00:30 service polled at 23:55 correctly resolves to
+      the next day 00:30 rather than being misread as today 00:30 in
+      the past.
+    * An overdue service (negative offset) lands in the past, which HA's
+      "Time" card renders as a relative "X min ago". A 23:55 service
+      observed at 00:05 yields a 23:55 timestamp on the previous
+      calendar day, and the UI shows it as "departed 10 min ago".
 
-    Returns ``None`` when the API field is blank or unparseable, so the
+    ``expected_arrival_time`` (``HH:MM``) is retained as a defensive
+    fallback: if the API omits ``due_in_mins`` but still reports an
+    arrival time, the function falls back to the ``HH:MM`` + today
+    date combination, so a partial API payload still produces a
+    timestamp rather than ``None``. The fallback is not used for the
+    overnight case (the API always sends ``due_in_mins``); it exists
+    only to keep a degraded response from breaking the sensor.
+
+    Returns ``None`` when both fields are blank or unparseable, so the
     sensor state can fall back to ``None`` rather than publish a bogus
     datetime.
     """
+    due_in_mins = train.due_in_mins
+    if due_in_mins is not None:
+        # The signed offset is the canonical source: it carries the
+        # date direction (future vs past) and naturally resolves
+        # overnight services without any HH:MM+date inference. HA's
+        # TIMESTAMP renderer turns a negative offset into "X min ago".
+        return now + timedelta(minutes=due_in_mins)
+
+    expected_arrival_time = train.expected_arrival_time
     if not expected_arrival_time:
         return None
     try:
@@ -73,12 +88,14 @@ def _parse_expected_arrival(
             expected_arrival_time,
         )
         return None
-    # ``datetime.combine`` yields a *naive* datetime, but ``now`` from
-    # ``dt_util.utcnow()`` is timezone-aware. Combine with ``now``'s date
-    # (so the year/month/day matches HA's clock) and attach the same
-    # ``tzinfo`` so the subtraction below is well-defined. The HH:MM
-    # wall-clock time is interpreted in HA's local timezone (matching
-    # how the user reads the dashboard).
+    # Defensive fallback path: the API omitted ``due_in_mins`` but did
+    # send an ``HH:MM``. Use ``now.date()`` as the date so the
+    # timestamp sits on today's calendar; an HH:MM already in the past
+    # lands in the past (overdue), an HH:MM in the future lands in
+    # today's future. Note this fallback cannot disambiguate a true
+    # overnight service (00:30 polled at 23:55) without the offset,
+    # but the API always supplies the offset, so this is a degraded
+    # path only.
     naive = datetime.combine(now.date(), parsed_time)
     return naive.replace(tzinfo=now.tzinfo)
 
@@ -155,7 +172,7 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
 
         if self.entity_key == "next_train_due":
             return _parse_expected_arrival(
-                next_train.expected_arrival_time,
+                next_train,
                 dt_util.utcnow(),
             )
         if self.entity_key == "next_train_destination":
@@ -193,7 +210,7 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
         next_train: TrainDueTime = data[0]
         now = dt_util.utcnow()
         expected_arrival = _parse_expected_arrival(
-            next_train.expected_arrival_time, now
+            next_train, now
         )
         time_until_arrival: timedelta | None = (
             expected_arrival - now if expected_arrival is not None else None

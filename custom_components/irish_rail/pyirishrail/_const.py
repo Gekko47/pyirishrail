@@ -37,12 +37,6 @@ STATION_TYPE_TO_CODE_DICT: dict[str, str] = {
 #: indefinitely on a hung connection.
 DEFAULT_TIMEOUT: aiohttp.ClientTimeout = aiohttp.ClientTimeout(total=10)
 
-#: Maximum number of concurrent ``getTrainMovementsXML`` lookups performed
-#: by the in-pass pruning helper. Movement-history lookups for candidate
-#: trains are issued concurrently, bounded by a small semaphore to stay
-#: polite to the public API.
-MAX_CONCURRENT_MOVEMENT_LOOKUPS: int = 5
-
 #: Per-client cache of train movement histories keyed by
 #: ``(train_code, date)``. A running train's stop list only grows during
 #: its journey, so caching per date is safe for "does this train stop at

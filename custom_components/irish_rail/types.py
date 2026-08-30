@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntry
 
-from pyirishrail import IrishRailClient
+from .pyirishrail import IrishRailClient
 
 if TYPE_CHECKING:
     # Imported only for the type alias below to avoid a circular import:

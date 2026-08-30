@@ -5,12 +5,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-import voluptuous as vol
-
-from pyirishrail import IrishRailClient, IrishRailError, Station
 
 from .const import (
     CONF_DIRECTION,
@@ -30,6 +28,8 @@ from .const import (
     MIN_NUM_TRAINS,
     MIN_SCAN_INTERVAL_SECONDS,
 )
+from .gate import async_get_request_gate
+from .pyirishrail import IrishRailClient, IrishRailError, Station
 from .store import async_load_bundled_stops_matrix, get_stops_store, lookup_in_matrix
 from .types import IrishRailConfigEntry
 
@@ -135,7 +135,14 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
     def _get_client(self) -> IrishRailClient:
         """Return (lazily creating) the API client for this flow."""
         if self._client is None:
-            self._client = IrishRailClient(async_get_clientsession(self.hass))
+            # Share the per-HA request gate with the coordinator's
+            # client so the config flow's discovery lookups and the
+            # live polling share one rate budget against the public
+            # API. See ``gate.py`` for the rationale.
+            self._client = IrishRailClient(
+                async_get_clientsession(self.hass),
+                gate=async_get_request_gate(self.hass),
+            )
         return self._client
 
     async def _async_fetch_stations(self) -> list[Station]:
@@ -624,7 +631,14 @@ class IrishRailOptionsFlow(OptionsFlow):
     def _get_client(self) -> IrishRailClient:
         """Return (lazily creating) the API client for this flow."""
         if self._client is None:
-            self._client = IrishRailClient(async_get_clientsession(self.hass))
+            # Share the per-HA request gate with the coordinator's
+            # client and the user config flow so the options flow's
+            # discovery lookups do not displace live polling. See
+            # ``gate.py`` for the rationale.
+            self._client = IrishRailClient(
+                async_get_clientsession(self.hass),
+                gate=async_get_request_gate(self.hass),
+            )
         return self._client
 
     async def _async_fetch_stations(self) -> list[Station]:

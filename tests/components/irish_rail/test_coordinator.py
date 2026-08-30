@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
+import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import UpdateFailed
-import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irish_rail.const import (
@@ -29,7 +29,7 @@ from custom_components.irish_rail.coordinator import (
     resolve_scan_interval,
     resolve_stops_at,
 )
-from pyirishrail import (
+from custom_components.irish_rail.pyirishrail import (
     IrishRailConnectionError,
     TrainDueTime,
 )

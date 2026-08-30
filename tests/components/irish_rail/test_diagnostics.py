@@ -60,10 +60,12 @@ async def test_config_entry_diagnostics(hass: HomeAssistant) -> None:
     assert "options" in result["entry"]
     assert result["coordinator"]["last_update_success"] is True
     assert result["coordinator"]["due_trains_count"] == 0
-    # The expanded coordinator diagnostic surface (issue #6) is present.
-    assert "last_exception" in result["coordinator"]
-    assert "failure_streak" in result["coordinator"]
-    assert "data_available" in result["coordinator"]
+    # The expanded coordinator diagnostic surface (issue #6) reports the
+    # post-success values, not just its keys: a maintainer reading the
+    # report should be able to tell the poll is healthy at a glance.
+    assert result["coordinator"]["last_exception"] is None
+    assert result["coordinator"]["failure_streak"] == 0
+    assert result["coordinator"]["data_available"] is True
 
 
 # ── Redaction edge cases (roadmap Phase 3, Gold rule ``diagnostics``) ────────

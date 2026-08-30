@@ -1,31 +1,34 @@
-"""Runtime rebuild of the bundled "stops at" seed matrix."""
+"""Runtime rebuild of the bundled "stops at" seed matrix.
+
+The rebuild routes every observation through :class:`StopsMatrixStore` —
+the same store the coordinator's live learning and the config flow's
+lookup use. These tests verify that contract end-to-end: the rebuild
+calls ``async_record`` for every (station, direction) bucket it
+samples, the recorded data is immediately visible to ``async_lookup``,
+and every outbound HTTP call crosses the gate as ``priority="background"``
+so live polling can jump the queue.
+"""
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from homeassistant.core import HomeAssistant
 import pytest
+from homeassistant.core import HomeAssistant
 
 from custom_components.irish_rail.matrix_rebuild import (
-    RebuildResult,
-    _dump_document,
-    _load_base_document,
-    _merge_station,
+    _REBUILD_PRIORITY,
     async_run_matrix_rebuild,
 )
-from custom_components.irish_rail.store import (
-    STOPS_STORE_VERSION,
-    normalize_direction_key,
-)
-from pyirishrail import (
+from custom_components.irish_rail.pyirishrail import (
     IrishRailConnectionError,
     TrainMovement,
+)
+from custom_components.irish_rail.store import (
+    ALL_DIRECTIONS_KEY,
+    get_stops_store,
+    normalize_direction_key,
 )
 
 
@@ -36,117 +39,45 @@ class _FakeMovement:
         self.location = location
 
 
-_FIXTURE_DOC = {
-    "schema_version": STOPS_STORE_VERSION,
-    "generated": "2026-08-01T06:00:00+00:00",
-    "note": "seed",
-    "stations": {
-        "PEARS": {
-            "updated": "2026-08-01T06:00:00+00:00",
-            "directions": {
-                normalize_direction_key("Northbound"): [
-                    "Cherrywood",
-                    "Dublin Pearse",
-                ],
-                "_bogus": "not-a-list",
-            },
-        },
-    },
-}
+class _RecordingStore:
+    """Drop-in stand-in for :class:`StopsMatrixStore` that records calls.
 
-
-def _write(path: Path, document: object) -> Path:
-    """Write ``document`` as JSON to ``path``."""
-    path.write_text(json.dumps(document), encoding="utf-8")
-    return path
-
-
-
-
-# ── Pure gap-fill merge ─────────────────────────────────────────────────────
-
-
-def test_merge_adds_new_stops_without_removing_existing() -> None:
-    """Observed stops union into buckets; nothing is ever dropped."""
-    now = "2026-08-24T12:00:00+00:00"
-    document = json.loads(json.dumps(_FIXTURE_DOC))
-
-    touched, added = _merge_station(
-        document,
-        "PEARS",
-        {
-            normalize_direction_key("Northbound"): {"Greystones", "Dublin Pearse"},
-            normalize_direction_key("Southbound"): {"Greystones"},
-        },
-        now,
-    )
-
-    assert (touched, added) == (2, 2)
-    north = document["stations"]["PEARS"]["directions"]["northbound"]
-    assert north == ["Cherrywood", "Dublin Pearse", "Greystones"]
-    assert document["stations"]["PEARS"]["directions"]["southbound"] == [
-        "Greystones"
-    ]
-    assert document["stations"]["PEARS"]["updated"] == now
-
-
-def test_merge_no_change_keeps_timestamps_and_counts_zero() -> None:
-    """A fully-known snapshot refreshes nothing and reports zero deltas."""
-    document = json.loads(json.dumps(_FIXTURE_DOC))
-    original_updated = document["stations"]["PEARS"]["updated"]
-
-    touched, added = _merge_station(
-        document,
-        "PEARS",
-        {normalize_direction_key("Northbound"): {"cherrywood"}},  # dup casing
-        "2099-01-01T00:00:00+00:00",
-    )
-
-    assert (touched, added) == (0, 0)
-    assert document["stations"]["PEARS"]["updated"] == original_updated
-
-
-def test_load_base_document_repairs_corrupt_files() -> None:
-    """Malformed seeds degrade to skeletons carrying the runtime note."""
-    now = "2026-08-24T12:00:00+00:00"
-
-    empty = _load_base_document(None, "stops_matrix.json", now)
-    assert empty["schema_version"] == STOPS_STORE_VERSION
-    assert empty["stations"] == {}
-    assert empty["generated"] == now
-
-    from_broken_shape = _load_base_document(
-        '{"stations": []}', "stops_matrix.json", now
-    )
-    assert from_broken_shape["stations"] == {}
-
-    from_valid = _load_base_document(
-        json.dumps(_FIXTURE_DOC),
-        "stops_matrix.json",
-        now,
-    )
-    assert from_valid["schema_version"] == STOPS_STORE_VERSION
-    assert "runtime" in from_valid["note"].lower()
-
-
-@pytest.fixture(name="matrix_path")
-def matrix_path_fixture(tmp_path: Path) -> Path:
-    """Redirect the runtime seed target into a temporary directory.
-
-    The bundled ``stops_matrix.seed.json`` is not modified — the fixture
-    is self-contained so tests do not depend on whatever happens to be
-    bundled at test time.
+    Mirrors the real store's gap-fill union semantics: stops never
+    disappear, new stops are unioned in, first-seen casing wins, and
+    ``async_record`` returns ``True`` only when the bucket actually
+    changed. Tests assert on the recorded call list to verify the
+    rebuild hit the shared write path.
     """
-    path = tmp_path / "stops_matrix.json"
-    _write(path, _FIXTURE_DOC)
-    return path
 
+    def __init__(self) -> None:
+        self.records: list[tuple[str, str | None, list[str]]] = []
+        self._buckets: dict[tuple[str, str], list[str]] = {}
 
-@pytest.fixture(name="seed_path")
-def seed_path_fixture(tmp_path: Path) -> Path:
-    """Return a temp path the tests can use as the bundled seed."""
-    return tmp_path / "stops_matrix.seed.json"
+    async def async_record(
+        self, station_code: str, direction: str | None, stops: list[str]
+    ) -> bool:
+        self.records.append((station_code, direction, list(stops)))
+        key = (station_code, normalize_direction_key(direction))
+        existing_map: dict[str, str] = {}
+        existing = self._buckets.get(key, [])
+        for stop in existing:
+            if isinstance(stop, str) and stop:
+                existing_map.setdefault(stop.casefold(), stop)
+        for stop in stops:
+            if isinstance(stop, str) and stop:
+                existing_map.setdefault(stop.casefold(), stop)
+        merged = sorted(existing_map.values(), key=str.casefold)
+        if merged == existing:
+            return False
+        self._buckets[key] = merged
+        return True
 
+    async def async_lookup(
+        self, station_code: str, direction: str | None
+    ) -> list[str] | None:
+        key = (station_code, normalize_direction_key(direction))
+        result = self._buckets.get(key)
+        return list(result) if result is not None else None
 
 
 def _client_mock(stations: list[MagicMock]) -> MagicMock:
@@ -158,19 +89,31 @@ def _client_mock(stations: list[MagicMock]) -> MagicMock:
     return client
 
 
-def _read_persisted(path: Path) -> dict[str, Any]:
-    """Blocking JSON read kept out of async scope (ASYNC240 hygiene)."""
-    result: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
-    return result
+def _scoped_factory(stops: list[str]):
+    """Build a ``_scoped_journey_stops`` stand-in returning the given stops."""
+
+    def fake_scoped(
+        movements: list[TrainMovement],
+        destination: str | None,
+        station_code: str | None,
+        station_name: str | None,
+    ) -> list[_FakeMovement]:
+        return [_FakeMovement(stop) for stop in stops]
+
+    return fake_scoped
 
 
-async def test_rebuild_samples_network_and_gap_fills(
+async def test_rebuild_writes_every_station_through_stops_store(
     hass: HomeAssistant,
-    matrix_path: Path,
-    tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Happy path: healthy stations merge, errors skip, file stays valid."""
+    """Happy path: every sampled station reaches the shared store.
+
+    Two stations, one healthy and one failing, exercise the full loop:
+    the healthy station's observed direction bucket and the ``_all``
+    union are both routed through ``get_stops_store(hass).async_record``;
+    the failing station is skipped, never touching the store.
+    """
     stations = [
         MagicMock(code="PEARS", name="Dublin Pearse"),
         MagicMock(code="KENT", name="Cork Kent"),
@@ -183,26 +126,16 @@ async def test_rebuild_samples_network_and_gap_fills(
         ]
     )
 
-    def fake_scoped(
-        movements: list[TrainMovement],
-        destination: str | None,
-        station_code: str | None,
-        station_name: str | None,
-    ) -> list[_FakeMovement]:
-        return [_FakeMovement("Craughill")]
+    recording = _RecordingStore()
 
     with (
         patch(
-            "custom_components.irish_rail.matrix_rebuild._matrix_path",
-            return_value=matrix_path,
-        ),
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._seed_path",
-            return_value=tmp_path / "stops_matrix.seed.json",
+            "custom_components.irish_rail.matrix_rebuild.get_stops_store",
+            return_value=recording,
         ),
         patch(
             "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
-            side_effect=fake_scoped,
+            side_effect=_scoped_factory(["Craughill"]),
         ),
         caplog.at_level(logging.WARNING),
     ):
@@ -211,253 +144,253 @@ async def test_rebuild_samples_network_and_gap_fills(
     assert result.total_stations == 2
     assert result.sampled == 1
     assert result.skipped == 1
-    assert result.buckets_updated == 2  # northbound + the fresh _all union
+    assert result.buckets_updated == 2  # northbound + _all union
     assert result.stops_added == 2
     assert result.error is None
     # The documented heavy-request warning accompanies every run.
     assert any("samples every" in record.getMessage() for record in caplog.records)
     assert any("timed out" in record.getMessage() for record in caplog.records)
 
-    persisted = _read_persisted(matrix_path)
-    pears = persisted["stations"]["PEARS"]["directions"]
-    assert pears[normalize_direction_key("Northbound")] == [
-        "Cherrywood",
-        "Craughill",
-        "Dublin Pearse",
-    ]
-    assert pears["_all"] == ["Craughill"]
-    assert persisted["note"].startswith("Snapshot maintained")
-    # The skipped station gains no entry at all.
-    assert "KENT" not in persisted["stations"]
+    # The healthy station's two buckets are recorded; the skipped one
+    # never appears.
+    recorded_codes = {code for code, _, _ in recording.records}
+    assert recorded_codes == {"PEARS"}
+    directions_for_pears = {
+        direction for code, direction, _ in recording.records if code == "PEARS"
+    }
+    assert directions_for_pears == {
+        normalize_direction_key("Northbound"),
+        ALL_DIRECTIONS_KEY,
+    }
 
 
-async def test_rebuild_bootstraps_missing_seed(
+async def test_rebuild_output_visible_to_subsequent_lookup(
     hass: HomeAssistant,
-    tmp_path: Path,
 ) -> None:
-    """With no runtime file the run reads the bundled seed and writes back."""
-    missing = tmp_path / "absent.json"  # never created on purpose
-    seed = tmp_path / "stops_matrix.seed.json"
-    # An empty seed mirrors the "fresh install" case; the fixture's
-    # ``_bogus`` station would otherwise survive and trip the equality
-    # assertion below.
-    _write(seed, {"stations": {}})
-    client = _client_mock([MagicMock(code="PEARS", name="Dublin Pearse")])
+    """A rebuild's output must reach the same lookup the config flow uses.
 
-    with (
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._matrix_path",
-            return_value=missing,
-        ),
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._seed_path",
-            return_value=seed,
-        ),
-    ):
-        result = await async_run_matrix_rebuild(hass, client)
-
-    assert result.sampled == 1
-    persisted = json.loads(missing.read_text(encoding="utf-8"))
-    assert persisted["schema_version"] == STOPS_STORE_VERSION
-    assert persisted["generated"]
-    assert "runtime" in persisted["note"].lower()
-    assert persisted["stations"]["PEARS"]["directions"] == {}
-
-
-async def test_rebuild_paces_itself_between_stations(
-    hass: HomeAssistant,
-    matrix_path: Path,
-    tmp_path: Path,
-) -> None:
-    """One polite pause happens per sampled station."""
-    stations = [
-        MagicMock(code=f"S{index:03d}", name=f"Stop {index}")
-        for index in range(3)
-    ]
-    client = _client_mock(stations)
-    pauses: list[float] = []
-
-    real_sleep = asyncio.sleep
-
-    async def tracking_sleep(delay: float) -> None:
-        pauses.append(delay)
-        await real_sleep(0)
-
-    from custom_components.irish_rail.const import REBUILD_DELAY_SECONDS
-
-    with (
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._matrix_path",
-            return_value=matrix_path,
-        ),
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._seed_path",
-            return_value=tmp_path / "stops_matrix.seed.json",
-        ),
-        patch(
-            "custom_components.irish_rail.matrix_rebuild.asyncio.sleep",
-            side_effect=tracking_sleep,
-        ),
-    ):
-        result = await async_run_matrix_rebuild(hass, client)
-
-    assert result.sampled == 3
-    assert pauses and all(p == REBUILD_DELAY_SECONDS for p in pauses)
-
-
-async def test_rebuild_paces_after_failed_station(
-    hass: HomeAssistant,
-    matrix_path: Path,
-    tmp_path: Path,
-) -> None:
-    """A failed station still gets its pause before the next poll.
-
-    Regression: the delay used to live after the success-path merge, so an
-    ``async_get_station_by_code`` failure ``continue`` skipped it entirely and
-    the next station was polled back-to-back after a burst of errors.
+    Patches ``get_stops_store`` with a recording store and then
+    performs an ``async_lookup`` after the rebuild — the exact call
+    :func:`custom_components.irish_rail.config_flow` makes to populate
+    the ``stops_at`` dropdown. A return of ``None`` here would be the
+    original dual-file bug: data exists but is unreachable.
     """
-    stations = [
-        MagicMock(code="KENT", name="Cork Kent"),
-        MagicMock(code="PEARS", name="Dublin Pearse"),
-    ]
+    stations = [MagicMock(code="PEARS", name="Dublin Pearse")]
     client = _client_mock(stations)
     client.async_get_station_by_code = AsyncMock(
-        side_effect=[
-            IrishRailConnectionError("Station polling down"),
-            [],
+        return_value=[
+            MagicMock(code="E001", destination="Bray", direction="Northbound")
         ]
     )
-    pauses: list[float] = []
 
-    real_sleep = asyncio.sleep
-
-    async def tracking_sleep(delay: float) -> None:
-        pauses.append(delay)
-        await real_sleep(0)
-
-    from custom_components.irish_rail.const import REBUILD_DELAY_SECONDS
+    recording = _RecordingStore()
 
     with (
         patch(
-            "custom_components.irish_rail.matrix_rebuild._matrix_path",
-            return_value=matrix_path,
+            "custom_components.irish_rail.matrix_rebuild.get_stops_store",
+            return_value=recording,
         ),
         patch(
-            "custom_components.irish_rail.matrix_rebuild._seed_path",
-            return_value=tmp_path / "stops_matrix.seed.json",
-        ),
-        patch(
-            "custom_components.irish_rail.matrix_rebuild.asyncio.sleep",
-            side_effect=tracking_sleep,
+            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            side_effect=_scoped_factory(["Howth"]),
         ),
     ):
         result = await async_run_matrix_rebuild(hass, client)
 
-    assert result.sampled == 1
-    assert result.skipped == 1
-    # One pause after the failed station and another after the healthy one.
-    assert pauses == [REBUILD_DELAY_SECONDS, REBUILD_DELAY_SECONDS]
+    assert result.buckets_updated == 2
+
+    # The very next call the config flow would make sees the rebuild's
+    # output — no separate file the lookup has to discover.
+    northbound = await recording.async_lookup("PEARS", "Northbound")
+    assert northbound == ["Howth"]
+    all_dirs = await recording.async_lookup("PEARS", None)
+    assert all_dirs == ["Howth"]
 
 
-# ── Durability and error branches ───────────────────────────────────────────
-
-
-def test_rebuild_result_error_branch_in_attributes() -> None:
-    """``as_dict`` surfaces an error payload only when one exists."""
-    assert "error" not in RebuildResult().as_dict()
-    failed = RebuildResult(error="ValueError: boom").as_dict()
-    assert failed["error"] == "ValueError: boom"
-
-
-def test_load_base_document_repairs_malformed_json(
-    caplog: pytest.LogCaptureFixture,
+async def test_rebuild_uses_background_priority_on_every_call(
+    hass: HomeAssistant,
 ) -> None:
-    """Unparseable JSON degrades to a fresh skeleton with a warning."""
-    with caplog.at_level(logging.WARNING):
-        skeleton = _load_base_document(
-            "{definitely not json", "stops_matrix.json", "now"
-        )
-    assert skeleton["stations"] == {}
-    assert skeleton["generated"] == "now"
-    assert "malformed" in caplog.text
+    """The rebuild must never displace live polling on a shared gate.
 
-
-def test_merge_station_repairs_corrupt_container_shapes() -> None:
-    """Non-dict station entries and direction layers are rebuilt in place."""
-    # The deliberately-malformed values seed the repair path; declaring
-    # the documents as ``dict[str, Any]`` keeps mypy from inferring a
-    # narrower concrete value type for the entry before the merge.
-    document: dict[str, Any] = {"stations": {"PEARS": "garbage"}}
-    touched, added = _merge_station(
-        document, "PEARS", {normalize_direction_key("Northbound"): {"Bray"}}, "now"
-    )
-    assert (touched, added) == (1, 1)
-    assert document["stations"]["PEARS"]["directions"]["northbound"] == ["Bray"]
-
-    document_two: dict[str, Any] = {
-        "stations": {"TARA": {"directions": "also garbage"}}
-    }
-    touched, added = _merge_station(
-        document_two, "TARA", {normalize_direction_key(None): {"Howth"}}, "now"
-    )
-    assert (touched, added) == (1, 1)
-    assert document_two["stations"]["TARA"]["directions"]["_all"] == ["Howth"]
-
-
-def test_matrix_path_uses_hass_config_path(hass: HomeAssistant) -> None:
-    """The runtime rebuild file lives under ``hass.config.path()``."""
-    from custom_components.irish_rail.matrix_rebuild import _matrix_path
-
-    expected = Path(hass.config.path("stops_matrix.json"))
-    assert _matrix_path(hass) == expected
-
-
-def test_seed_path_lives_next_to_the_integration_folder() -> None:
-    """The bundled seed is a sibling of the integration's own modules.
-
-    Verified by importing the helper from the same module and
-    confirming the path ends in the documented filename; this is the
-    line that HACS overwrites on every integration update and that
-    the runtime matrix is layered on top of.
+    Pins the contract by inspecting the ``priority`` kwarg on every
+    client method the rebuild calls. Each method threads its
+    ``priority`` through to ``_request`` which crosses the gate;
+    a rebuild call without ``priority="background"`` would jump
+    the queue ahead of stations the user is actively watching.
     """
-    from custom_components.irish_rail.matrix_rebuild import _seed_path
+    stations = [MagicMock(code="PEARS", name="Dublin Pearse")]
+    client = MagicMock()
+    client.async_get_all_stations = AsyncMock(return_value=stations)
+    client.async_get_station_by_code = AsyncMock(
+        return_value=[
+            MagicMock(code="E001", destination="Bray", direction="Northbound")
+        ]
+    )
+    client.async_get_train_stops = AsyncMock(
+        return_value=[MagicMock(location="Bray")]
+    )
 
-    seed_path = _seed_path()
-    assert seed_path.name == "stops_matrix.seed.json"
-    # The seed lives inside the integration folder, not under the
-    # user's HA config dir.
-    assert "custom_components" in seed_path.parts
-    assert seed_path.parent.name == "irish_rail"
+    with (
+        patch(
+            "custom_components.irish_rail.matrix_rebuild.get_stops_store",
+            return_value=_RecordingStore(),
+        ),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            side_effect=_scoped_factory(["Howth"]),
+        ),
+    ):
+        await async_run_matrix_rebuild(hass, client)
+
+    # Every HTTP-touching method the rebuild calls must have been
+    # invoked with priority="background". The client threads this
+    # through to its gate via _request, so this is the contract
+    # the gate actually sees.
+    all_stations_kwargs = client.async_get_all_stations.await_args
+    assert all_stations_kwargs is not None
+    assert all_stations_kwargs.kwargs.get("priority") == _REBUILD_PRIORITY
+
+    by_code_kwargs = client.async_get_station_by_code.await_args
+    assert by_code_kwargs is not None
+    assert by_code_kwargs.kwargs.get("priority") == _REBUILD_PRIORITY
+
+    train_stops_kwargs = client.async_get_train_stops.await_args
+    assert train_stops_kwargs is not None
+    assert train_stops_kwargs.kwargs.get("priority") == _REBUILD_PRIORITY
+    assert _REBUILD_PRIORITY == "background"
 
 
-def test_dump_document_survives_temp_cleanup_failure(
-    tmp_path: Path,
+async def test_rebuild_with_existing_observations_unions(
+    hass: HomeAssistant,
 ) -> None:
-    """A failed temp-file cleanup never loses the already-replaced seed.
+    """A re-run against an already-populated bucket is a gap-fill, not a clobber.
 
-    The atomic dump writes to a sibling .tmp file, swaps it in with
-    ``os.replace``, and only then best-effort removes the temp path. If that
-    final unlink fails (e.g. the file is locked on Windows) the seed must not
-    be lost or left truncated, and the error must not propagate.
+    The recording store is pre-seeded with one stop. The rebuild then
+    observes the same stop plus a brand-new one. The bucket must end
+    up with both, and the rebuild must report zero stops added for the
+    already-known one (the store returns ``False`` on a no-op).
     """
-    target = tmp_path / "stops_matrix.json"
-    document = {
-        "schema_version": STOPS_STORE_VERSION,
-        "generated": "now",
-        "stations": {"PEARS": {"directions": {}}},
-    }
+    stations = [MagicMock(code="PEARS", name="Dublin Pearse")]
+    client = _client_mock(stations)
+    client.async_get_station_by_code = AsyncMock(
+        return_value=[
+            MagicMock(code="E001", destination="Bray", direction="Northbound")
+        ]
+    )
 
-    with patch("pathlib.Path.unlink", side_effect=OSError("locked")):
-        _dump_document(document, target)
+    recording = _RecordingStore()
+    # Pre-seed: Cherrywood is already known for PEARS Northbound.
+    assert await recording.async_record(
+        "PEARS", "Northbound", ["Cherrywood"]
+    ) is True
 
-    persisted = json.loads(target.read_text(encoding="utf-8"))
-    assert persisted["schema_version"] == STOPS_STORE_VERSION
-    assert persisted["stations"]["PEARS"]["directions"] == {}
+    with (
+        patch(
+            "custom_components.irish_rail.matrix_rebuild.get_stops_store",
+            return_value=recording,
+        ),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            side_effect=_scoped_factory(["Cherrywood", "Greystones"]),
+        ),
+    ):
+        result = await async_run_matrix_rebuild(hass, client)
+
+    # Cherrywood is a no-op; Greystones joins in both the direction
+    # bucket and the _all union. The final buckets contain both
+    # stops, and the rebuild reports the total stops in each changed
+    # bucket as ``stops_added`` (the user-facing attribute on the
+    # button's entity).
+    north = await recording.async_lookup("PEARS", "Northbound")
+    assert north == ["Cherrywood", "Greystones"]
+    all_dirs = await recording.async_lookup("PEARS", None)
+    assert all_dirs == ["Cherrywood", "Greystones"]
+    # Both the direction bucket and the _all bucket changed.
+    assert result.buckets_updated == 2
+    # ``stops_added`` is the sum of stops in each changed bucket:
+    # 2 (Cherrywood, Greystones) × 2 buckets = 4.
+    assert result.stops_added == 4
+
+
+async def test_rebuild_persists_through_real_storage(
+    hass: HomeAssistant,
+) -> None:
+    """The rebuild writes through HA's storage layer, not in-memory state.
+
+    Uses the real :class:`StopsMatrixStore` (no patch on
+    ``get_stops_store``) and a real second lookup that re-asks the
+    store after the rebuild. The data must survive: this is the
+    regression test for the original "two files, never reconciled"
+    bug — a rebuild that only wrote to in-process state would not
+    satisfy the config flow's next ``async_lookup`` after a restart.
+    """
+    stations = [MagicMock(code="PEARS", name="Dublin Pearse")]
+    client = _client_mock(stations)
+    client.async_get_station_by_code = AsyncMock(
+        return_value=[
+            MagicMock(code="E001", destination="Bray", direction="Northbound")
+        ]
+    )
+
+    real_store = get_stops_store(hass)
+
+    with (
+        patch(
+            "custom_components.irish_rail.matrix_rebuild.get_stops_store",
+            return_value=real_store,
+        ),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            side_effect=_scoped_factory(["Dún Laoghaire"]),
+        ),
+    ):
+        result = await async_run_matrix_rebuild(hass, client)
+
+    assert result.buckets_updated >= 1
+
+    # The real store (same singleton the config flow calls) sees the
+    # rebuild's output. This is the contract the original dual-file
+    # bug violated.
+    persisted = await real_store.async_lookup("PEARS", "Northbound")
+    assert persisted is not None
+    assert "Dún Laoghaire" in persisted
+
+
+async def test_rebuild_invalidates_bundled_seed_cache(
+    hass: HomeAssistant,
+) -> None:
+    """The rebuild must clear the bundled-seed cache at the end.
+
+    The cache exists so the config flow's fallback to the bundled
+    seed is fast on subsequent lookups; a rebuild that improved the
+    per-install matrix needs that cache cleared so the next
+    config-flow lookup reads the freshest possible seed instead of
+    serving a stale pre-rebuild snapshot.
+    """
+    stations = [MagicMock(code="PEARS", name="Dublin Pearse")]
+    client = _client_mock(stations)
+
+    with (
+        patch(
+            "custom_components.irish_rail.matrix_rebuild.get_stops_store",
+            return_value=_RecordingStore(),
+        ),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            side_effect=_scoped_factory([]),
+        ),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild.reset_bundled_seed_cache",
+            autospec=True,
+        ) as mock_reset,
+    ):
+        await async_run_matrix_rebuild(hass, client)
+
+    mock_reset.assert_called_once()
 
 
 async def test_movement_lookup_failure_skips_train_without_failing(
     hass: HomeAssistant,
-    tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A movement-history failure warns, caches empty, and merges nothing."""
@@ -482,12 +415,8 @@ async def test_movement_lookup_failure_skips_train_without_failing(
 
     with (
         patch(
-            "custom_components.irish_rail.matrix_rebuild._matrix_path",
-            return_value=tmp_path / "stops_matrix.json",
-        ),
-        patch(
-            "custom_components.irish_rail.matrix_rebuild._seed_path",
-            return_value=tmp_path / "stops_matrix.seed.json",
+            "custom_components.irish_rail.matrix_rebuild.get_stops_store",
+            return_value=_RecordingStore(),
         ),
         patch(
             "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",

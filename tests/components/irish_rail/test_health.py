@@ -9,10 +9,11 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr, entity_registry as er
-from homeassistant.util import dt as dt_util
 import pytest
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irish_rail.const import (
@@ -30,7 +31,7 @@ from custom_components.irish_rail.health import (
     async_note_entry_unloaded,
     get_health_monitor,
 )
-from pyirishrail import IrishRailConnectionError
+from custom_components.irish_rail.pyirishrail import IrishRailConnectionError
 
 
 def _client(error: Exception | None = None) -> MagicMock:
@@ -415,6 +416,19 @@ async def test_purge_skips_rows_pinned_to_a_live_owner(
     # purger's owner-equality check must skip it.
     hass.data.setdefault(DOMAIN, {})[GLOBAL_PROVIDER_KEY] = live_entry.entry_id
     _purge_orphan_global_entities(hass, expected_owner="SOMEONE_ELSE")
+
+    # The live-owned row must survive the purge call untouched:
+    # it still resolves under its unique id and is still pinned to
+    # the live entry, proving the owner-equality branch correctly
+    # skipped it.
+    assert (
+        entity_registry.async_get_entity_id(DOMAIN, DOMAIN, GLOBAL_HEALTH_UNIQUE_ID)
+        == seeded_entity_id
+    )
+    assert (
+        entity_registry.entities[seeded_entity_id].config_entry_id
+        == live_entry.entry_id
+    )
 
 
 def test_purge_skips_device_rows_with_unrelated_identifier_or_co_owners(

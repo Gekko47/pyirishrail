@@ -22,17 +22,16 @@ two concerns:
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime
-import logging
 
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
-
-from pyirishrail import IrishRailClient, IrishRailError
 
 from .const import (
     DOMAIN,
@@ -44,6 +43,7 @@ from .const import (
     HEALTH_MONITOR_INSTANCE,
     HEALTH_PROBE_STATION_CODE,
 )
+from .pyirishrail import IrishRailClient, IrishRailError
 from .types import IrishRailConfigEntry
 
 _LOGGER = logging.getLogger(__name__)

@@ -63,11 +63,6 @@ DEFAULT_SCAN_INTERVAL = timedelta(minutes=1)
 BACKOFF_MULTIPLIER = 2
 MAX_BACKOFF_INTERVAL = timedelta(minutes=15)
 
-# "stops_at" pruning hardening. Movement-history lookups for candidate trains
-# are issued concurrently, bounded by a small semaphore to stay polite to the
-# public API.
-MAX_CONCURRENT_MOVEMENT_LOOKUPS = 5
-
 # Per-client cache of train movement histories keyed by
 # ``(train_code, date)``. A running train's stop list only grows during its
 # journey, so caching per date is safe for "does this train stop at X?"
@@ -84,10 +79,13 @@ MOVEMENT_CACHE_MAX_ENTRIES = 1024
 # Two distinct files now exist:
 # * ``stops_matrix.seed.json`` ships inside the integration folder (read-
 #   only; the HACS update overwrites it with the upstream bundled seed).
-# * ``stops_matrix.json`` is the per-install runtime file the rebuild
-#   button writes into ``hass.config.path()``; it is gitignored and
-#   survives HACS updates, so a user-triggered rebuild is never silently
-#   clobbered when the integration is updated.
+# * ``stops_matrix.json`` is the storage key for the per-install learned
+#   matrix under ``.storage/``. It receives writes from the coordinator's
+#   live learning path, the config flow's live discovery, AND the rebuild
+#   button's network-wide sweep — all routed through the same
+#   ``StopsMatrixStore`` so the two paths reconcile by construction. HA's
+#   storage layer lives outside the integration folder, so HACS updates
+#   never clobber a user's learned knowledge.
 STOPS_MATRIX_SEED_FILENAME = "stops_matrix.seed.json"
 STOPS_MATRIX_FILENAME = "stops_matrix.json"
 

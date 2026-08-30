@@ -107,8 +107,6 @@ venv.bak/
 # mypy
 .mypy_cache/
 
-# cline
-.cline/
 
 # vscode
 .vscode/
@@ -118,3 +116,12 @@ venv.bak/
 # not in the integration folder; written by the rebuild button and
 # ignored so HACS updates never clobber a user's runtime data).
 stops_matrix.json
+
+# uv lockfile (tooling-only pyproject, no [project] table)
+uv.lock
+
+# qodo local tooling state
+.qodo/
+
+# local search-ignore directory
+.ignore/

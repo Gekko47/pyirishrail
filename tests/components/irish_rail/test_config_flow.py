@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import timedelta
-import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from homeassistant import config_entries, data_entry_flow
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import InvalidData
 from homeassistant.helpers import device_registry, entity_registry
-import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irish_rail.config_flow import IrishRailConfigFlow
@@ -24,12 +24,12 @@ from custom_components.irish_rail.const import (
     CONF_STOPS_AT,
     DOMAIN,
 )
-from custom_components.irish_rail.store import get_stops_store
-from pyirishrail import (
+from custom_components.irish_rail.pyirishrail import (
     IrishRailConnectionError,
     Station,
     TrainDueTime,
 )
+from custom_components.irish_rail.store import get_stops_store
 
 
 def _mock_station() -> Station:

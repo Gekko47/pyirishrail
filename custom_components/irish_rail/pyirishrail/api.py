@@ -8,16 +8,16 @@ import logging
 from xml.etree.ElementTree import Element
 
 import aiohttp
-from defusedxml.common import DefusedXmlException
 import defusedxml.ElementTree as ET
+from defusedxml.common import DefusedXmlException
 
 from ._const import (
     API_BASE_URL,
     DEFAULT_TIMEOUT,
-    MAX_CONCURRENT_MOVEMENT_LOOKUPS,
     MOVEMENT_CACHE_MAX_ENTRIES,
     STATION_TYPE_TO_CODE_DICT,
 )
+from ._gate import RequestGate
 from .errors import (
     IrishRailConnectionError,
     IrishRailError,
@@ -36,7 +36,6 @@ _LOGGER = logging.getLogger(__name__)
 __all__ = [
     'API_BASE_URL',
     'DEFAULT_TIMEOUT',
-    'MAX_CONCURRENT_MOVEMENT_LOOKUPS',
     'MOVEMENT_CACHE_MAX_ENTRIES',
     'STATION_TYPE_TO_CODE_DICT',
     'IrishRailClient',
@@ -155,12 +154,6 @@ def _scoped_journey_stops(
     # Bound the downstream cut to the contiguous run containing the matched
     # station: slicing from ``cut_index + 1`` across the whole list would leak
     # stops of later same-day journeys that happen to share the destination.
-    run_start = cut_index
-    while (
-        run_start > 0
-        and row_positions[run_start] == row_positions[run_start - 1] + 1
-    ):
-        run_start -= 1
     run_end = cut_index + 1
     while (
         run_end < len(rows)
@@ -173,9 +166,25 @@ def _scoped_journey_stops(
 class IrishRailClient:
     """Client for fetching data from the Irish Rail RTPI API."""
 
-    def __init__(self, session: aiohttp.ClientSession) -> None:
-        """Initialize the client."""
+    def __init__(
+        self, session: aiohttp.ClientSession, *, gate: RequestGate | None = None
+    ) -> None:
+        """Initialize the client.
+
+        ``gate`` lets several clients share one admission gate: pass the
+        same :class:`pyirishrail.RequestGate` instance to each client
+        whose requests must draw from the same pacing budget. The
+        Home Assistant integration passes one per-``HomeAssistant``
+        gate (see ``custom_components/irish_rail/gate.py``) to every
+        client it creates, so the coordinator, both config flows, the
+        rebuild button and the health probe all share a single rate
+        budget against the public ``api.irishrail.ie`` endpoints. When
+        ``gate`` is omitted, the client creates its own gate with the
+        documented defaults (2 concurrent, 0.25 s spacing); pass an
+        explicit gate to share pacing across instances.
+        """
         self._session = session
+        self._gate = gate if gate is not None else RequestGate()
         # Movement histories keyed by ``(train_code, date)``; see
         # MOVEMENT_CACHE_MAX_ENTRIES in const.py.
         self._movement_cache: dict[tuple[str, str], list[TrainMovement]] = {}
@@ -186,12 +195,21 @@ class IrishRailClient:
         self.last_downstream_stop_names: frozenset[str] = frozenset()
 
     async def _request(
-        self, endpoint: str, params: dict[str, str] | None = None
+        self,
+        endpoint: str,
+        params: dict[str, str] | None = None,
+        priority: str = "normal",
     ) -> Element:
-        """Make an HTTP GET request to the Irish Rail RTPI API."""
+        """Make an HTTP GET request to the Irish Rail RTPI API.
+
+        Every outbound request crosses the client's :class:`RequestGate`
+        (concurrency cap + minimum spacing), so callers cannot bypass
+        the pacing by hitting this method directly. Cached lookups never
+        reach this method and therefore never cross the gate.
+        """
         url = f"{API_BASE_URL}{endpoint}"
         try:
-            async with self._session.get(
+            async with self._gate.acquire(priority), self._session.get(
                 url, params=params, timeout=DEFAULT_TIMEOUT
             ) as response:
                 if response.status != 200:
@@ -222,9 +240,17 @@ class IrishRailClient:
             ) from err
 
     async def async_get_all_stations(
-        self, station_type: str | None = None
+        self,
+        station_type: str | None = None,
+        priority: str = "normal",
     ) -> list[Station]:
-        """Get all stations, optionally filtered by station type."""
+        """Get all stations, optionally filtered by station type.
+
+        ``priority`` is forwarded to the shared request gate; bulk callers
+        (e.g. the stops-matrix rebuild sweep) pass ``"background"`` so they
+        yield to live polling without being starved when no normal traffic
+        is queued.
+        """
         params = None
         if station_type and station_type in STATION_TYPE_TO_CODE_DICT:
             endpoint = "getAllStationsXML_WithStationType"
@@ -232,7 +258,7 @@ class IrishRailClient:
         else:
             endpoint = "getAllStationsXML"
 
-        root = await self._request(endpoint, params)
+        root = await self._request(endpoint, params, priority=priority)
         stations: list[Station] = []
 
         for obj in root.findall("objStation"):
@@ -295,15 +321,22 @@ class IrishRailClient:
         direction: str | None = None,
         destination: str | None = None,
         stops_at: str | None = None,
+        priority: str = "normal",
     ) -> list[TrainDueTime]:
-        """Get station realtime data by station code."""
+        """Get station realtime data by station code.
+
+        ``priority`` is forwarded to the shared request gate; bulk callers
+        (e.g. the stops-matrix rebuild sweep) pass ``"background"`` so they
+        yield to live polling without being starved when no normal traffic
+        is queued.
+        """
         endpoint = "getStationDataByCodeXML"
         params = {"StationCode": station_code}
         if num_minutes:
             endpoint = f"{endpoint}_withNumMins"
             params["NumMins"] = str(num_minutes)
 
-        root = await self._request(endpoint, params)
+        root = await self._request(endpoint, params, priority=priority)
         trains = parse_station_data(root)
 
         if direction or destination or stops_at:
@@ -351,8 +384,10 @@ class IrishRailClient:
         Candidate routes come from the due-train records for
         ``station_code`` (optionally narrowed to one direction); each
         distinct train code is resolved to its route through the per-day
-        cached :meth:`async_get_train_stops` under the shared bounded
-        semaphore. Routes are scoped to each train's current journey and cut
+        cached :meth:`async_get_train_stops` at background priority, so
+        the fan-out is paced by the client's shared request gate and
+        yields to concurrent live polling.
+        Routes are scoped to each train's current journey and cut
         downstream of ``station_code`` via :func:`_scoped_journey_stops`, so
         the union only contains stations the selected services actually
         reach after this station. A route whose history cannot be fetched is
@@ -364,12 +399,12 @@ class IrishRailClient:
         trains = await self.async_get_station_by_code(
             station_code, direction=direction
         )
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_MOVEMENT_LOOKUPS)
 
         async def _route_stops(train_code: str) -> list[TrainMovement]:
             try:
-                async with semaphore:
-                    return await self.async_get_train_stops(train_code)
+                return await self.async_get_train_stops(
+                    train_code, priority="background"
+                )
             except IrishRailError:
                 return []
 
@@ -439,7 +474,10 @@ class IrishRailClient:
         return trains
 
     async def async_get_train_stops(
-        self, train_code: str, date: str | None = None
+        self,
+        train_code: str,
+        date: str | None = None,
+        priority: str = "normal",
     ) -> list[TrainMovement]:
         """Get route/stop details for a train code.
 
@@ -449,6 +487,10 @@ class IrishRailClient:
         lookups are never cached, so transient errors retry naturally on
         the next poll; empty results are likewise not cached because they
         may simply mean the train has not reached its first stop yet.
+        Cache hits never cross the request gate; only the outbound
+        request does. Bulk callers (e.g. pruning fan-outs) pass
+        ``priority="background"`` so they yield to live polling on a
+        shared gate.
         """
         if date is None:
             # Use the local timezone's current date (Ireland for typical
@@ -465,7 +507,7 @@ class IrishRailClient:
         endpoint = "getTrainMovementsXML"
         params = {"TrainId": train_code, "TrainDate": date}
 
-        root = await self._request(endpoint, params)
+        root = await self._request(endpoint, params, priority)
         movements: list[TrainMovement] = []
 
         for obj in root.findall("objTrainMovements"):
@@ -527,10 +569,11 @@ class IrishRailClient:
 
         Direction and destination filters run purely locally. When
         ``stops_at`` is used, every candidate whose destination does not
-        already match gets its movement history fetched concurrently,
-        bounded by ``MAX_CONCURRENT_MOVEMENT_LOOKUPS``, so worst-case wall
-        time stays close to a single request timeout instead of growing
-        linearly with the number of due trains. Lookups go through
+        already match gets its movement history fetched concurrently at
+        background priority, paced by the client's request gate (its
+        ``max_concurrent`` keeps worst-case wall time close to a single
+        request timeout instead of growing linearly with the number of
+        due trains). Lookups go through
         :meth:`async_get_train_stops` and are served from its per-day cache;
         a candidate whose movement history cannot be fetched is pruned
         rather than failing the whole poll.
@@ -543,7 +586,6 @@ class IrishRailClient:
         callers can learn the monitored station's reachable stops from
         ordinary polling.
         """
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_MOVEMENT_LOOKUPS)
         # Reset per pass: the observations must describe this poll only, so a
         # stale set from an earlier poll can never be merged by callers.
         self.last_downstream_stop_names = frozenset()
@@ -553,8 +595,9 @@ class IrishRailClient:
         ) -> list[TrainMovement]:
             """Return the train's current-journey stops past the station."""
             try:
-                async with semaphore:
-                    movements = await self.async_get_train_stops(train_code)
+                movements = await self.async_get_train_stops(
+                    train_code, priority="background"
+                )
             except IrishRailError:
                 # A movement-history failure prunes this train only; the
                 # lookup retries naturally on the next poll because failures

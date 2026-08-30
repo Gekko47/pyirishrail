@@ -22,13 +22,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from contextlib import suppress
-from datetime import datetime
 import json
 import logging
 import os
-from pathlib import Path
 import sys
+from contextlib import suppress
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -36,22 +36,22 @@ import aiohttp
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
-from custom_components.irish_rail.store import (  # noqa: E402
-    ALL_DIRECTIONS_KEY,
-    STOPS_STORE_VERSION,
-    normalize_direction_key,
-)
-from pyirishrail import (  # noqa: E402
+import custom_components.irish_rail.pyirishrail.api as ir_api
+from custom_components.irish_rail.pyirishrail import (
     IrishRailClient,
     IrishRailError,
     TrainMovement,
 )
-import pyirishrail.api as ir_api  # noqa: E402
+from custom_components.irish_rail.store import (
+    ALL_DIRECTIONS_KEY,
+    STOPS_STORE_VERSION,
+    normalize_direction_key,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT = (
-    _REPO_ROOT / "custom_components" / "irish_rail" / "stops_matrix.json"
+    _REPO_ROOT / "custom_components" / "irish_rail" / "stops_matrix.seed.json"
 )
 
 

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
 import logging
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
 
-from homeassistant.core import HomeAssistant
 import pytest
+from homeassistant.core import HomeAssistant
 
 from custom_components.irish_rail import store as ir_store
 from custom_components.irish_rail.const import DOMAIN
@@ -110,7 +110,7 @@ async def test_store_survives_corrupt_storage_file(hass: HomeAssistant) -> None:
     path = Path(hass.config.path(".storage", f"{DOMAIN}.stops_matrix.json"))
     path.parent.mkdir(parents=True, exist_ok=True)
     # Test setup, not async I/O: writing the corrupt fixture directly is fine.
-    path.write_text("{not json", encoding="utf-8")  # noqa: ASYNC240
+    path.write_text("{not json", encoding="utf-8")
 
     store = StopsMatrixStore(hass)
     assert await store.async_lookup("PEARS", None) is None
@@ -142,6 +142,72 @@ async def test_bundled_seed_failure_degrades_to_empty_and_caches(
         assert "Could not load bundled stops matrix" in caplog.text
     # The empty result is cached: later calls do not re-read or re-warn.
     assert await async_load_bundled_stops_matrix() == {}
+
+
+async def test_bundled_seed_concurrent_loads_share_one_disk_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent loaders must not duplicate the disk read.
+
+    Regression test for the check-then-set race in
+    :func:`async_load_bundled_stops_matrix`: before the
+    ``asyncio.Lock`` guard, two coroutines arriving while the cache
+    was empty would both see ``_SEED_CACHE is None`` and both read
+    the file. The lock collapses N concurrent arrivals into a
+    single read; the remaining arrivals reuse the cached object.
+
+    The test holds the patched read inside a barrier that waits
+    until every concurrent caller has entered the read path, so
+    the race window is wide enough to fire deterministically
+    without the lock. With the lock in place, the second and
+    later arrivals wait at ``async with`` and never re-enter the
+    read; without the lock, all N see the empty cache and all N
+    increment the counter.
+    """
+    import asyncio
+
+    import custom_components.irish_rail.store as store_module
+
+    # Hermetic reset: a prior test in the session may have populated
+    # the cache and instantiated the lock.
+    monkeypatch.setattr(store_module, "_SEED_CACHE", None)
+    monkeypatch.setattr(store_module, "_SEED_CACHE_LOCK", None)
+
+    n_callers = 10
+    started = 0
+    release = asyncio.Event()
+    calls = 0
+
+    def counting_read() -> ir_store.StopsMatrix:
+        nonlocal started, calls
+        calls += 1
+        started += 1
+        # Block until every concurrent caller has reached this point.
+        # ``asyncio.Event`` is not safe across threads, so we busy-wait
+        # on a plain int — the read runs in an executor thread that
+        # has no event loop.
+        import time
+
+        deadline = time.monotonic() + 5.0
+        while started < n_callers and time.monotonic() < deadline:
+            time.sleep(0.001)
+        return {
+            "schema_version": ir_store.STOPS_STORE_VERSION,
+            "stations": {},
+        }
+
+    monkeypatch.setattr(store_module, "_read_bundled_matrix", counting_read)
+
+    results = await asyncio.gather(
+        *(async_load_bundled_stops_matrix() for _ in range(n_callers))
+    )
+
+    # The lock collapsed N arrivals into exactly one read.
+    assert calls == 1, f"expected 1 read, got {calls}"
+    # And every caller got the same object — the second arrival
+    # waited for the first to publish, then returned its result.
+    first = results[0]
+    assert all(result is first for result in results)
 
 
 def test_lookup_tolerates_broken_direction_layers_and_blank_buckets() -> None:

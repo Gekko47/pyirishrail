@@ -8,23 +8,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from xml.etree.ElementTree import fromstring
 
 import aiohttp
-from aresponses import ResponsesMockServer
 import pytest
+from aresponses import ResponsesMockServer
 
-from pyirishrail import (
+import custom_components.irish_rail.pyirishrail.api as ir_api
+from custom_components.irish_rail.pyirishrail import (
     IrishRailClient,
     IrishRailConnectionError,
     IrishRailParseError,
     IrishRailTimeoutError,
+    RequestGate,
     TrainDueTime,
     TrainMovement,
     parse_station_data,
 )
-from pyirishrail._const import (
-    MAX_CONCURRENT_MOVEMENT_LOOKUPS,
+from custom_components.irish_rail.pyirishrail._const import (
     MOVEMENT_CACHE_MAX_ENTRIES,
 )
-import pyirishrail.api as ir_api
 
 SAMPLE_STATIONS_XML = """
 <ArrayOfObjStation xmlns="http://api.irishrail.ie/realtime/">
@@ -597,10 +597,22 @@ def _due_train(code: str) -> TrainDueTime:
 async def test_station_by_code_stops_at_multiple_candidates_concurrently(
     aresponses: ResponsesMockServer,
 ) -> None:
-    """stops_at lookups overlap and never exceed the concurrency cap."""
-    limit = MAX_CONCURRENT_MOVEMENT_LOOKUPS
-    # More candidates than the semaphore allows, so the cap must engage.
-    codes = [f"E{700 + index}" for index in range(limit + 2)]
+    """stops_at lookups overlap and never exceed the gate's concurrency cap.
+
+    The library no longer maintains its own per-client semaphore for
+    movement-history fan-outs: the shared :class:`RequestGate` is the
+    single point of admission for every outbound HTTP call, so a
+    fan-out of N concurrent movement lookups is bounded by the gate's
+    ``max_concurrent`` setting instead. This test exercises that
+    contract end-to-end by stubbing ``_request`` to (a) cross the
+    real gate (``async with self._gate.acquire(priority)``) so the
+    cap is genuinely the gate's, and (b) block on a release event
+    once admitted, letting the assertions read the gate's own
+    ``_in_flight`` counter to verify the cap held.
+    """
+    cap = 2
+    # More candidates than the gate's cap, so the cap must engage.
+    codes = [f"E{700 + index}" for index in range(cap + 2)]
     aresponses.add(
         "api.irishrail.ie",
         "/realtime/realtime.asmx/getStationDataByCodeXML",
@@ -610,48 +622,111 @@ async def test_station_by_code_stops_at_multiple_candidates_concurrently(
 
     release = asyncio.Event()
     saturated = asyncio.Event()
-    active = 0
-    peak = 0
-    expected_in_flight = min(limit, len(codes))
+    gate: RequestGate  # populated in the ``async with`` below
+    in_flight_samples: list[int] = []
 
-    async def blocking_stops(
-        train_code: str, date: str | None = None
-    ) -> list[TrainMovement]:
-        """Block mid-flight until released, tracking concurrent activity."""
-        nonlocal active, peak
-        active += 1
-        peak = max(peak, active)
-        if active == expected_in_flight:
-            saturated.set()  # every slot the cap allows is now occupied
-        try:
+    async def blocking_request(
+        self,  # type: ignore[no-untyped-def]
+        endpoint: str,
+        params: dict[str, str] | None = None,
+        priority: str = "normal",
+    ):
+        """Stand-in for ``_request`` that crosses the gate then blocks.
+
+        The ``async with self._gate.acquire(priority)`` line is the
+        part that makes this test prove the gate's cap: every stubbed
+        call has to wait for an actual slot, so two callers admitted
+        in parallel are the gate's doing, not a coincidence of the
+        test's own counter. The gate's own ``_in_flight`` is the
+        authoritative value sampled by the assertion.
+
+        The outer station-data call returns immediately so the
+        ``_async_prune_trains`` fan-out can begin; only the inner
+        movement-history lookups block on the release event. That
+        way the test can observe the cap being held by the fan-out
+        alone, which is what ``MAX_CONCURRENT_MOVEMENT_LOOKUPS``
+        used to enforce and what the gate now enforces instead.
+        """
+        from xml.etree.ElementTree import fromstring
+
+        from custom_components.irish_rail.pyirishrail.api import _strip_namespaces
+
+        async with self._gate.acquire(priority):
+            # Inside the gate's critical section, so the sample is
+            # not racy.
+            in_flight_samples.append(self._gate._in_flight)
+            if self._gate._in_flight == self._gate._max_concurrent:
+                saturated.set()
+            if endpoint == "getStationDataByCodeXML":
+                # The outer call must return quickly or the fan-out
+                # never starts; the gate still records this slot
+                # briefly above.
+                return _strip_namespaces(fromstring(_station_data_xml(codes)))
             await release.wait()
-        finally:
-            active -= 1
-        return [_movement("Greystones", train_code)]
+            code = (params or {}).get("TrainId", "E777")
+            # Two movements: PEARS (the station we're polling) followed
+            # by Greystones (a downstream stop on the same journey).
+            # ``_scoped_journey_stops`` cuts at the PEARS row, leaving
+            # Greystones in the outcome so the ``stops_at`` filter can
+            # match. The real ``_request`` strips namespaces before
+            # returning; the stub has to do the same so plain tag
+            # lookups in the parser see the rows.
+            return _strip_namespaces(
+                fromstring(
+                    f"""
+<ArrayOfObjTrainMovements xmlns="http://api.irishrail.ie/realtime/">
+    <objTrainMovements>
+        <TrainCode>{code}</TrainCode>
+        <LocationCode>PEARS</LocationCode>
+        <LocationFullName>Dublin Pearse</LocationFullName>
+        <LocationOrder>1</LocationOrder>
+    </objTrainMovements>
+    <objTrainMovements>
+        <TrainCode>{code}</TrainCode>
+        <LocationCode>GRSTN</LocationCode>
+        <LocationFullName>Greystones</LocationFullName>
+        <LocationOrder>2</LocationOrder>
+    </objTrainMovements>
+</ArrayOfObjTrainMovements>
+"""
+                )
+            )
 
     async with aiohttp.ClientSession() as session:
-        client = IrishRailClient(session)
-        with patch.object(client, "async_get_train_stops", new=blocking_stops):
+        gate = RequestGate(max_concurrent=cap, min_interval_seconds=0)
+        client = IrishRailClient(session, gate=gate)
+        with patch.object(ir_api.IrishRailClient, "_request", blocking_request):
             poll = asyncio.create_task(
                 client.async_get_station_by_code("PEARS", stops_at="Greystones")
             )
-            # Fires only when enough lookups genuinely overlap; a serialized
-            # implementation would hang here and hit the timeout instead.
+            # Fires only when the gate is genuinely saturated (every
+            # slot occupied at the same moment); a serialized
+            # implementation would never reach this and the timeout
+            # would trip.
             async with asyncio.timeout(30):
                 await saturated.wait()
 
-            # Multiple candidates are blocked mid-lookup simultaneously...
-            assert active == expected_in_flight
-            assert active > 1
-            # ...and never more than the configured bound.
-            assert peak <= limit
+            assert gate._in_flight == cap, (
+                f"gate cap {cap} not engaged; saw {gate._in_flight}"
+            )
 
             release.set()
             trains = await poll
 
-    # The cap was reached exactly but never exceeded, and every candidate
-    # whose route matched was kept in API response order.
-    assert peak == limit
+    # Every sample taken while a stubbed call was inside the gate's
+    # critical section stayed at or under the cap. The cap is the
+    # gate's, not the test's — the assertion reads the gate's own
+    # ``_in_flight`` counter.
+    assert all(sample <= cap for sample in in_flight_samples), (
+        f"cap violation: samples={in_flight_samples}, cap={cap}"
+    )
+    # The cap was actually reached — without this we would not have
+    # proven anything about overlap.
+    assert max(in_flight_samples) == cap, in_flight_samples
+    # No slots leaked past the test.
+    assert gate._in_flight == 0
+    # Every candidate whose route matched was kept in API response
+    # order.
     assert [train.code for train in trains] == codes
 
 
@@ -895,7 +970,11 @@ async def test_station_stops_at_options_union_dedupe_and_exclude() -> None:
             scheduled_departure_time="",
         )
 
-    async def fake_stops(train_code: str, date: str | None = None):
+    async def fake_stops(
+        train_code: str,
+        date: str | None = None,
+        priority: str = "normal",
+    ) -> list[TrainMovement]:
         if train_code.strip() == "A2":
             raise IrishRailConnectionError("route unavailable")
         return [
@@ -1049,7 +1128,9 @@ async def test_stops_at_options_exclude_upstream_and_other_direction() -> None:
     train = replace(_due_train("A1"), destination="Greystones")
 
     async def fake_stops(
-        train_code: str, date: str | None = None
+        train_code: str,
+        date: str | None = None,
+        priority: str = "normal",
     ) -> list[TrainMovement]:
         return [
             # Earlier Northbound journeys of the same train code today:
@@ -1086,7 +1167,9 @@ async def test_prune_ignores_target_stop_on_other_journey() -> None:
     client.last_downstream_stop_names = frozenset({"STALE"})
 
     async def fake_stops(
-        train_code: str, date: str | None = None
+        train_code: str,
+        date: str | None = None,
+        priority: str = "normal",
     ) -> list[TrainMovement]:
         return [
             # Earlier Northbound leg that does call at Greystones:
@@ -1114,7 +1197,9 @@ async def test_prune_keeps_target_on_current_journey_and_records_observation() -
     client = IrishRailClient(MagicMock())
 
     async def fake_stops(
-        train_code: str, date: str | None = None
+        train_code: str,
+        date: str | None = None,
+        priority: str = "normal",
     ) -> list[TrainMovement]:
         return [
             _journey_movement("Dublin Pearse", "PEARS", destination="Bray"),
@@ -1167,7 +1252,9 @@ async def test_stops_at_options_skip_blank_and_excluded_locations() -> None:
         )
 
     async def fake_stops(
-        train_code: str, date: str | None = None
+        train_code: str,
+        date: str | None = None,
+        priority: str = "normal",
     ) -> list[TrainMovement]:
         return [
             _movement(""),

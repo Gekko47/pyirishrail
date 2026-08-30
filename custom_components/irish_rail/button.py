@@ -5,7 +5,7 @@ Assistant session by whichever config entry claims providership first
 (see ``health.py``). One press samples the whole network in-process
 (a port of ``scripts/build_stops_matrix.py`` merged gap-fill style
 into the per-install ``stops_matrix.json`` under
-``hass.config.path()``) and refreshes the bundled-seed cache, all
+``.storage/``) and refreshes the bundled-seed cache, all
 without a Home Assistant restart. The ``CONFIG`` entity category
 keeps it out of primary UI surfaces so per-station devices never
 have to carry it. The entity is attached to a fixed "Irish Rail
@@ -23,6 +23,8 @@ from typing import Any
 from homeassistant.components.button import ButtonEntity
 from homeassistant.components.persistent_notification import (
     async_create as pn_create,
+)
+from homeassistant.components.persistent_notification import (
     async_dismiss as pn_dismiss,
 )
 
@@ -34,8 +36,6 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-
-from pyirishrail import IrishRailClient
 
 from .const import (
     DOMAIN,
@@ -49,6 +49,7 @@ from .health import (
     get_health_monitor,
 )
 from .matrix_rebuild import RebuildResult, async_run_matrix_rebuild
+from .pyirishrail import IrishRailClient
 from .types import IrishRailConfigEntry, IrishRailRuntimeData
 
 _LOGGER = logging.getLogger(__name__)

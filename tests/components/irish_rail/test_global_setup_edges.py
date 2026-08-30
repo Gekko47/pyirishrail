@@ -13,12 +13,14 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
 
-from homeassistant.core import HomeAssistant
 import pytest
+from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irish_rail import (
     binary_sensor as ir_binary_sensor,
+)
+from custom_components.irish_rail import (
     button as ir_button,
 )
 from custom_components.irish_rail.const import DOMAIN

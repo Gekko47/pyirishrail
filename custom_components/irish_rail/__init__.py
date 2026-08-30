@@ -8,12 +8,14 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import (
     device_registry as dr,
+)
+from homeassistant.helpers import (
     entity_registry as er,
+)
+from homeassistant.helpers import (
     issue_registry as ir,
 )
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-
-from pyirishrail import IrishRailClient
 
 from .const import DOMAIN
 from .coordinator import (
@@ -21,7 +23,9 @@ from .coordinator import (
     empty_data_issue_id,
     resolve_scan_interval,
 )
+from .gate import async_get_request_gate, async_release_request_gate
 from .health import async_note_entry_loaded, async_note_entry_unloaded
+from .pyirishrail import IrishRailClient
 from .types import IrishRailConfigEntry, IrishRailRuntimeData
 
 _LOGGER = logging.getLogger(__name__)
@@ -38,7 +42,11 @@ async def async_setup_entry(
 ) -> bool:
     """Set up Irish Rail from a config entry."""
     session = async_get_clientsession(hass)
-    client = IrishRailClient(session)
+    # Pass the per-HA shared request gate so every client the
+    # integration creates (coordinator, both config flows, rebuild,
+    # health probe) draws from one rate budget against the public
+    # api.irishrail.ie endpoints. See ``gate.py`` for the rationale.
+    client = IrishRailClient(session, gate=async_get_request_gate(hass))
 
     coordinator = IrishRailDataUpdateCoordinator(hass, client, entry)
 
@@ -139,4 +147,11 @@ async def async_unload_entry(
     # Account for this entry leaving so the shared health probe stops once
     # the last Irish Rail entry unloads.
     await async_note_entry_unloaded(hass)
+    # Drop the shared request gate once the last entry leaves; the
+    # next setup entry will get a fresh singleton via
+    # ``async_get_request_gate``. The gate itself is cheap to
+    # recreate, and the explicit drop keeps the lifecycle symmetric
+    # with the rest of the ``hass.data[DOMAIN]``-keyed singletons the
+    # integration owns.
+    async_release_request_gate(hass)
     return unloaded

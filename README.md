@@ -259,10 +259,13 @@ automations.
 
 Notes:
 - The per-install learning cache is `irish_rail.stops_matrix.json` in HA
-  storage (the runtime file the rebuild button writes). HACS updates
-  never touch it, so a runtime rebuild is preserved across upgrades.
-  The bundled seed is `stops_matrix.seed.json` inside the integration
-  folder; that file *is* overwritten on each HACS update by design.
+  storage. It receives writes from the coordinator's live learning path,
+  the config flow's live discovery, AND the rebuild button's network-wide
+  sweep — all routed through the same `StopsMatrixStore` so the two
+  paths reconcile by construction. HACS updates never touch it, so a
+  runtime rebuild is preserved across upgrades. The bundled seed is
+  `stops_matrix.seed.json` inside the integration folder; that file *is*
+  overwritten on each HACS update by design.
 
 ## License
 This project is licensed under the **Apache License 2.0** — the same license used by
