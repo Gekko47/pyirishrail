@@ -39,7 +39,7 @@ shims · entity `unique_id` changes · live-API behavior changes.
 
 - 2026-08-30 — Plan created from the lead-dev review; Phase 0 executed (commit 1).
 - 2026-08-30 — Phase 1 executed (commit 2): 117 stale patch targets retargeted across 6 test files; gate-test expectation and gate-sharing setup-order fixed; 4 ruff + 11 mypy findings cleared; dead `_gate.py` silent guard removed; 2 coverage tests added. Gates green: 226 passed, 100.00% coverage, ruff 0, strict mypy 0.
-- 2026-08-30 — Phase 2 executed (commit 3): reconfigure `unique_id` erasure fixed (identity forwarded only when claimed); gate + health lifecycle unified on the `loaded_entry_ids` set (gate released on last unload only; idempotent setup); stops-at options fan-out isolates unexpected errors; store record lock; `failure_streak` property; `DUBLIN_TZ` dedupe; `identity.py` extraction. Gates green: 229 passed, 100.00% coverage, ruff 0, strict mypy 0.
+- 2026-08-30 — Phase 2 executed (commit 3): reconfigure `unique_id` erasure fixed (identity forwarded only when claimed); gate + health lifecycle unified on the `loaded_entry_ids` set (gate released on last unload only; idempotent setup); stops-at options fan-out isolates unexpected errors; store record lock; `failure_streak` property; `DUBLIN_TZ` dedupe; `identity.py` extraction. Committed as `2fe7ad1`. Gates green: 229 passed, 100.00% coverage, ruff 0, strict mypy 0.
 
 ## Phase 0 — Workspace & git reset — **Status: COMPLETE (commit 1, 2026-08-30)**
 
