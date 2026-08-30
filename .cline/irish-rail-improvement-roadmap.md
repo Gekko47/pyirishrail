@@ -7,7 +7,7 @@
 ## Current state baseline (verified 2026-08-22)
 
 - [x] Bronze quality scale: all 20 official rules satisfied (`quality_scale.yaml`)
-- [x] Fully async client (injected aiohttp session, defusedxml, typed exceptions)
+- [x] Fully async client (injected aiohttp session, stdlib `xml.etree.ElementTree` with an explicit pre-parse DTD/entity guard, typed exceptions)
 - [x] DataUpdateCoordinator + `entry.runtime_data` + first-refresh fail-fast
 - [x] Config flow with cached station fetch, unique-ID duplicate protection
 - [x] 4 sensors per station/direction with translation keys and stable unique IDs
@@ -25,13 +25,15 @@ Phases 5.1–5.4):
 - [x] `inject-websession`: **done** on local-code evidence — `api.py`
       accepts an injected aiohttp session; setup/config flows pass
       `async_get_clientsession(hass)` (recorded in `quality_scale.yaml`)
-- [x] `async-dependency`: **done** — the integration's declared
-      dependency set is now `pyirishrail>=0.2,<1.0` (a published async
-      package); the `defusedxml` decision is recorded in
+- [x] `async-dependency`: **done** — the integration declares no
+      third-party requirements; XML parsing is stdlib
+      `xml.etree.ElementTree` with an explicit pre-parse DTD/entity
+      guard, and the pre-parse policy is documented in
       `pyirishrail/README.md`.
-- [x] `strict-typing`: **done** — ``IrishRailConfigEntry`` alias used
+- [x] `strict-typing`: **done** — `IrishRailConfigEntry` alias used
       throughout; mypy strict gate covers the integration *and* its
-      tests; ``py.typed`` ships in the published wheel.
+      tests; `py.typed` ships vendored at
+      `custom_components/irish_rail/pyirishrail/py.typed`.
 
 ---
 
@@ -203,12 +205,11 @@ of satisfying all documented criteria.
 ## Phase 4 — Robustness & engineering
 
 > Former item 4.1 (client-library extraction) was folded into **Phase 5.3**
-> (Platinum tier attainment) on 2026-08-24; its remaining work continues there.
->
-> **Layout revision 2026-08-27:** the `pyirishrail` package ships as a
-> top-level sibling of `custom_components/` in this **same** repository
-> (not a separate repo, as originally drafted). Rationale and concrete
-> shape live in the Phase 5.3 subsection below.
+> (Platinum tier attainment) on 2026-08-24, then **reverted 2026-08-29**
+> (PyPI name owned by an unrelated project): the v0.3.0 Clean Baseline
+> keeps the client vendored inside the integration. See
+> `.cline/clean-cut-baseline-plan.md` and the v0.3.0 changelog for the
+> current layout.
 
 ### 4.2 Conditional requests
 - [x] Probe API for ETag / Last-Modified support
@@ -449,6 +450,20 @@ strict-typing sub-gap 3 of 3)
   and avoids a hollow second repo. The package is still published to PyPI
   as `pyirishrail`; HACS and the integration's `manifest.json` still consume
   it as an external dependency once shipped.
+
+> **2026-08-29 — REVERTED.** The 2026-08-28 extraction above was rolled
+> back in commit `1dd240b` ("Complete revert to vendored client and
+> remove Phase 5.3 artifacts"). The PyPI name `pyirishrail` is owned
+> by an unrelated project, so the v0.3.0 Clean Baseline keeps the
+> client **vendored at `custom_components/irish_rail/pyirishrail/`**
+> and the integration's `manifest.json` declares zero third-party
+> requirements. The reasoning, current layout, and the zero-dep
+> proof are recorded in `.cline/clean-cut-baseline-plan.md` and the
+> v0.3.0 `CHANGELOG.md`. The vendored client is still framework-
+> agnostic, still ships `py.typed`, and the `inject-websession` rule
+> is still satisfied at the integration level. The bullet items
+> below describe the 2026-08-28 implementation that the revert
+> unwound; they remain in the file as a historical record.
 - Concrete shape (after this item lands):
   - [x] Move `custom_components/irish_rail/api.py` (+ any helpers worth
         exposing — e.g. model dataclasses, exception types) to a top-level
@@ -556,7 +571,7 @@ strict-typing sub-gap 3 of 3)
 | 6 | Phase 3 docs | README sections added; icons.json; repair flow |
 | 7 | 4.2–4.7 robustness & engineering | Evidence recorded per item |
 | 8 | Phase 5.1–5.2 (strict typing in-repo) | Typed IrishRailConfigEntry used throughout; mypy gates integration *and* tests |
-| 9 | Phase 5.3–5.4 (tier completion; absorbs former 4.1) | `pyirishrail` package ships as a sibling package in this repo and is published to PyPI with `py.typed`; all three 🏆 rules `done` in quality_scale.yaml; manifest/README claim platinum |
+| 9 | Phase 5.3–5.4 (tier completion; absorbs former 4.1) | **`pyirishrail` package vendored at `custom_components/irish_rail/pyirishrail/`** (the 2026-08-28 PyPI extraction was reverted 2026-08-29; see the Phase 5.3 subsection); all three 🏆 rules `done` in `quality_scale.yaml`; `manifest.json` declares `requirements: []`; README claims Platinum |
 
 **Standing requirements for every phase:** ruff clean · strict mypy clean ·
 all tests passing · coverage ≥90% (target ≥95%) · no blocking calls in async

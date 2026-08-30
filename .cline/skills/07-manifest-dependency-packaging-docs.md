@@ -123,45 +123,42 @@ Do not mark a rule done solely because code exists. The implementation must actu
 
 Current Bronze includes branding assets. Add them even though the old project-specific tree omitted them.
 
-## Client library extraction (roadmap Phase 5.3 — Platinum path, in-repo sibling layout, revised 2026-08-27)
+## Client library layout (v0.3.0 Clean Baseline, 2026-08-30)
 
-- The `pyirishrail` package lives in **this repository** as a top-level
-  sibling of `custom_components/` (revised 2026-08-27; previous plans put
-  it in a separate repo). Reasons: the integration is still in testing
-  (no users), a single repo preserves the full history of the client
-  code, and CI/HACS are simpler to maintain.
-- Layout after this work:
-  - `pyirishrail/` — the published library package (built as a wheel,
-    ships `py.typed` per PEP-561)
-  - `custom_components/irish_rail/` — the HA integration (unchanged apart
-    from the import switch and `manifest.json` requirements)
-  - `tests/pyirishrail/` — pure library tests, no HA imports allowed
-  - `tests/components/irish_rail/` — HA integration tests, unchanged
-- `pyproject.toml` becomes a real wheel build (PEP 621): `name =
-  "pyirishrail"`, `packages = ["pyirishrail"]`, include `py.typed` in the
-  wheel. The integration's `custom_components/irish_rail/` is **not** an
-  installable package — HACS picks it up from the directory layout, not
-  from `pip`.
+> **Note:** the PyPI-extraction plan described in earlier versions of
+> this skill was implemented on 2026-08-28 and reverted on 2026-08-29
+> because the name `pyirishrail` on PyPI is owned by an unrelated
+> project. The v0.3.0 Clean Baseline keeps the client **internal**;
+> the v0.3.0 changelog and `.cline/clean-cut-baseline-plan.md` are the
+> authority on this decision.
+
+- The `pyirishrail` package lives **inside the integration** at
+  `custom_components/irish_rail/pyirishrail/` (vendored). It is a
+  framework-agnostic, framework-import-free Python module that ships
+  with `py.typed` (PEP-561) and a deliberate `__init__.py` re-export
+  surface.
 - `custom_components/irish_rail/manifest.json` declares
-  `"requirements": ["pyirishrail>=0.2,<1.0"]` and drops `defusedxml`
-  (transitive via `pyirishrail`; listing transitive requirements in the
-  manifest is discouraged by HA core).
-- CI is a matrix: `library` job (lint + mypy strict on `pyirishrail/` +
-  pytest on `tests/pyirishrail/` + build wheel + publish to TestPyPI/PyPI)
-  and `integration` job (installs the built wheel + lint + mypy strict on
-  `custom_components/irish_rail/` and `tests/components/irish_rail/` +
-  pytest ≥95% coverage).
-- The package must keep all Skill 02 rules: no Home Assistant imports,
-  injected session, explicit timeouts, typed exceptions, safe XML parsing.
-- The `defusedxml` decision must be recorded against the published
-  package (which is in this repo, not a separate one): the official
-  `async-dependency` rule has *no exceptions* ("Dependency is async"), so
-  either justify parser-on-fetched-bytes usage with evidence
-  (`defusedxml` is a pure XML parser invoked only on bytes already
-  fetched by `aiohttp`) or replace it.
-- This satisfies `async-dependency` and `inject-websession` as
-  published-library rules, and ships the `py.typed` (PEP-561) sub-gap of
-  `strict-typing`.
+  `"requirements": []`. The only transport dependency is `aiohttp`,
+  which Home Assistant core provides. XML parsing is the standard
+  library `xml.etree.ElementTree` with an explicit pre-parse
+  DTD/entity guard (no third-party XML parser is required on the
+  Home Assistant 2026.8 floor).
+- `pyproject.toml` stays tooling-only: `[tool.coverage.report]`,
+  `[tool.mypy]`, `[tool.pytest.ini_options]`. It does not build a
+  wheel; the integration is consumed by HACS from the directory
+  layout, not from `pip`.
+- CI is a single `integration` job (Python 3.14, ruff, strict mypy,
+  pytest at 100% line coverage, plus `hassfest` for manifest
+  validation). See `.github/workflows/ci.yml` for the canonical
+  commands.
+- The package keeps the Skill 02 rules: no Home Assistant imports,
+  injected session, explicit timeouts, typed exceptions, hardened
+  stdlib XML parsing.
+- The defusedxml question is closed: the package declares no
+  third-party runtime dependencies. The pre-parse DTD/entity guard
+  (with the `defusedxml` "defusedxml" rationale in
+  `pyirishrail/README.md`) is preserved as historical context; the
+  active policy is **stdlib-only with an explicit guard**.
 
 ## README expansion (roadmap Phase 3 — Gold docs rules)
 

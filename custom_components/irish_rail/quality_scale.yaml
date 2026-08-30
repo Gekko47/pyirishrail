@@ -65,10 +65,12 @@ rules:
   dependency_transparency:
     status: done
     comment: >
-      manifest.json requirements pin ``pyirishrail>=0.2,<1.0`` only; the
-      underlying aiohttp client and defusedxml XML parser arrive as
-      transitive dependencies of that published package, so no hidden
-      runtime deps leak into the integration.
+      The integration declares no third-party runtime dependencies
+      (``manifest.json`` ``"requirements": []``). XML parsing is performed by
+      Python's standard library ``xml.etree.ElementTree`` on bytes already
+      fetched by aiohttp; the only transport is ``aiohttp``, which Home
+      Assistant core provides (no listing required). Pinned by an explicit
+      test that asserts ``manifest.json["requirements"]`` is empty.
 
   docs_actions:
     status: done
@@ -103,8 +105,11 @@ rules:
   entity_unique_id:
     status: done
     comment: >
-      entity.py builds stable unique IDs from the config entry unique ID plus
-      a static per-sensor suffix.
+      ``entity.py`` and ``health.py`` build stable unique IDs from the
+      config-entry unique ID plus a static per-entity suffix; the two
+      integration-level entities use fixed-identifier strings
+      (``irish_rail_api_connectivity`` and ``irish_rail_rebuild_stops_matrix``)
+      so their registry identity survives reloads and ownership changes.
 
   has_entity_name:
     status: done
@@ -131,10 +136,13 @@ rules:
   unique_config_entry:
     status: done
     comment: >
-      Config flow sets unique_id "{station_code}_{direction}" (API-assigned
-      station code + fixed direction enum) and aborts if already configured,
-      allowing one entry per station per direction filter while preventing
-      exact duplicates.
+      The config flow sets ``unique_id = "{station_code}_{direction}"``
+      (API-assigned station code + lowercased direction or the literal
+      ``all`` sentinel) and aborts if already configured, allowing one
+      entry per station per direction filter while preventing exact
+      duplicates. Reconfiguring to a different direction claims a new
+      unique ID; reconfiguring to the same direction preserves the
+      existing ID (Phase 2 regression: ``test_reconfigure_unchanged_direction_skips_reload``).
 
   # ── Silver ────────────────────────────────────────────────────────────────
   parallel_updates:
@@ -166,19 +174,20 @@ rules:
   config_entry_unloading:
     status: done
     comment: >
-      __init__.py implements async_unload_entry via async_unload_platforms;
-      the options update listener is registered through entry.async_on_unload.
-      test_init.py verifies the unload + reload round-trip (entities removed,
-      entry NOT_LOADED, reload restores the same entities) and README
-      documents runtime unload/reload behaviour.
+      ``__init__.py`` implements ``async_unload_entry`` via
+      ``async_unload_platforms``; the options update listener is
+      registered through ``entry.async_on_unload``. test_init.py verifies
+      the unload + reload round-trip (entities removed, entry NOT_LOADED,
+      reload restores the same entities) and the docs in
+      ``README.md`` describe runtime unload/reload behaviour.
 
   test_coverage:
     status: done
     comment: >
-      CI gate raised to 100% (.github/workflows/ci.yml --cov-fail-under=100
-      on both the ``library`` and ``integration`` jobs, mirrored by
-      pyproject [tool.coverage.report] fail_under = 100); suite at exactly
-      100% line coverage (202 tests across 18 source files).
+      CI gate raised to 100% (``.github/workflows/ci.yml``
+      ``--cov-fail-under=100``; mirrored by ``pyproject.toml``
+      ``[tool.coverage.report] fail_under = 100``). The v0.3.0 Clean
+      Baseline runs the suite at exactly 100% line coverage.
 
   action_exceptions:
     status: exempt
@@ -252,17 +261,20 @@ rules:
     status: done
     comment: >
       Phase 3 review as entities grew: ``next_train_due`` is a
-      ``SensorDeviceClass.TIMESTAMP`` carrying the API's expected arrival
-      as an ISO 8601 ``datetime`` (HA's "Time" card renders the relative
-      "in 5 min" / "5 min ago" subtitle automatically); ``next_train_delay``
-      keeps ``SensorDeviceClass.DURATION`` with ``UnitOfTime.MINUTES`` and the
+      ``SensorDeviceClass.TIMESTAMP`` carrying the API's expected
+      arrival as an ISO 8601 ``datetime``; ``next_train_delay`` keeps
+      ``SensorDeviceClass.DURATION`` with ``UnitOfTime.MINUTES`` and the
       ``MEASUREMENT`` state class (genuine minute-based measurements
-      eligible for long-term statistics). ``next_train_destination`` is a
-      classless free-text sensor. The previous ``next_train_type`` entity
-      was retired; the train type now lives on the device's
-      ``extra_state_attributes`` (no separate device class is required for
-      attribute values, only for the primary sensor state). No attribute-based
-      surface introduced a mismatched class.
+      eligible for long-term statistics); ``next_train_destination`` is
+      a classless free-text sensor. The previous ``next_train_type``
+      dedicated entity was retired; the train type now lives on the
+      device's ``extra_state_attributes`` (no separate device class is
+      required for attribute values, only for the primary sensor
+      state). The two integration-level entities carry their
+      semantically-correct classes: the connectivity binary sensor
+      uses ``BinarySensorDeviceClass.CONNECTIVITY`` and the rebuild
+      button is tagged ``EntityCategory.CONFIG`` (no device class
+      required for button entities).
 
   exception_translations:
     status: exempt
@@ -277,18 +289,25 @@ rules:
   icon_translations:
     status: done
     comment: >
-      icons.json defines per-entity default icons for all three sensor
-      translation keys (mdi:train, mdi:map-marker, mdi:clock-alert-outline).
-      The TIMESTAMP-class sensor uses a train-domain icon that intentionally
-      extends the generic device-class icon with service context;
-      alignment with entity translation keys is enforced by test_icons.py.
+      icons.json defines per-entity default icons for the three sensor
+      translation keys (``next_train_due``: mdi:train,
+      ``next_train_destination``: mdi:map-marker,
+      ``next_train_delay``: mdi:clock-alert-outline) and the two
+      integration-level entities (connectivity binary sensor:
+      mdi:api; stops-matrix rebuild button: mdi:database-refresh).
+      Alignment with entity translation keys is enforced by test_icons.py.
 
   repair_issues:
     status: done
     comment: >
-      coordinator.py raises ir.async_create_issue (translation_key
-      "empty_data_during_service_hours", severity WARNING, is_fixable=False,
-      issue_domain=DOMAIN) after EMPTY_DATA_ISSUE_THRESHOLD consecutive
+      ``coordinator.py`` raises ``ir.async_create_issue`` with
+      ``translation_key="empty_data_during_service_hours"``, severity
+      ``WARNING``, ``is_fixable=False``, and a ``learn_more_url`` pointing
+      to the README's *Known Limitations* section. The issue is raised
+      once after ``EMPTY_DATA_ISSUE_THRESHOLD`` consecutive empty polls
+      during Dublin-time service hours and cleared the moment a refresh
+      returns real trains, or whenever the shared API-health monitor
+      confirms the upstream API is reachable.
       successful-but-empty polls during service hours; created exactly once
       per streak, deleted on the first data-bearing refresh and on entry
       unload. Pinned by tests in test_coordinator.py and test_init.py.
@@ -409,61 +428,53 @@ rules:
       async_remove_config_entry_device is needed.
 
   # ── Platinum ──────────────────────────────────────────────────────────────
-  # Assessed against the live rule pages on 2026-08-24; the official Platinum
-  # tier contains exactly three rules. Reaching the tier additionally requires
-  # every Bronze/Silver/Gold rule above to stay done/exempt.
-  # All three rules below are now `done` (roadmap Phase 5.1–5.4, 2026-08-28).
+  # The official Platinum tier contains exactly three rules, all of which
+  # the integration satisfies without an external PyPI package: the
+  # async client is vendored at ``custom_components/irish_rail/pyirishrail``
+  # (the name ``pyirishrail`` on PyPI is owned by an unrelated project, so
+  # the v0.3.0 Clean Baseline reverts the earlier extraction).
   async_dependency:
     status: done
     comment: >
-      The integration has no declared PyPI dependencies (manifest.json's
-      requirements array is empty). The async HTTP client lives at
-      ``custom_components/irish_rail/pyirishrail/`` as an internal module
-      of the integration; every network call goes through
-      ``await session.get(...)`` on the injected aiohttp session
-      (``custom_components/irish_rail/pyirishrail/api.py::IrishRailClient._request``).
-      The ``defusedxml`` parser is invoked only on bytes already fetched
-      by aiohttp and performs no I/O of its own, which is the standard
-      async-transport + sync-parser pattern used by Home Assistant core
-      for its own XML integrations. The package is not separately
-      published (the name ``pyirishrail`` on PyPI is owned by an
-      unrelated project, so the client was moved back inside the
-      integration directory to keep HACS installs self-contained).
-      Implemented 2026-08-29 (revert of Phase 5.3 extraction).
+      ``manifest.json`` declares zero third-party runtime requirements.
+      Every outbound network call is ``await session.get(...)`` on the
+      injected aiohttp session (``pyirishrail/api.py::IrishRailClient._request``).
+      XML parsing is performed by Python's standard library
+      ``xml.etree.ElementTree`` on bytes already fetched by aiohttp,
+      guarded by an explicit pre-parse policy that rejects DTD and
+      entity declarations before the parser is invoked
+      (``pyirishrail/api.py::_DTD_KEYWORDS``); the parser is therefore
+      async at the transport boundary and synchronous (and stateless
+      over the I/O layer) only over the already-fetched response bytes.
 
   inject_websession:
     status: done
     comment: >
       ``pyirishrail.api.IrishRailClient.__init__`` accepts an injected
-      ``aiohttp.ClientSession`` and never creates one itself;
-      ``async_setup_entry`` (custom_components/irish_rail/__init__.py) and
-      both flow helpers (config_flow.py) pass
-      ``async_get_clientsession(hass)``. Satisfies the rule at the
-      published-library level after the Phase 5.3 extraction. The
-      async-dependency decision in pyirishrail/README.md documents that
-      the defusedxml parser is invoked only on already-fetched bytes.
+      ``aiohttp.ClientSession`` and never creates one itself.
+      ``custom_components/irish_rail/__init__.py::async_setup_entry`` and
+      both ``config_flow.py`` flow helpers pass
+      ``async_get_clientsession(hass)``; the health probe and the
+      stops-matrix rebuild button reuse the entry's client.
 
   strict_typing:
     status: done
     comment: >
-      All three strict-typing sub-gaps are now closed (roadmap Phase 5.1,
-      5.2, and 5.3; verified 2026-08-28).
+      All three ``strict-typing`` sub-gaps are closed.
       (1) ``type IrishRailConfigEntry = ConfigEntry[IrishRailRuntimeData]``
       is defined in ``custom_components/irish_rail/types.py`` and used in
       every entry-taking signature across
       ``__init__.py`` (setup/listener/unload/registry helper),
       ``coordinator.py`` (constructor + the three ``resolve_*`` helpers +
-      ``empty_data_issue_id``), ``config_flow.py`` (options flow + the
-      ``async_get_options_flow`` staticmethod), ``sensor.py``,
-      ``binary_sensor.py``, ``button.py``, ``diagnostics.py``, and
-      ``health.py``. The coordinator import is guarded by ``TYPE_CHECKING``
-      to break the import cycle while preserving the static narrowing.
+      ``empty_data_issue_id``), ``config_flow.py`` (options flow +
+      ``async_get_options_flow``), ``sensor.py``, ``binary_sensor.py``,
+      ``button.py``, ``diagnostics.py``, and ``health.py``. The coordinator
+      import is guarded by ``TYPE_CHECKING`` to break the import cycle
+      while preserving the static narrowing.
       (2) The CI mypy gate in ``.github/workflows/ci.yml`` runs
       ``mypy custom_components/irish_rail tests/components/irish_rail``
-      (mirroring the home-assistant/core ``.strict-typing`` convention
-      of covering the component and its tests). (3) ``py.typed`` ships
-      in the published ``pyirishrail`` wheel per PEP-561
-      (``[tool.setuptools.package-data] pyirishrail = ["py.typed"]`` in
-      ``pyproject.toml``). The library's own strict mypy gate runs as
-      ``mypy pyirishrail`` in the CI ``library`` job. No ``# type: ignore``
-      remains in either the integration or the library.
+      with ``strict = true`` (mirroring the home-assistant/core
+      convention of covering the component and its tests).
+      (3) ``py.typed`` ships vendored inside
+      ``custom_components/irish_rail/pyirishrail/py.typed`` per PEP-561.
+      No ``# type: ignore`` remains in the integration.

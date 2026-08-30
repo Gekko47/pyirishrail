@@ -1,121 +1,132 @@
 # Changelog
 
-All notable changes to this project are documented in this file. The format is
-based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
-versioning follows [Semantic Versioning](https://semver.org/).
+All notable changes to this project are documented in this file. The
+format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+and versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Remediation — v0.3.0 Clean Baseline (in progress)
+## [0.3.0] — 2026-08-30
 
-Repository-wide remediation tracked in
-[.cline/clean-cut-baseline-plan.md](.cline/clean-cut-baseline-plan.md). The
-integration has no active users; the remediation is a clean cut with no
-migration path. Entries are appended as each phase lands.
+The v0.3.0 Clean Baseline. The integration has no active users, so
+this release is a clean cut with no migration path: every claim in
+the docs and quality scale was either proven against the
+implementation or removed. The plan, per-phase status, and
+decisions are recorded in
+[`.cline/clean-cut-baseline-plan.md`](.cline/clean-cut-baseline-plan.md).
 
-### Fixed (Phase 0)
+### Highlights
 
-- Completed the 2026-08-29 revert of the Phase 5.3 PyPI-package extraction:
-  the async client is vendored at `custom_components/irish_rail/pyirishrail/`
-  and the previously untracked `gate.py`, `pyirishrail/_gate.py`, and gate
-  test files are now tracked, so a fresh clone of the integration imports
-  cleanly.
-
-### Removed (Phase 0)
-
-- Abandoned top-level `pyirishrail/` package remnants and `tests/pyirishrail/`.
-- Build/publish artifacts (`dist/`, `build/`), seed-build logs, `uv.lock`,
-  and `.qodo/` local tooling state.
-- Stale editable `pyirishrail` install from the development environment.
-
-### Fixed (Phase 1)
-
-- Test suite honest baseline restored: 117 stale `pyirishrail.*` patch and
-  import targets across six test files were retargeted to the vendored
-  `custom_components.irish_rail.pyirishrail` package, unmasking 64 previously
-  failing tests; the gate-cancellation test's queue expectation was
-  corrected, and the gate-sharing test now adds its second config entry
-  after the component is loaded (Home Assistant sets up every registered
-  entry of a domain during component setup, so the early-added entry made
-  the explicit second `async_setup` raise `OperationNotAllowed`).
-- 11 strict-mypy errors and 4 ruff findings resolved across tests and
-  integration code: rebuild failures now log via `_LOGGER.exception`, the
-  bundled-seed shape check raises `TypeError` (with the loader's catch
-  widened to match), the health probe's deliberate broad catch carries a
-  justified `noqa`, and an unused test variable was removed.
-- `RequestGate`: removed an unreachable silent guard in the
-  cancelled-waiter cleanup that would have leaked an admitted slot if the
-  gate's lock discipline were ever broken; the queue removal now fails
-  loudly instead.
-
-### Added (Phase 1)
-
-- Coverage tests for the sensor's degraded `HH:MM` fallback resolution and
-  the stops-matrix rebuild's per-bucket persistence-failure isolation.
-  Full suite: 226 passed at 100.00% coverage with ruff and strict mypy
-  clean.
+- **Zero third-party runtime dependencies.** The integration no
+  longer lists any requirements in `manifest.json`. XML parsing is
+  stdlib `xml.etree.ElementTree` guarded by an explicit pre-parse
+  DTD/entity policy (`pyirishrail/api.py::_DTD_KEYWORDS`).
+- **`pyirishrail` package vendored.** The 2026-08-28 PyPI extraction
+  was reverted 2026-08-29 (the name is owned by an unrelated
+  project). The client lives at
+  `custom_components/irish_rail/pyirishrail/`, framework-agnostic
+  and framework-import-free, ships `py.typed` (PEP 561).
+- **All gates green.** 235 tests, 100.00% line coverage
+  (`--cov-fail-under=100`), ruff clean, strict mypy clean.
+- **Every `done` in `quality_scale.yaml` is now evidenced** with a
+  current, accurate file/function pointer. The previously
+  incorrect `dependency_transparency` claim about a
+  `pyirishrail>=0.2,<1.0` pin is gone.
 
 ### Fixed (Phase 2)
 
-- Same-direction reconfigure no longer erases the config entry's
-  `unique_id`: the flow forwards an identity to `async_update_entry` only
-  when it actually claimed a new one. Home Assistant 2026.8 reindexes an
-  explicit `unique_id=None` to `None`, which silently stripped the identity
-  that entity/device registry linkage depends on and broke the entry after
-  the next restart.
-- The shared request gate is released only when the *last* config entry
-  unloads. Previously any unload dropped the process-wide gate while
-  sibling entries kept running on the dropped instance and new clients
-  built a second one, splitting the shared rate budget.
-- Entry lifecycle is tracked by a set of loaded entry ids instead of a
-  counter, making setup idempotent: automatic retries after
-  `ConfigEntryNotReady` can no longer leave phantom counts — and a running
-  API-health probe — behind after all entries are removed.
-- `async_get_station_stops_at_options` isolates unexpected route-lookup
-  errors (`gather(..., return_exceptions=True)`): a bug in one lookup can
-  no longer escape into the config-flow step that calls it.
-- `StopsMatrixStore.async_record` serializes concurrent writers on a lock
-  so each merge observes the previous merge's result and each save carries
-  it.
+- **Reconfigure `unique_id` erasure.** The reconfigure flow no
+  longer forwards `unique_id=None` to `async_update_entry`, which
+  HA 2026.8 reindexes to `None` and silently strips the entity /
+  device registry linkage. Same-direction reconfigures now
+  preserve the existing unique ID verbatim.
+- **Shared-gate lifecycle.** The request gate is released only when
+  the *last* entry unloads; previously any unload dropped the
+  process-wide gate while siblings ran on a dropped instance and
+  new clients built a second one, splitting the shared rate budget.
+- **Idempotent setup.** Loaded entries are tracked by a set of
+  entry ids, so a `ConfigEntryNotReady` retry can no longer leave
+  phantom counts (and a running health probe) behind.
+- **`async_get_station_stops_at_options` isolates unexpected route-
+  lookup errors** via `gather(..., return_exceptions=True)`: a bug
+  in one lookup can no longer escape into the config-flow step.
+- **`StopsMatrixStore.async_record` serializes concurrent writers**
+  on an `asyncio.Lock` so each merge observes the previous merge's
+  result and each save carries it.
 
 ### Changed (Phase 2)
 
-- Entry identity helpers (`build_unique_id`, `normalized_direction`) moved
-  to a dedicated `identity.py` module, removing the coordinator →
-  config_flow import; `DUBLIN_TZ` is now defined once in `const.py`;
-  diagnostics reads the backoff state through a new public
-  `coordinator.failure_streak` property. Full suite: 229 passed at
-  100.00% coverage with ruff and strict mypy clean.
+- Entry identity helpers (`build_unique_id`, `normalized_direction`)
+  moved to `identity.py`; the coordinator no longer imports
+  `config_flow`. `DUBLIN_TZ` is defined once in `const.py`.
+  Diagnostics reads the backoff state through a new public
+  `coordinator.failure_streak` property.
 
 ### Removed (Phase 3)
 
-- The `defusedxml` runtime dependency. The integration no longer lists
-  any third-party requirements in its `manifest.json`; XML parsing is
-  performed by Python's standard library `xml.etree.ElementTree`, which
-  on the Home Assistant 2026.8 floor (Python 3.14.2's bundled expat
-  2.7.5) already rejects entity declarations and external-entity
-  resolution with `ParseError`.
+- **`defusedxml` runtime dependency.** The integration's
+  `manifest.json` declares no third-party requirements. XML parsing
+  is stdlib `xml.etree.ElementTree`, which on the Home Assistant
+  2026.8 floor (Python 3.14.2's bundled expat 2.7.5) already
+  rejects entity declarations and external-entity resolution with
+  `ParseError`.
+- `types-defusedxml` CI dependency. `pyirishrail/api.py` no longer
+  imports `defusedxml`.
 
 ### Added (Phase 3)
 
-- An explicit pre-parse DTD/entity guard on the single XML parse choke
-  point (`pyirishrail/api.py::_request`). The guard runs against a
-  pre-lowered copy of the response body and rejects any `<!doctype`,
-  `<!entity`, `<!element`, `<!attlist`, or `<!notation` keyword,
-  closing the one gap the stdlib parser leaves open (DTDs without
-  entities). The policy is now independent of the bundled expat
-  version.
-- Hostile-input tests parametrized over internal-entity bombs, XXE
-  (http and `file://`), DTD-without-entities, and an uppercase DOCTYPE
-  payload, plus a positive test pinning the namespaced-valid path.
+- **Pre-parse DTD/entity guard** on the single XML parse choke
+  point (`pyirishrail/api.py::_request`). Runs against a
+  pre-lowered copy of the response and rejects any of `<!doctype`,
+  `<!entity`, `<!element`, `<!attlist`, `<!notation`. The policy is
+  independent of the bundled expat version.
+- **Hostile-input tests** parametrized over internal-entity bombs,
+  XXE (HTTP and `file://`), DTD-without-entities and an uppercase
+  DOCTYPE payload, plus a positive test pinning the namespaced-
+  valid path.
 
-### Changed (Phase 3)
+### Fixed (Phase 1)
 
-- CI workflow no longer installs the `types-defusedxml` type stub.
-- `pyirishrail` package docstrings document the zero-dependency XML
-  policy and the rationale for the explicit pre-parse guard. Full
-  suite: 235 passed at 100.00% coverage with ruff and strict mypy
-  clean, and verified to run green with `defusedxml` uninstalled from
-  the venv (the zero-dep proof).
+- 117 stale `pyirishrail.*` patch / import targets retargeted to
+  the vendored `custom_components.irish_rail.pyirishrail` package
+  (unmasked 64 previously failing tests).
+- Gate-cancellation test now expects the queue to be empty after
+  cancelling the only queued waiter; the gate-sharing test adds
+  the second entry after the component is loaded so the second
+  `async_setup` does not raise `OperationNotAllowed`.
+- 11 strict-mypy errors and 4 ruff findings resolved across tests
+  and integration code; the dead `except ValueError: pass` guard
+  in the gate's cancelled-waiter cleanup was removed in favour of
+  a loud failure that catches a future refactor breaking the lock
+  discipline.
+- Two coverage tests added: the sensor's degraded `HH:MM` fallback
+  and the stops-matrix rebuild's per-bucket persistence-failure
+  isolation.
 
-<!-- Phases 1–5 append their entries here as they land. -->
+### Removed (Phase 0)
+
+- The abandoned top-level `pyirishrail/` package remnants and
+  `tests/pyirishrail/`.
+- Build / publish artifacts (`dist/`, `build/`), seed-build logs,
+  `uv.lock` and `.qodo/` local tooling state.
+- The stale editable `pyirishrail` install from the development
+  environment.
+- Dead `.cline/implementation_plan.md` (Phase 4).
+
+### Documentation (Phase 4)
+
+- Full `README.md` rewrite: accurate quick-facts, 3 sensors per
+  station/direction, two integration-level entities on the *Irish
+  Rail Services* device, professional examples / use cases /
+  behaviour / stops-at / troubleshooting sections; fluff removed.
+- `pyirishrail/README.md` rewritten to the zero-dep XML story
+  with the explicit pre-parse guard documented.
+- `services.yaml` + `strings.json` no longer describe the global
+  entities as device-less — they share the *Irish Rail Services*
+  device.
+- `quality_scale.yaml` pointers updated to current, accurate
+  file/function references; obsolete defusedxml / PyPI
+  descriptions removed.
+- Skills 00 / 07 / 08 and the plan file truth-passed: the
+  "2026-08-28 PyPI extraction" section in the roadmap is marked
+  REVERTED with a pointer to this changelog and the plan file.

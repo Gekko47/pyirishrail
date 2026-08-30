@@ -1,11 +1,24 @@
-# Irish Rail Home Assistant Integration
+# Irish Rail — Home Assistant Integration
 
 [![CI](https://github.com/Gekko47/pyirishrail/actions/workflows/ci.yml/badge.svg)](https://github.com/Gekko47/pyirishrail/actions/workflows/ci.yml)
 [![HACS Validate](https://github.com/Gekko47/pyirishrail/actions/workflows/hacs.yml/badge.svg)](https://github.com/Gekko47/pyirishrail/actions/workflows/hacs.yml)
 [![Release](https://img.shields.io/github/v/release/Gekko47/pyirishrail)](https://github.com/Gekko47/pyirishrail/releases)
 [![License](https://img.shields.io/github/license/Gekko47/pyirishrail)](LICENSE.txt)
 
-Monitor live trains at any Irish Rail station from Home Assistant. This custom integration polls the unofficial [Irish Rail RTPI](https://www.irishrail.ie/) API and exposes due times, destinations, delays, and service types as sensors — configured entirely through the UI, no API key required. Typical uses: commuter dashboards, delay alerts, and presence-based departure reminders.
+A Home Assistant integration that monitors live Irish Rail train
+departures from the public, unauthenticated RTPI feed
+(`api.irishrail.ie`). Each configured station/direction becomes a
+device with three sensors and an `upcoming_trains` attribute; one
+integration-level device ("Irish Rail Services") exposes an API
+connectivity binary sensor and a stops-matrix rebuild button.
+
+| | |
+|---|---|
+| Domain | `irish_rail` |
+| Type · IoT class | Service · cloud polling |
+| Quality scale | **Platinum** — evidence in [quality_scale.yaml](custom_components/irish_rail/quality_scale.yaml) |
+| Minimum HA version | 2026.8.2 |
+| Runtime dependencies | none (`manifest.json` `requirements: []`) |
 
 | | |
 |---|---|
@@ -14,77 +27,122 @@ Monitor live trains at any Irish Rail station from Home Assistant. This custom i
 | Quality scale | **Platinum** — every Bronze/Silver/Gold/Platinum rule done or exempt; evidence in [quality_scale.yaml](custom_components/irish_rail/quality_scale.yaml) |
 | Minimum HA version | 2026.8.2 |
 
-## Installation
+## Install
 
-### HACS (recommended)
+### HACS
 
 1. Install [HACS](https://hacs.xyz/).
-2. Go to **HACS → Integrations**, open the ⋮ menu and pick **Custom repositories**.
-3. Paste `https://github.com/Gekko47/pyirishrail`, set category **Integration**, click **Add**.
-4. Find **Irish Rail** and click **Download**, then restart Home Assistant.
+2. **HACS → Integrations** → ⋮ menu → **Custom repositories**.
+3. Repository: `https://github.com/Gekko47/pyirishrail`; category
+   **Integration**; **Add**.
+4. **HACS → Irish Rail → Download**, then restart Home Assistant.
 
 ### Manual
 
-1. Download the latest release.
-2. Copy `custom_components/irish_rail` into your Home Assistant `config/custom_components` directory.
-3. Restart Home Assistant.
+Copy `custom_components/irish_rail` into your HA `config/custom_components`
+directory and restart Home Assistant.
 
 ## Removal
 
-1. Go to **Settings → Devices & Services → Irish Rail**, click each station entry, and use the ⋮ menu's **Delete** option. Removing the last station entry automatically tears down the API-health probe, the stops-matrix rebuild button, and the `irish_rail.rebuild_stops_matrix` service.
-2. Optional: delete `irish_rail.stops_matrix.json` from HA storage to drop the per-install runtime rebuild data. Keep the bundled `stops_matrix.seed.json` inside the integration folder.
+1. **Settings → Devices & Services → Irish Rail** → click each station
+   entry → ⋮ menu → **Delete**. Removing the last station entry
+   automatically tears down the API-health probe, the stops-matrix
+   rebuild button, and the `irish_rail.rebuild_stops_matrix` service.
+2. Optional: delete `irish_rail.stops_matrix.json` from HA storage to
+   drop the per-install learned matrix. Keep the bundled
+   `stops_matrix.seed.json` inside the integration folder.
 3. For a HACS install, remove the **Irish Rail** entry from HACS.
 
 ## Configuration
 
-Add one entry per station via **Settings → Devices & Services → Add Integration → Irish Rail**:
+Add one entry per station from **Settings → Devices & Services → Add
+Integration → Irish Rail**. The connection is validated up front; the
+station list is fetched live.
 
-1. **Pick a station.** Start typing to narrow the list — matching is per-word and case-insensitive, exactly like irishrail.ie (try `pearse` or `galw`). Leave the box empty to browse all stations; a single match skips ahead. The list is fetched live from the API, so the connection is validated up front.
-2. **Optional filters** — anything left unticked simply means *monitor everything*:
-   - **Direction**: only directions Irish Rail actually reports for your station are offered (**Northbound/Southbound** on the Dundalk–Rosslare and Sligo–Dublin corridors, free-text values such as **To Cork** elsewhere), so a filter can never silently match nothing. If no trains are due right now the field becomes free text — leave **All** or copy the exact wording from irishrail.ie.
-   - **Stops at**: show only trains calling at a selected stop. The dropdown lists stops actually served by the currently selected services (your own station excluded), falling back to the full station list if nothing live could be sampled.
-3. **Upcoming trains**: how many trains (1–5, default 3) appear in each sensor's `upcoming_trains` attribute.
-4. Click **Submit**. Adding the same station with the same direction again is prevented (duplicate protection); the same station with a *different* direction creates an additional, independent entry.
+1. **Pick a station.** Per-word, case-insensitive prefix match (try
+   `pearse` or `galw`). Leave the box empty to browse all stations; a
+   single match skips straight to filters.
+2. **Filters** — leave both unticked to monitor every service:
+   - **Direction**: only directions Irish Rail currently reports for
+     your station are offered (`Northbound`/`Southbound` on the
+     Dundalk–Rosslare and Sligo–Dublin corridors; free-text values
+     such as `To Cork` elsewhere). If nothing is due right now the
+     field becomes free text — leave `All` or copy the exact wording
+     from irishrail.ie.
+   - **Stops at**: only stations the selected services actually call
+     at *after* yours are offered. Falls back to the cached matrix,
+     then the bundled seed, then the full station list.
+3. **Upcoming trains** (1–5, default 3): how many trains populate
+   the `upcoming_trains` attribute.
+4. **Submit**. Adding the same station with the same direction is
+   rejected (duplicate protection); the same station with a different
+   direction creates an additional, independent entry.
 
 ### Changing settings later
 
-Use the ⋮ menu on the config entry (the station itself cannot be changed). Values saved here always win over ones picked during initial setup:
-
 | Setting | Menu action | Behaviour |
 |---|---|---|
-| Scan interval — 30 s – 10 min, default 60 s | **Configure** | Applies immediately, no reload needed |
-| Number of upcoming trains — 1–5, default 3 | **Configure** | Applies immediately |
-| Stops-at filter | **Configure** | Applies immediately; **All** disables it |
-| Direction filter | **Reconfigure** | Rewrites the entry identity and triggers exactly one reload |
+| Scan interval (30 s – 10 min, default 60 s) | **Configure** | Applies immediately, no reload |
+| Number of upcoming trains (1–5, default 3) | **Configure** | Applies immediately |
+| Stops-at filter | **Configure** | Applies immediately; `All` disables it |
+| Direction filter | **Reconfigure** | Rewrites the entry identity; one reload |
 
-Changing the direction changes the entry's identity: combinations another entry already monitors are rejected, and the previous direction's four sensors and device are removed from the registries automatically — switch back later and the original entity IDs return, with your names and areas kept. Entries created before dynamic direction discovery that hold `Northbound`/`Southbound` at a non-corridor station should be reconfigured once here; those legacy filters never matched real services at such stations.
+Reconfiguring the direction changes the entry's identity: combinations
+another entry already monitors are rejected, the previous direction's
+three sensors and device are removed from the registries, and the
+original entity IDs return (with names and areas kept) if you switch
+back.
 
-## Entities
+## Sensors
 
-Each entry creates four sensors grouped under a device named after the station (and direction filter):
+Each station/direction config entry creates a device named after the
+station (and direction filter) with three sensors:
 
-| Sensor | Description |
-|---|---|
-| **Next train due** | Minutes until the next train arrives (`DURATION`, minutes, measurement — supports long-term statistics) |
-| **Next train destination** | Destination of the upcoming train |
-| **Next train delay** | Delay in minutes (`DURATION`, minutes, measurement) |
-| **Next train type** | Service type (e.g. DART, Suburban, Intercity) |
+| Entity | Type | Notes |
+|---|---|---|
+| `next_train_due` | `SensorDeviceClass.TIMESTAMP` (datetime) | The API's expected arrival; HA's Time card shows "in 5 min" / "5 min ago" automatically |
+| `next_train_destination` | free text | Destination of the next due service |
+| `next_train_delay` | `SensorDeviceClass.DURATION` (minutes, `MEASUREMENT`) | Lateness in minutes |
 
-Every sensor also carries these attributes:
+Train type (DART, Suburban, Intercity, etc.) lives on the device's
+`extra_state_attributes` — no separate dedicated entity.
+
+Every sensor carries these attributes (in addition to the device's
+own attributes):
 
 | Attribute | Description |
 |---|---|
-| `upcoming_trains` | The next N trains (count configurable during setup/options), each with due-in minutes, destination, delay, service type, train code, and scheduled origin/destination times. Shorter than requested if fewer trains are scheduled. |
-| `api_reachable` | Always `true` when readable — see [Data updates & availability](#data-updates--availability) for how this separates "no trains scheduled" from "API unreachable". |
+| `upcoming_trains` | The next N trains (1–5, configurable in setup/options, default 3). Each entry: `due_in_mins`, `destination`, `late_mins`, `type`, `train_code`, `origin_time`, `destination_time`. Shorter than requested if fewer trains are scheduled. |
+| `api_reachable` | `True` when readable. See [Behaviour](#behaviour) for how this separates "no trains scheduled" from "API unreachable". |
 | `origin`, `direction`, `train_code` | Origin station, travel direction, and Irish Rail identifier of the next train. |
 | `origin_time`, `destination_time` | Scheduled departure/arrival times for the next train's full journey. |
 | `expected_arrival_time`, `expected_departure_time` | Real-time expected times at the monitored station. |
+| `expected_arrival` | ISO 8601 string mirroring the `next_train_due` state. |
+| `time_until_arrival` | Whole-second countdown to `next_train_due`; recomputed on every read. |
+
+Icons are defined in `icons.json` at the integration root and
+overridable per entity from the UI.
+
+### Irish Rail Services device
+
+One device per Home Assistant instance, independent of how many
+station entries are configured:
+
+| Entity | Type | Notes |
+|---|---|---|
+| `binary_sensor.status` | `BinarySensorDeviceClass.CONNECTIVITY` | Pings `api.irishrail.ie` every 5 min; `True` means the API answered the most recent probe |
+| `button.rebuild_stops_matrix` | `EntityCategory.CONFIG` | One press rebuilds the "stops at" matrix (≈150 stations, several minutes, background-priority HTTP). See [Stops-at filter](#stops-at-filter). |
+
+The `irish_rail.rebuild_stops_matrix` service is the automation-facing
+alias of the rebuild button.
 | `scheduled_arrival_time`, `scheduled_departure_time` | Timetabled times at the monitored station. |
 
 Sensors ship with domain-appropriate default icons defined in the integration's `icons.json`; override any icon per entity from the UI as usual.
 
-## Example automations
+## Examples
+
 ### Departure alert
+
 Notify when the next train is due within 10 minutes on weekdays:
 
 ```yaml
@@ -111,6 +169,7 @@ Notify when the next train is due within 10 minutes on weekdays:
 ```
 
 ### Delay notification
+
 Notify when the monitored service is more than 5 minutes late:
 
 ```yaml
@@ -137,79 +196,173 @@ Notify when the monitored service is more than 5 minutes late:
 
 Replace the entity IDs with those of your own station/direction entries.
 
-## Data updates & availability
+## Behaviour
 
-- **Startup / reload**: an immediate first refresh runs when Home Assistant starts or the entry is loaded — **Reload** re-runs setup and restores the same sensors under the same entity IDs. If the API is unreachable, the entry enters `SETUP_RETRY` and Home Assistant retries with exponential backoff.
-- **Polling**: a `DataUpdateCoordinator` fetches fresh due-train data every **60 seconds** by default, matching the once-a-minute cadence of Irish Rail's real-time feed while keeping load on the public API sustainable. The interval is configurable (30 s – 10 min) and applies live.
-- **Adaptive backoff**: consecutive failed polls double the effective interval, capped at ~15 minutes, so an outage never hammers the public API; the first successful poll restores the configured interval. Manual refreshes stay available throughout.
-- **Failed poll**: the coordinator keeps last-known data, logs one error per outage, and sensors become **Unavailable** immediately — recovering automatically on the next successful poll.
-- **No trains due**: a legitimately empty feed (e.g. late at night) leaves sensors *available* reporting `unknown` with `api_reachable: true`. **Unavailable = API unreachable; available-but-unknown = quiet timetable.**
-- **Persistent empty feed**: if a station keeps returning nothing during service hours (roughly 06:00–midnight), a repair issue is raised under **Settings → System → Repairs**; it clears itself on the first refresh that returns real trains. While the shared [API connectivity probe](#global-irish-rail-api-device-health-sensor-and-matrix-rebuild-button) confirms the API itself is reachable, an empty board is treated as *no scheduled services inside the look-ahead window* instead: no issue is raised and any open one is cleared automatically.
+- **Startup / reload** — an immediate first refresh runs when HA
+  starts or the entry is loaded; reload re-runs setup and restores the
+  same sensors under the same entity IDs. If the API is unreachable,
+  the entry enters `SETUP_RETRY` and HA retries with exponential
+  backoff.
+- **Polling** — a `DataUpdateCoordinator` fetches fresh due-train
+  data every **60 s** by default (matching the once-a-minute cadence
+  of Irish Rail's real-time feed). Configurable 30 s – 10 min; applied
+  live via the options flow.
+- **Adaptive backoff** — consecutive failed polls double the
+  effective interval, capped at ~15 minutes, so an outage never
+  hammers the public API. The first successful poll restores the
+  configured interval immediately.
+- **Failed poll** — the coordinator keeps last-known data, sensors
+  become **Unavailable** immediately, and polling resumes on the
+  next scheduled cycle. The coordinator's built-in transition logger
+  emits one error per outage and one info line on recovery.
+- **No trains due** — a legitimately empty feed (e.g. late at night)
+  leaves sensors *available* with state `unknown` and attribute
+  `api_reachable: true`. **Unavailable = API unreachable;
+  available-but-unknown = quiet timetable.**
+- **Persistent empty feed** — a station returning nothing for
+  ~10 minutes during Dublin-time service hours (06:00–midnight)
+  raises a *No train data received for {station}* repair issue
+  pointing at this README's [Troubleshooting](#troubleshooting)
+  section. The issue clears itself on the first refresh that returns
+  real trains, or immediately when the shared API-health probe
+  confirms the upstream is reachable.
 
 ## "Stops at" filter
 
-When configuring a station you can optionally enable a **"stops at"** filter (optionally combined with a direction filter) so only trains that actually call at a chosen downstream station are exposed. The dropdown never offers arbitrary free text: it only lists stations that the selected services genuinely reach *after* your station.
+When configuring a station, you can enable a **"stops at"** filter
+(combined with a direction filter or alone) so only trains that
+actually call at a chosen downstream station are exposed. The
+dropdown never offers arbitrary free text; it lists stations the
+selected services genuinely reach *after* yours. The matrix behind
+it has three sources, applied in order of freshness:
 
-Because Irish Rail's realtime API publishes no static route directory, option lists are built from three layers, in order:
+1. **Live sampling** (source of truth) — trains currently due are
+   resolved to their current journey; only stops reached after your
+   station on that journey are offered.
+2. **Learned matrix** — every successful discovery (including
+   ordinary polling while a filter is active) is merged into a
+   per-install cache that survives restarts and refreshes itself.
+3. **Bundled seed** — a reference snapshot ships with the integration
+   so setup still works when no services are currently due (overnight).
 
-1. **Live sampling** (source of truth): trains currently due at your station are resolved to their current journey, and only stops reached after your station on that journey are offered.
-2. **Learned matrix**: every successful discovery — including ordinary polling while a filter is active — is merged into a per-install cache that survives restarts and refreshes itself automatically.
-3. **Bundled seed**: a reference snapshot ships with the integration so setup still works when no services are currently due (e.g. overnight).
+To refresh the matrix without the integration's normal live learning,
+press the **Rebuild stops at matrix** button on the Irish Rail Services
+device (or call the `irish_rail.rebuild_stops_matrix` service). A
+press samples every station in-process at background priority and
+merges the new knowledge back in. While the rebuild is in flight, the
+button greys out; the outcome appears in its state attributes and a
+persistent notification.
 
-Only if all three come up empty (fresh install during dead hours) does the form fall back to the full national station list. To regenerate the bundled snapshot from the live network, run:
+The offline snapshot generator for the bundled seed lives at
+[`scripts/build_stops_matrix.py`](scripts/build_stops_matrix.py):
 
-```shell
-python scripts/build_stops_matrix.py
+```sh
+python scripts/build_stops_matrix.py            # full rebuild
+python scripts/build_stops_matrix.py --limit 5  # smoke test
 ```
 
-## Diagnostics & troubleshooting
+## Troubleshooting
 
-Download diagnostics from the ⋮ menu on a config entry: the report contains redacted entry data/options plus coordinator health (update interval, last-update success flag, number of due trains). Station names and codes are partially masked (short prefix + hash suffix), so it is safe to attach to bug reports.
+Download diagnostics from the ⋮ menu on a config entry: the report
+contains redacted entry data/options plus coordinator health (update
+interval, last-update success flag, number of due trains). Station
+names and codes are partially masked (short prefix + hash suffix),
+so it is safe to attach to bug reports.
 
-| Symptom | Meaning |
+| Symptom | Cause / action |
 |---|---|
 | Sensors show `unavailable` | The last poll failed (downtime, timeout, or malformed response). One error per outage lands in **Settings → System → Logs**; polling continues and sensors recover on the first successful poll. |
 | Entry stuck in retry after startup/reload | The API was unreachable during setup. It completes on its own; **Reload** forces an immediate attempt. |
 | `unknown` states late at night | Quiet timetable, not a fault — sensors stay available with `api_reachable: true`. |
-| *"No train data received"* repair issue | Persistent empty responses during service hours may indicate an API or schedule-data change. Check whether other stations report data, reload the entry, and if it persists remove/re-add it or update the integration. Clears itself once real trains return. |
+| *No train data received for {station}* repair issue | Persistent empty responses during service hours may indicate an API or schedule-data change. Check whether other stations report data, reload the entry, and if it persists remove/re-add it or update the integration. Clears itself once real trains return. |
+| `binary_sensor.status` is `off` | The Irish Rail API itself is unreachable. Sensors may also be unavailable; check **Settings → System → Logs** for the probe's reason. |
 
-## Removal
+## Remove
 
-Delete the entry from its ⋮ menu: the four sensors and device are removed immediately, any pending repair issue is cleared, and nothing is written outside Home Assistant's own config-entry storage. To remove the integration entirely, uninstall it via HACS (or delete the `custom_components/irish_rail` folder for manual installs) and restart Home Assistant.
-
-Re-adding the same station/direction later restores the original entity IDs; Home Assistant's registries keep any names, icons, and area assignments you made.
+1. **Settings → Devices & Services → Irish Rail** → click each station
+   entry → ⋮ menu → **Delete**. Removing the last station entry
+   automatically tears down the API-health probe, the stops-matrix
+   rebuild button, and the `irish_rail.rebuild_stops_matrix` service.
+2. Optional: delete `irish_rail.stops_matrix.json` from HA storage to
+   drop the per-install learned matrix. Keep the bundled
+   `stops_matrix.seed.json` inside the integration folder.
+3. For a HACS install, remove the **Irish Rail** entry from HACS.
 
 ## Underlying API client
-The bundled `IrishRailClient` wraps the public RTPI XML endpoints over HTTPS with safe XML parsing ([defusedxml](https://pypi.org/project/defusedxml/)) and a 10-second timeout per request. It exposes methods that may be useful for custom automations/scripts built on top of the library:
 
-- `async_get_all_stations()` — all stations, optionally filtered by type (mainline/suburban/DART).
-- `async_get_station_by_name()` / `async_get_station_by_code()` — due trains at a station, with optional direction, destination, and "stops at" filtering.
-- `async_get_station_directions()` — distinct live direction values for one station (the source of the config flow's per-station dropdown).
-- `async_get_all_current_trains()` — real-time positions of all running trains, optionally filtered by type or direction.
-- `async_get_train_stops()` — full route/stop history for a given train code and date (cached per train/day).
+The async client lives in `custom_components/irish_rail/pyirishrail/`
+as an internal, framework-agnostic module. It uses Python's standard
+library `xml.etree.ElementTree` for parsing (an explicit pre-parse
+DTD/entity guard rejects any hostile DTD before the parser is
+invoked), accepts an injected `aiohttp.ClientSession`, raises a
+typed exception hierarchy, and shares a single `RequestGate` per
+Home Assistant instance. Its public surface:
 
-Only the station-by-code due-trains endpoint is used by the integration itself; the remaining methods power the config/options flows and are available for future expansion.
+- `IrishRailClient.async_get_all_stations()` — all stations, optionally
+  filtered by type (mainline / suburban / DART).
+- `IrishRailClient.async_get_station_by_name()` /
+  `async_get_station_by_code()` — due trains at a station, with
+  optional direction, destination and "stops at" filtering.
+- `IrishRailClient.async_get_station_directions()` — distinct live
+  direction values for one station (the source of the config flow's
+  per-station dropdown).
+- `IrishRailClient.async_get_all_current_trains()` — real-time
+  positions of all running trains, optionally filtered by type or
+  direction.
+- `IrishRailClient.async_get_train_stops()` — full route/stop
+  history for a given train code and date (cached per train/day).
+
+Only the station-by-code due-trains endpoint is used by the
+integration's normal polling; the rest power the config and options
+flows and the stops-matrix rebuild.
 
 ## Development
-Requires Python 3.14+.
+
+Requires Python 3.14+ and the dev tooling pinned in
+`pyproject.toml` / CI:
 
 ```bash
-pip install -e ".[dev]"                    # installs test/lint tooling only
-pytest                                     # run the test suite
-ruff check .                               # lint
-mypy custom_components/irish_rail          # strict type checking (as CI)
-pytest --cov=custom_components/irish_rail --cov-fail-under=100  # CI coverage gate
+pip install pytest pytest-asyncio pytest-cov aresponses \
+            pytest-homeassistant-custom-component ruff mypy
+pytest tests/components/irish_rail
+ruff check custom_components/irish_rail tests/components/irish_rail scripts
+mypy custom_components/irish_rail tests/components/irish_rail
+pytest tests/components/irish_rail \
+       --cov=custom_components/irish_rail --cov-fail-under=100
 ```
 
-The test suite lives under `tests/` and uses
+The test suite uses
 [pytest-homeassistant-custom-component](https://pypi.org/project/pytest-homeassistant-custom-component/)
-with `aresponses` for HTTP mocking.
+with `aresponses` for HTTP mocking. The full remediation plan,
+per-phase status and rationale are in
+[`.cline/clean-cut-baseline-plan.md`](.cline/clean-cut-baseline-plan.md).
 
-## Known Limitations
-- The Irish Rail RTPI API is an unofficial public service and may occasionally experience downtime.
-- The service uses plain HTTP/HTTPS and does not require authentication.
-- Data is specific to the Republic of Ireland and Northern Ireland rail network.
-- The "stops at" filter fetches each candidate train's route: one extra API request per newly seen train per day, served from a per-day cache afterwards. Lookups run concurrently with a small concurrency cap, keeping the added latency per poll bounded even at busy stations.
+## Known limitations
+
+- The Irish Rail RTPI feed is an unofficial public service; there is
+  no authentication and no documented rate limit. The shared
+  `RequestGate` paces the integration at 2 concurrent / 0.25 s spacing
+  per Home Assistant instance; large multi-station installs should
+  prefer background-priority service work (the matrix rebuild is
+  already background-priority) and avoid polling more often than the
+  default 60 s.
+- Direction filter values are *exactly* what the API reports for the
+  current services; for stations reporting free-text directions
+  (`To Cork` and similar) the dropdown falls back to free text when
+  nothing is due. A filter can never silently match nothing.
+- Service hours used to suppress the persistent-empty-feed repair
+  issue follow Europe/Dublin civil time across IST/GMT DST shifts;
+  empty responses between 00:00 and 06:00 are treated as a normal
+  quiet period regardless of where Home Assistant itself runs.
+- The "stops at" filter fetches each candidate train's movement
+  history: one extra API request per newly seen train per day,
+  served from a per-day cache afterwards. Lookups run concurrently
+  with a small concurrency cap, keeping the added latency per poll
+  bounded even at busy stations.
+
+## License
+
+Apache License 2.0 — see [LICENSE.txt](LICENSE.txt).
 
 ## Integration-level service entities: health sensor and matrix rebuild button
 

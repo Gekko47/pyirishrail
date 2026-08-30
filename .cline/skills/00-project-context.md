@@ -18,16 +18,35 @@ Target integration:
 - custom integration, HACS-installable
 - baseline tier: Bronze (complete); roadmap targets Silver, Gold, and Platinum-path items
 
-## Current state (verified 2026-08-22)
+## Current state (2026-08-30)
 
-> **2026-08-30 status:** the repository is mid-remediation under
-> `.cline/clean-cut-baseline-plan.md` (v0.3.0 Clean Baseline). The snapshot
-> below predates the 2026-08-29 revert of the Phase 5.3 extraction (the
-> client is now vendored at `custom_components/irish_rail/pyirishrail/`,
-> not published to PyPI) and the remediation work itself; treat the plan
-> file as the current-state authority until its phases are complete.
+> **Active work is governed by `.cline/clean-cut-baseline-plan.md` (the
+> v0.3.0 Clean Baseline).** The snapshot below is the **post-Phase 4**
+> state of the repo; the plan file is the source of truth for phase
+> status, decisions, and the changelog. Treat the plan file as the
+> authority; this skill preserves the architecture invariants only.
 
-- Fully async client (`api.py`: injected aiohttp session, defusedxml, typed exceptions)
+- Async client vendored at `custom_components/irish_rail/pyirishrail/`
+  (no PyPI package: the name is owned by an unrelated project; Phase 5.3
+  was reverted 2026-08-29 and the v0.3.0 Clean Baseline keeps the
+  client internal).
+- Zero third-party runtime dependencies: `manifest.json` `requirements:
+  []`. XML parsing is stdlib `xml.etree.ElementTree` with an explicit
+  pre-parse DTD/entity guard.
+- One `DataUpdateCoordinator` per config entry + `entry.runtime_data` +
+  first-refresh fail-fast; set-based entry lifecycle keeps gate and
+  health probe idempotent across retries.
+- Config flow with cached station fetch, direction / stops-at / train-
+  count filters, unique-ID duplicate protection, reconfigure flow
+  (identity preserved on same-direction reconfigure).
+- 3 sensors per station/direction (next train due, destination, delay);
+  train type lives on the device's `extra_state_attributes`. One
+  integration-level "Irish Rail Services" device with the connectivity
+  binary sensor and the stops-matrix rebuild button.
+- Diagnostics module with partially-masked identifiers; brand assets
+  conforming.
+- CI gate on Python 3.14: ruff + strict mypy + pytest at 100% line
+  coverage.
 - One DataUpdateCoordinator per config entry + `entry.runtime_data` + first-refresh fail-fast
 - Config flow with cached station fetch, unique-ID duplicate protection
 - 4 sensors per station/direction with translation keys and stable unique IDs

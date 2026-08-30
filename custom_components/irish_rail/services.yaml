@@ -2,6 +2,11 @@
 # Referenced by ``button.py`` which registers the matching service handler
 # at runtime; the file must exist or hassfest fails the integration
 # with ``[SERVICES] Registers services but has no services.yaml``.
+#
+# The two integration-level entities (the connectivity binary sensor and
+# this rebuild button) share the fixed "Irish Rail Services" device, so
+# the description references that device rather than claiming a device-
+# less surface.
 
 rebuild_stops_matrix:
   name: Rebuild stops at matrix
@@ -9,7 +14,7 @@ rebuild_stops_matrix:
     Rebuild the bundled "stops at" matrix by sampling every Irish Rail
     station in the background. The job runs to completion and reports
     progress and outcome via a persistent notification and the matching
-    button's state attributes. The button is an integration-level
-    service entity (no device) tagged as CONFIG; this service is its
-    automation-facing alias.
+    button's state attributes on the "Irish Rail Services" device. This
+    service is the automation-facing alias of pressing the "Rebuild
+    stops at matrix" button.
 

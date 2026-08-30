@@ -148,8 +148,8 @@ criteria in `.cline/irish-rail-improvement-roadmap.md` (see also
 | 1.4 No-trains semantics | Empty vs error distinguished (attribute/logic); both states tested |
 | Phase 2 | Each Silver rule demonstrably satisfied; coverage gate ≥95% |
 | Phase 3 | README sections added; icons.json valid; repair issue raised once; exception translations |
-| 4.1 / 5.3 Client extraction (in-repo sibling) | `pyirishrail/` package in this repo builds and ships `py.typed`; wheel published to PyPI; integration imports `from pyirishrail import …`; `manifest.json` requires `pyirishrail>=0.2,<1.0`; `defusedxml` decision recorded; `git log --follow` still walks the moved files back to their original commits |
-| 4.2–4.5 | Evidence recorded per item in the roadmap file |
+| 4.1 / 5.3 Client layout (in-repo vendored) | `pyirishrail/` package vendored at `custom_components/irish_rail/pyirishrail/`; `manifest.json` requires `[]`; no third-party XML dependency (stdlib `ET` + pre-parse DTD guard); `py.typed` ships in the vendored layout; `git log --follow` still walks the moved files back to their original commits |
+| 4.2–4.5 | Evidence recorded per item in the plan file |
 
 After each item:
 - tick the roadmap checkbox,

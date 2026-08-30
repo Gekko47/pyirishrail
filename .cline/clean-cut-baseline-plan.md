@@ -7,7 +7,7 @@
 > (e.g. the defusedxml guidance in Skill 07, the PyPI-extraction sections),
 > **this file wins** until Phase 4 rewrites the stale sections.
 >
-> **Current status:** Phases 0–3 COMPLETE — next up: **Phase 4**.
+> **Current status:** Phases 0–4 COMPLETE — next up: **Phase 5**.
 
 ## Ground rules
 
@@ -41,6 +41,7 @@ shims · entity `unique_id` changes · live-API behavior changes.
 - 2026-08-30 — Phase 1 executed (commit 2): 117 stale patch targets retargeted across 6 test files; gate-test expectation and gate-sharing setup-order fixed; 4 ruff + 11 mypy findings cleared; dead `_gate.py` silent guard removed; 2 coverage tests added. Gates green: 226 passed, 100.00% coverage, ruff 0, strict mypy 0.
 - 2026-08-30 — Phase 2 executed (commit 3): reconfigure `unique_id` erasure fixed (identity forwarded only when claimed); gate + health lifecycle unified on the `loaded_entry_ids` set (gate released on last unload only; idempotent setup); stops-at options fan-out isolates unexpected errors; store record lock; `failure_streak` property; `DUBLIN_TZ` dedupe; `identity.py` extraction. Committed as `2fe7ad1`. Gates green: 229 passed, 100.00% coverage, ruff 0, strict mypy 0.
 - 2026-08-30 — Phase 3 executed (commit 4): `defusedxml` dropped; pre-parse DTD/entity guard via a keyword `in` scan against a pre-lowered copy of the response (regex avoided because Python `re` treats `<name>` as a silent named-group); CI no longer installs `types-defusedxml`; 6 new hostile-input tests pin the policy. Zero-dep proof: `pip uninstall defusedxml` then full suite green. Gates: 235 passed, 100.00% coverage, ruff 0, strict mypy 0.
+- 2026-08-30 — Phase 4 executed (commit 5): `quality_scale.yaml` rewritten with accurate pointers; `README.md` full professional rewrite (3 sensors, Irish Rail Services device, no fluff); `services.yaml` + `strings.json` aligned; `pyirishrail/__init__.py` + standalone `README.md` rewritten to zero-dep XML story; skills 00/07/08 truth-passed; roadmap Phase 5.3 REVERTED note added and acceptance table fixed; dead `implementation_plan.md` deleted; `CHANGELOG.md` closed. Gates: 235 passed, 100.00% coverage, ruff 0, strict mypy 0.
 
 ## Phase 0 — Workspace & git reset — **Status: COMPLETE (commit 1, 2026-08-30)**
 
@@ -83,7 +84,7 @@ policy version-independent.
 - [x] **Zero-dep proof**: `pip uninstall defusedxml` from `.venv`, then the full suite runs green; `importlib.util.find_spec('defusedxml')` returns `None` in the same environment that ran the suite
 - [x] Gates: **235 passed · 100.00% coverage · ruff 0 · strict mypy 0**
 
-## Phase 4 — Documentation & claims truth-pass — **Status: PENDING**
+## Phase 4 — Documentation & claims truth-pass — **Status: COMPLETE (commit 5, 2026-08-30)**
 
 - [ ] `quality_scale.yaml`: rewrite `dependency_transparency` (current text falsely claims a `pyirishrail>=0.2,<1.0` manifest pin — requirements are intentionally empty, zero third-party runtime deps); update `async_dependency` wording (stdlib parser + explicit guard); fix `strict_typing` (3) pointer (py.typed vendored; wheel/library-CI-job references removed); fix `inject_websession` README path
 - [ ] `README.md` — full professional rewrite, fluff removed: accurate quick-facts; 3 sensors per entry (not 4 — train type is a device attribute); entity-ids vs unique-ids (`binary_sensor.status`, `button.rebuild_stops_matrix`); "Underlying API client" line → hardened stdlib parsing; keep the Platinum claim only because the gates evidence it
