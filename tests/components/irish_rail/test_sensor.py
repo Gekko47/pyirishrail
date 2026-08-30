@@ -84,7 +84,7 @@ async def _setup_entry(
     )
     entry.add_to_hass(hass)
     with patch(
-        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=trains,
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -128,7 +128,7 @@ async def test_failed_refresh_marks_entity_unavailable(
 
     coordinator = entry.runtime_data.coordinator
     with patch(
-        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
         side_effect=Exception("boom"),
     ):
         await coordinator.async_refresh()
@@ -166,7 +166,7 @@ async def test_all_entities_unavailable_after_failed_refresh_then_recover(
     )
 
     with patch(
-        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
         side_effect=IrishRailConnectionError("connection lost"),
     ):
         await coordinator.async_refresh()
@@ -180,7 +180,7 @@ async def test_all_entities_unavailable_after_failed_refresh_then_recover(
 
     # Recovery: the next successful refresh restores availability and values.
     with patch(
-        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[_mock_train(due_in=15)],
     ):
         await coordinator.async_refresh()
@@ -346,6 +346,30 @@ def test_parse_expected_arrival_handles_blank_and_unparseable_inputs() -> None:
     assert parsed.tzinfo is not None
     assert parsed.time().hour == 13
     assert parsed.time().minute == 45
+    assert parsed.date() == now.date()
+
+
+def test_parse_expected_arrival_fallback_resolves_today_from_hhmm() -> None:
+    """Well-formed ``HH:MM`` without the offset resolves onto today.
+
+    The defensive fallback (no signed offset, valid ``HH:MM``) must
+    still produce a timestamp: the arrival is placed on ``now``'s
+    calendar with ``now``'s timezone, so a degraded payload renders a
+    real time instead of ``unknown``.
+    """
+    from datetime import UTC, datetime
+
+    now = datetime(2026, 8, 28, 10, 0, tzinfo=UTC)
+    base = _mock_train(due_in=10)
+
+    parsed = _parse_expected_arrival(
+        _train_without_offset(base, expected_arrival_time="13:45"),
+        now,
+    )
+    assert parsed is not None
+    assert parsed.tzinfo is not None
+    assert parsed.hour == 13
+    assert parsed.minute == 45
     assert parsed.date() == now.date()
 
 

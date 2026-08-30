@@ -175,7 +175,6 @@ async def test_bundled_seed_concurrent_loads_share_one_disk_read(
 
     n_callers = 10
     started = 0
-    release = asyncio.Event()
     calls = 0
 
     def counting_read() -> ir_store.StopsMatrix:

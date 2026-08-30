@@ -28,4 +28,31 @@ migration path. Entries are appended as each phase lands.
   and `.qodo/` local tooling state.
 - Stale editable `pyirishrail` install from the development environment.
 
+### Fixed (Phase 1)
+
+- Test suite honest baseline restored: 117 stale `pyirishrail.*` patch and
+  import targets across six test files were retargeted to the vendored
+  `custom_components.irish_rail.pyirishrail` package, unmasking 64 previously
+  failing tests; the gate-cancellation test's queue expectation was
+  corrected, and the gate-sharing test now adds its second config entry
+  after the component is loaded (Home Assistant sets up every registered
+  entry of a domain during component setup, so the early-added entry made
+  the explicit second `async_setup` raise `OperationNotAllowed`).
+- 11 strict-mypy errors and 4 ruff findings resolved across tests and
+  integration code: rebuild failures now log via `_LOGGER.exception`, the
+  bundled-seed shape check raises `TypeError` (with the loader's catch
+  widened to match), the health probe's deliberate broad catch carries a
+  justified `noqa`, and an unused test variable was removed.
+- `RequestGate`: removed an unreachable silent guard in the
+  cancelled-waiter cleanup that would have leaked an admitted slot if the
+  gate's lock discipline were ever broken; the queue removal now fails
+  loudly instead.
+
+### Added (Phase 1)
+
+- Coverage tests for the sensor's degraded `HH:MM` fallback resolution and
+  the stops-matrix rebuild's per-bucket persistence-failure isolation.
+  Full suite: 226 passed at 100.00% coverage with ruff and strict mypy
+  clean.
+
 <!-- Phases 1–5 append their entries here as they land. -->

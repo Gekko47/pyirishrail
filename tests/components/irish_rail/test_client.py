@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
-from xml.etree.ElementTree import fromstring
+from xml.etree.ElementTree import Element, fromstring
 
 import aiohttp
 import pytest
@@ -626,11 +626,11 @@ async def test_station_by_code_stops_at_multiple_candidates_concurrently(
     in_flight_samples: list[int] = []
 
     async def blocking_request(
-        self,  # type: ignore[no-untyped-def]
+        self: IrishRailClient,
         endpoint: str,
         params: dict[str, str] | None = None,
         priority: str = "normal",
-    ):
+    ) -> Element:
         """Stand-in for ``_request`` that crosses the gate then blocks.
 
         The ``async with self._gate.acquire(priority)`` line is the
@@ -898,22 +898,28 @@ def test_evict_movement_cache_drops_stale_dates_only_when_over_cap() -> None:
     assert stale_key in client._movement_cache
 
     # Over the cap: every non-current-date entry is dropped, today's kept.
-    filler = {
+    filler: dict[tuple[str, str], list[TrainMovement]] = {
         (f"T{i} ", "2019-05-05"): [] for i in range(MOVEMENT_CACHE_MAX_ENTRIES)
     }
-    client._movement_cache = {**filler, stale_key: [], fresh_key: ["kept"]}
+    client._movement_cache = {
+        **filler,
+        stale_key: [],
+        fresh_key: [_movement("kept")],
+    }
     client._evict_movement_cache(current_date=today)
     assert list(client._movement_cache) == [fresh_key]
-    assert client._movement_cache[fresh_key] == ["kept"]
+    assert client._movement_cache[fresh_key] == [_movement("kept")]
 
 
 def test_evict_movement_cache_enforces_cap_for_current_date_entries() -> None:
     """Same-date entries are oldest-first evicted when still over the cap."""
     client = IrishRailClient(MagicMock())
     today = "2026-08-24"
-    filler = {(f"T{i} ", today): [] for i in range(MOVEMENT_CACHE_MAX_ENTRIES)}
+    filler: dict[tuple[str, str], list[TrainMovement]] = {
+        (f"T{i} ", today): [] for i in range(MOVEMENT_CACHE_MAX_ENTRIES)
+    }
     newest_key = ("NEW ", today)
-    client._movement_cache = {**filler, newest_key: ["newest"]}
+    client._movement_cache = {**filler, newest_key: [_movement("newest")]}
 
     # Stale removal cannot help here (no other-date entries), yet the cap
     # must still hold: the oldest inserted key is dropped, the newest kept.
@@ -921,7 +927,7 @@ def test_evict_movement_cache_enforces_cap_for_current_date_entries() -> None:
 
     assert len(client._movement_cache) == MOVEMENT_CACHE_MAX_ENTRIES
     assert ("T0 ", today) not in client._movement_cache
-    assert client._movement_cache[newest_key] == ["newest"]
+    assert client._movement_cache[newest_key] == [_movement("newest")]
 
     # Under the cap afterwards, nothing further is evicted.
     client._evict_movement_cache(current_date=today)
@@ -935,7 +941,7 @@ def test_parse_station_data_skips_record_on_unexpected_error(
     root = fromstring(SAMPLE_STATION_DATA_XML)
     original = ir_api._find_tag_text
 
-    def flaky(element, tag):
+    def flaky(element: Element, tag: str) -> str | None:
         if tag == "Traincode":
             raise ValueError("unexpected malformed value")
         return original(element, tag)

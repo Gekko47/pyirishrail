@@ -52,11 +52,11 @@ async def _setup_entry(hass: HomeAssistant) -> MockConfigEntry:
     entry.add_to_hass(hass)
     with (
         patch(
-            "pyirishrail.api.IrishRailClient.async_get_all_stations",
+            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_all_stations",
             new=AsyncMock(return_value=[]),
         ),
         patch(
-            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
             new=AsyncMock(return_value=[]),
         ),
     ):
@@ -116,15 +116,15 @@ async def test_press_runs_rebuild_and_reports_attributes(
 
     with (
         patch(
-            "pyirishrail.api.IrishRailClient.async_get_all_stations",
+            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_all_stations",
             new=patches["get_all"],
         ),
         patch(
-            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
             new=patches["by_code"],
         ),
         patch(
-            "pyirishrail.api.IrishRailClient.async_get_train_stops",
+            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_train_stops",
             new=patches["stops"],
         ),
         patch(
@@ -317,15 +317,15 @@ async def test_service_call_drives_the_loaded_button(
 
     with (
         patch(
-            "pyirishrail.api.IrishRailClient.async_get_all_stations",
+            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_all_stations",
             new=patches["get_all"],
         ),
         patch(
-            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
             new=patches["by_code"],
         ),
         patch(
-            "pyirishrail.api.IrishRailClient.async_get_train_stops",
+            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_train_stops",
             new=patches["stops"],
         ),
         patch(

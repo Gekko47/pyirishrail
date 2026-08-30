@@ -12,6 +12,7 @@ so live polling can jump the queue.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -80,6 +81,26 @@ class _RecordingStore:
         return list(result) if result is not None else None
 
 
+class _FlakyRecordingStore(_RecordingStore):
+    """Recording store whose first ``async_record`` write fails.
+
+    Used to exercise the rebuild's per-bucket persistence guard: the
+    first bucket write raises, later writes flow through normally.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    async def async_record(
+        self, station_code: str, direction: str | None, stops: list[str]
+    ) -> bool:
+        self.calls += 1
+        if self.calls == 1:
+            raise OSError("storage went away")
+        return await super().async_record(station_code, direction, stops)
+
+
 def _client_mock(stations: list[MagicMock]) -> MagicMock:
     """Build an API client mock over the given station records."""
     client = MagicMock()
@@ -89,7 +110,12 @@ def _client_mock(stations: list[MagicMock]) -> MagicMock:
     return client
 
 
-def _scoped_factory(stops: list[str]):
+def _scoped_factory(
+    stops: list[str],
+) -> Callable[
+    [list[TrainMovement], str | None, str | None, str | None],
+    list[_FakeMovement],
+]:
     """Build a ``_scoped_journey_stops`` stand-in returning the given stops."""
 
     def fake_scoped(
@@ -162,6 +188,51 @@ async def test_rebuild_writes_every_station_through_stops_store(
         normalize_direction_key("Northbound"),
         ALL_DIRECTIONS_KEY,
     }
+
+
+async def test_rebuild_persistence_failure_isolated_per_bucket(
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failing ``async_record`` degrades to a warning, not a failed sweep.
+
+    The first bucket write raises; the guard logs and continues, so the
+    remaining bucket of the same station still lands and the rebuild
+    finishes successfully with the outcome it did record.
+    """
+    stations = [MagicMock(code="PEARS", name="Dublin Pearse")]
+    client = _client_mock(stations)
+    client.async_get_station_by_code = AsyncMock(
+        return_value=[
+            MagicMock(code="E001", destination="Bray", direction="Northbound")
+        ]
+    )
+
+    store = _FlakyRecordingStore()
+
+    with (
+        patch(
+            "custom_components.irish_rail.matrix_rebuild.get_stops_store",
+            return_value=store,
+        ),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            side_effect=_scoped_factory(["Bray"]),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = await async_run_matrix_rebuild(hass, client)
+
+    assert result.error is None
+    # Two buckets attempted (direction + ``_all`` union): the first
+    # failed and was logged, the second landed and was counted.
+    assert store.calls == 2
+    assert result.buckets_updated == 1
+    assert result.stops_added == 1
+    assert any(
+        "Could not persist sampled stops" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 async def test_rebuild_output_visible_to_subsequent_lookup(

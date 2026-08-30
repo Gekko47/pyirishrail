@@ -72,7 +72,7 @@ async def _setup_entry(hass: HomeAssistant) -> MockConfigEntry:
     )
     entry.add_to_hass(hass)
     with patch(
-        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
         new=AsyncMock(return_value=[]),
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -87,7 +87,7 @@ async def _refresh_empty(
 ) -> None:
     """Run ``times`` refreshes against a class-level empty station poll."""
     with patch(
-        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
         new=AsyncMock(return_value=[]),
     ):
         for _ in range(times):
@@ -165,7 +165,7 @@ async def test_unhealthy_monitor_restores_then_heals_legacy_warnings(
 
     # The probe starts failing: emptiness must look suspicious again.
     with patch(
-        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
         new=AsyncMock(side_effect=IrishRailConnectionError("api down")),
     ):
         await monitor.async_ping()
@@ -183,7 +183,7 @@ async def test_unhealthy_monitor_restores_then_heals_legacy_warnings(
     with (
         _dublin_service_hours(),
         patch(
-            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
             new=AsyncMock(return_value=[]),
         ),
     ):

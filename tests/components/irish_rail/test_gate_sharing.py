@@ -98,7 +98,6 @@ async def test_second_entry_reuses_the_same_shared_gate(
     first one got, not a fresh one.
     """
     entry_a = _add_entry(hass, unique_id="PEARS_northbound")
-    entry_b = _add_entry(hass, unique_id="PEARS_southbound")
     with patch(
         "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[],
@@ -108,6 +107,12 @@ async def test_second_entry_reuses_the_same_shared_gate(
         first_gate = get_request_gate(hass)
         assert isinstance(first_gate, RequestGate)
 
+        # Add the second entry only after the component is loaded: HA's
+        # component setup sets up every entry already registered for the
+        # domain, so an entry added before the first setup would be loaded
+        # by the first ``async_setup`` call itself and an explicit second
+        # ``async_setup`` would raise ``OperationNotAllowed``.
+        entry_b = _add_entry(hass, unique_id="PEARS_southbound")
         assert await hass.config_entries.async_setup(entry_b.entry_id)
         await hass.async_block_till_done()
         second_gate = get_request_gate(hass)

@@ -342,7 +342,8 @@ async def test_gate_cancelled_queued_waiter_dequeues_cleanly() -> None:
     queued_one.cancel()
     async with asyncio.timeout(1.0):
         await asyncio.gather(queued_one, return_exceptions=True)
-    assert [waiter.priority for waiter in gate._waiters] == ["normal"]
+    # The only queued waiter was cancelled: the queue must be empty.
+    assert not gate._waiters, "cancelled queued waiter must be dequeued cleanly"
     release.set()
     holder_task.cancel()
     async with asyncio.timeout(1.0):

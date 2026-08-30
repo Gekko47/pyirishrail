@@ -7,7 +7,7 @@
 > (e.g. the defusedxml guidance in Skill 07, the PyPI-extraction sections),
 > **this file wins** until Phase 4 rewrites the stale sections.
 >
-> **Current status:** Phase 0 COMPLETE (commit 1) — next up: **Phase 1**.
+> **Current status:** Phases 0–1 COMPLETE — next up: **Phase 2**.
 
 ## Ground rules
 
@@ -38,6 +38,7 @@ shims · entity `unique_id` changes · live-API behavior changes.
 ## Progress log (append one line per increment)
 
 - 2026-08-30 — Plan created from the lead-dev review; Phase 0 executed (commit 1).
+- 2026-08-30 — Phase 1 executed (commit 2): 117 stale patch targets retargeted across 6 test files; gate-test expectation and gate-sharing setup-order fixed; 4 ruff + 11 mypy findings cleared; dead `_gate.py` silent guard removed; 2 coverage tests added. Gates green: 226 passed, 100.00% coverage, ruff 0, strict mypy 0.
 
 ## Phase 0 — Workspace & git reset — **Status: COMPLETE (commit 1, 2026-08-30)**
 
@@ -48,13 +49,16 @@ shims · entity `unique_id` changes · live-API behavior changes.
 - [x] Single commit containing the completed revert + plan/changelog seeding
 - [x] Verify: `git status` clean · `import pyirishrail` fails (shadow gone) · `import custom_components.irish_rail.pyirishrail` succeeds
 
-## Phase 1 — Honest test baseline — **Status: PENDING**
+## Phase 1 — Honest test baseline — **Status: COMPLETE (commit 2, 2026-08-30)**
 
-- [ ] Retarget stale patch/import paths `pyirishrail.*` → `custom_components.irish_rail.pyirishrail.*` in all test files (mechanical; ~134 references across 12 files)
-- [ ] Fix `test_gate_cancelled_queued_waiter_dequeues_cleanly` expectation: queue must be `[]` after cancelling the only queued waiter (the gate code is correct)
-- [ ] ruff (0.16 default rule set): `G201` button.py:165 → `_LOGGER.exception(...)`; `BLE001` health.py:131 → narrow the catch or justified `noqa`; `TRY004` store.py:206 → `TypeError`; `F841` test_stops_store.py:178 → remove unused `release`
-- [ ] strict mypy: 11 errors in 2 files (test_client.py annotations / `list[str]` vs `list[TrainMovement]`; one further file)
-- [ ] Gates: pytest full suite green · ruff 0 · mypy 0
+- [x] Retarget stale patch/import paths `pyirishrail.*` → `custom_components.irish_rail.pyirishrail.*` in all test files (117 quoted references across 6 files: test_button, test_config_flow, test_diagnostics, test_health_suppression, test_init, test_sensor)
+- [x] Fix `test_gate_cancelled_queued_waiter_dequeues_cleanly` expectation: queue must be `[]` after cancelling the only queued waiter (the gate code is correct)
+- [x] Fix `test_second_entry_reuses_the_same_shared_gate`: add the second config entry after the component is loaded — HA's component setup loads every entry already registered for the domain, so the early-added entry made the explicit second `async_setup` raise `OperationNotAllowed` (discovered once the patch-target noise was gone)
+- [x] ruff (0.16 default rule set): `G201` button.py → `_LOGGER.exception` (then `TRY401` → drop the redundant arg); `BLE001` health.py:131 → justified `noqa`; `TRY004` store.py:206 → `TypeError` (caller catch widened to match); `F841` test_stops_store.py:178 → remove unused `release`
+- [x] strict mypy: all 11 errors resolved (test_client.py `blocking_request`/`filler`/`flaky` annotations + `TrainMovement`-typed movement-cache fixtures; `_scoped_factory` return annotation in test_matrix_rebuild.py)
+- [x] `_gate.py`: remove the unreachable `except ValueError: pass` queue-removal guard — the lock discipline (never held across an await) makes the interleave impossible, and a loud `remove()` fails tests instead of silently leaking an admitted slot; this closed the last coverage gap honestly
+- [x] Coverage tests added: fallback `HH:MM` resolution in `_parse_expected_arrival` (sensor.py 99–100) and per-bucket persistence-failure isolation in the rebuild (`_FlakyRecordingStore`, matrix_rebuild.py 185–193)
+- [x] Gates: **226 passed · 100.00% coverage (`--cov-fail-under=100`) · ruff 0 · strict mypy 0**
 
 ## Phase 2 — Correctness fixes — **Status: PENDING**
 

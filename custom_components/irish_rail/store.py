@@ -203,7 +203,7 @@ def _read_bundled_matrix() -> StopsMatrix:
     path = Path(__file__).parent / STOPS_MATRIX_SEED_FILENAME
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
-        raise ValueError(f"{path.name} must contain a JSON object")
+        raise TypeError(f"{path.name} must contain a JSON object")
     return raw
 
 
@@ -232,7 +232,7 @@ async def async_load_bundled_stops_matrix() -> StopsMatrix:
                     _SEED_CACHE = await loop.run_in_executor(
                         None, _read_bundled_matrix
                     )
-                except (OSError, ValueError) as err:
+                except (OSError, TypeError, ValueError) as err:
                     _LOGGER.warning(
                         "Could not load bundled stops matrix %s: %s",
                         STOPS_MATRIX_SEED_FILENAME,

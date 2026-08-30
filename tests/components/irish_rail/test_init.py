@@ -24,7 +24,7 @@ async def test_setup_unload_entry(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
@@ -78,7 +78,7 @@ async def test_unload_and_reload_restores_entities(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
@@ -108,7 +108,7 @@ async def test_unload_and_reload_restores_entities(
 
     # Reload: setup runs again and the same entities are restored.
     with patch(
-        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_reload(mock_config_entry.entry_id)
@@ -132,7 +132,7 @@ async def test_unload_removes_pending_empty_data_repair_issue(
 
     with (
         patch(
-            "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
             return_value=[],
         ),
         patch(
@@ -202,7 +202,7 @@ async def test_global_provider_purges_orphan_entities_when_owner_removed(
     )
     first.add_to_hass(hass)
     with patch(
-        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_setup(first.entry_id)
@@ -240,7 +240,7 @@ async def test_global_provider_purges_orphan_entities_when_owner_removed(
     )
     second.add_to_hass(hass)
     with patch(
-        "pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_setup(second.entry_id)

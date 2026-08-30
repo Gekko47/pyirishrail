@@ -162,7 +162,7 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
                     self.hass, self._client
                 )
             except Exception as err:  # button must never crash Home Assistant
-                _LOGGER.error("Stops-matrix rebuild failed: %s", err, exc_info=True)
+                _LOGGER.exception("Stops-matrix rebuild failed")
                 self.last_result = RebuildResult(error=f"{type(err).__name__}: {err}")
                 _create_notification(
                     self.hass,

@@ -222,11 +222,14 @@ class RequestGate:
                 await self._release_slot()
             else:
                 # Still queued (or never admitted): take ourselves out.
+                # The removal cannot raise ValueError: the gate lock is
+                # never held across an await, so no admission sweep can
+                # run between the event check above and this removal. If
+                # a refactor ever breaks that invariant this line fails
+                # loudly in tests instead of silently leaking an admitted
+                # slot.
                 async with self._lock:
-                    try:
-                        self._waiters.remove(waiter)
-                    except ValueError:
-                        pass
+                    self._waiters.remove(waiter)
             raise
         try:
             yield

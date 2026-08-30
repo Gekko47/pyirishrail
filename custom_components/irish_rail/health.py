@@ -128,7 +128,7 @@ class IrishRailApiHealthMonitor:
                 self.consecutive_failures,
                 err,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the probe must survive any unexpected failure
             self.consecutive_failures += 1
             self.healthy = False
             self.last_failure = dt_util.utcnow()
