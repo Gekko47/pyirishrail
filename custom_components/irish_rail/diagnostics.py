@@ -88,7 +88,7 @@ async def async_get_config_entry_diagnostics(
                 if coordinator.last_exception
                 else None
             ),
-            "failure_streak": coordinator._failure_streak,
+            "failure_streak": coordinator.failure_streak,
             "due_trains_count": len(trains),
             "data_available": coordinator.data is not None,
         }

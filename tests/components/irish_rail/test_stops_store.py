@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Generator
 from pathlib import Path
@@ -29,6 +30,33 @@ def _reset_seed_cache() -> Generator[None]:
     ir_store._SEED_CACHE = None
     yield
     ir_store._SEED_CACHE = None
+
+
+async def test_concurrent_records_serialize_and_preserve_every_stop(
+    hass: HomeAssistant,
+) -> None:
+    """Concurrent ``async_record`` writers serialize on the record lock.
+
+    The coordinator's live learning, the config flow's discovery and the
+    rebuild sweep can all record through one store concurrently; each merge
+    must observe the previous merge's result and every recorded stop must
+    survive in the final matrix.
+    """
+    store = StopsMatrixStore(hass)
+
+    async def record(index: int) -> bool:
+        return await store.async_record(
+            f"S{index:02d}", "Northbound", [f"Stop {index}", "Shared"]
+        )
+
+    results = await asyncio.gather(*(record(i) for i in range(25)))
+
+    assert all(results)
+    for index in range(25):
+        assert await store.async_lookup(f"S{index:02d}", "Northbound") == [
+            "Shared",
+            f"Stop {index}",
+        ]
 
 
 def test_normalize_direction_key_buckets_directionless_filters() -> None:

@@ -65,7 +65,8 @@ async def async_setup_entry(
 
     # Start/attach the shared API-health probe before platforms are
     # forwarded so the global connectivity sensor appears with live state.
-    await async_note_entry_loaded(hass, client)
+    # The loaded-entry set keeps this idempotent across setup retries.
+    await async_note_entry_loaded(hass, entry.entry_id, client)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -144,14 +145,16 @@ async def async_unload_entry(
     # left behind for an unloaded entry; a reload re-evaluates from scratch.
     ir.async_delete_issue(hass, DOMAIN, empty_data_issue_id(entry))
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    # Account for this entry leaving so the shared health probe stops once
-    # the last Irish Rail entry unloads.
-    await async_note_entry_unloaded(hass)
-    # Drop the shared request gate once the last entry leaves; the
-    # next setup entry will get a fresh singleton via
-    # ``async_get_request_gate``. The gate itself is cheap to
-    # recreate, and the explicit drop keeps the lifecycle symmetric
-    # with the rest of the ``hass.data[DOMAIN]``-keyed singletons the
-    # integration owns.
-    async_release_request_gate(hass)
+    # Deregister this entry: the shared singletons (health probe, request
+    # gate) live exactly as long as the set of loaded entries.
+    last = await async_note_entry_unloaded(hass, entry.entry_id)
+    if last:
+        # The last Irish Rail entry left. Drop the shared request gate so the
+        # next setup starts a fresh singleton via ``async_get_request_gate``;
+        # the health probe has already been stopped by the deregistration
+        # above. Releasing only here keeps the one-gate-per-HA contract
+        # intact while sibling entries stay loaded — releasing on every
+        # unload would strand those siblings on a dropped gate while new
+        # clients built a second one, splitting the shared rate budget.
+        async_release_request_gate(hass)
     return unloaded

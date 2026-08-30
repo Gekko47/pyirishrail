@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
-from zoneinfo import ZoneInfo
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .config_flow import build_unique_id
 from .const import (
     BACKOFF_MULTIPLIER,
     CONF_DIRECTION,
@@ -23,6 +21,7 @@ from .const import (
     DEFAULT_NUM_TRAINS,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    DUBLIN_TZ,
     EMPTY_DATA_ISSUE_THRESHOLD,
     MAX_BACKOFF_INTERVAL,
     MAX_NUM_TRAINS,
@@ -33,16 +32,12 @@ from .const import (
     SERVICE_HOURS_START_HOUR,
 )
 from .health import get_health_monitor
+from .identity import build_unique_id
 from .pyirishrail import IrishRailClient, IrishRailError, TrainDueTime
 from .store import get_stops_store
 from .types import IrishRailConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
-
-# Irish Rail service hours follow Irish local time, not whichever timezone the
-# Home Assistant instance runs in; Europe/Dublin keeps the gate correct for
-# hosts abroad and across IST/GMT DST transitions.
-DUBLIN_TZ = ZoneInfo("Europe/Dublin")
 
 
 def empty_data_issue_id(config_entry: IrishRailConfigEntry) -> str:
@@ -176,6 +171,15 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
         self._configured_interval = value
         # ``fset`` is invisible to mypy's class-level property view.
         DataUpdateCoordinator.update_interval.fset(self, value)  # type: ignore[attr-defined]
+
+    @property
+    def failure_streak(self) -> int:
+        """Number of consecutive failed refreshes driving the backoff.
+
+        Public read-only view for diagnostics (and tests) so callers never
+        reach into the private backoff state.
+        """
+        return self._failure_streak
 
     @callback
     def _schedule_refresh(self) -> None:

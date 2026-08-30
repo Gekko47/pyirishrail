@@ -192,7 +192,15 @@ class IrishRailApiHealthMonitor:
 
 # ── Singleton lifecycle ─────────────────────────────────────────────────────
 
-_HEALTH_ENTRY_COUNT_KEY = "health_entry_count"
+# The set of loaded config-entry ids under ``hass.data[DOMAIN]``: the single
+# source of truth for the shared singletons' lifetime. The API-health monitor
+# runs while the set is non-empty and stops when the last entry deregisters;
+# the shared request gate (``gate.py``) is released by the integration at the
+# same moment. A set — not a counter — keeps setup idempotent: an automatic
+# retry after ``ConfigEntryNotReady`` re-runs ``async_setup_entry`` and
+# re-adds the same id without double counting, so a failed first refresh can
+# never leave phantom counts (and a running probe) behind.
+LOADED_ENTRY_IDS_KEY = "loaded_entry_ids"
 
 
 def get_health_monitor(hass: HomeAssistant) -> IrishRailApiHealthMonitor | None:
@@ -215,30 +223,42 @@ def ensure_health_monitor_started(
 
 
 async def async_note_entry_loaded(
-    hass: HomeAssistant, client: IrishRailClient
-) -> None:
-    """Account for one more loaded config entry (starts the monitor)."""
-    domain_data = hass.data.setdefault(DOMAIN, {})
-    count = int(domain_data.get(_HEALTH_ENTRY_COUNT_KEY, 0)) + 1
-    domain_data[_HEALTH_ENTRY_COUNT_KEY] = count
+    hass: HomeAssistant, entry_id: str, client: IrishRailClient
+) -> bool:
+    """Register a loaded config entry; return True when it is the first.
+
+    The API-health monitor is (re)started unconditionally: ``async_start``
+    is idempotent, so a re-setup re-attaches without duplicating the
+    periodic probe.
+    """
+    loaded: set[str] = hass.data.setdefault(DOMAIN, {}).setdefault(
+        LOADED_ENTRY_IDS_KEY, set()
+    )
+    is_first = not loaded
+    loaded.add(entry_id)
     monitor = ensure_health_monitor_started(hass, client)
     await monitor.async_start()
+    return is_first
 
 
-async def async_note_entry_unloaded(hass: HomeAssistant) -> None:
-    """Account for one fewer loaded config entry (stops at zero).
+async def async_note_entry_unloaded(
+    hass: HomeAssistant, entry_id: str
+) -> bool:
+    """Deregister a loaded config entry; return True when none remain.
 
-    A partial platform-unload failure still counts down here: the entry is
+    A partial platform-unload failure still deregisters here: the entry is
     leaving anyway, and any automatic retry re-runs ``async_setup_entry``,
-    which starts a fresh monitor.
+    which re-registers it. When the last entry leaves, the health probe is
+    stopped; the caller releases the shared request gate at the same moment.
     """
     domain_data = hass.data.setdefault(DOMAIN, {})
-    remaining = max(0, int(domain_data.get(_HEALTH_ENTRY_COUNT_KEY, 0)) - 1)
-    domain_data[_HEALTH_ENTRY_COUNT_KEY] = remaining
-    if remaining == 0:
+    loaded: set[str] = domain_data.get(LOADED_ENTRY_IDS_KEY, set())
+    loaded.discard(entry_id)
+    if not loaded:
         monitor = get_health_monitor(hass)
         if monitor is not None:
             await monitor.async_stop()
+    return not loaded
 
 
 # ── Global-entity providership arbitration ──────────────────────────────────

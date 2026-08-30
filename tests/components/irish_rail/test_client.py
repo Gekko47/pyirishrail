@@ -1015,6 +1015,52 @@ async def test_station_stops_at_options_union_dedupe_and_exclude() -> None:
         assert await client.async_get_station_stops_at_options("EMPT") == []
 
 
+async def test_station_stops_at_options_isolate_unexpected_lookup_errors() -> None:
+    """A non-IrishRailError route bug is skipped, never raised to the flow."""
+    client = IrishRailClient(MagicMock())
+    base = _due_train("A1")
+    trains = [base, replace(base, code="A2")]
+
+    def _movement(code: str, location: str) -> TrainMovement:
+        return TrainMovement(
+            code=code,
+            date="01 Jan 2026",
+            location_code=f"L-{location}",
+            location=location,
+            origin="",
+            destination="",
+            expected_arrival_time="",
+            expected_departure_time="",
+            scheduled_arrival_time="",
+            scheduled_departure_time="",
+        )
+
+    async def flaky_stops(
+        train_code: str,
+        date: str | None = None,
+        priority: str = "normal",
+    ) -> list[TrainMovement]:
+        if train_code.strip() == "A1":
+            # Not an IrishRailError: before the isolation guard this
+            # escaped ``async_get_station_stops_at_options`` and broke the
+            # config-flow step that calls it.
+            raise ValueError("unexpected route bug")
+        return [_movement(train_code, "Bray")]
+
+    with (
+        patch.object(
+            client,
+            "async_get_station_by_code",
+            new_callable=AsyncMock,
+            return_value=trains,
+        ),
+        patch.object(client, "async_get_train_stops", new=flaky_stops),
+    ):
+        stops = await client.async_get_station_stops_at_options("PEARS")
+
+    assert stops == ["Bray"]
+
+
 # ── journey-scoped routes & stops-matrix learning (roadmap 4.8) ─────────────
 
 def _journey_movement(

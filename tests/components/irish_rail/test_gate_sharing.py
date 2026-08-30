@@ -33,6 +33,7 @@ from custom_components.irish_rail.gate import (
     async_release_request_gate,
     get_request_gate,
 )
+from custom_components.irish_rail.health import get_health_monitor
 from custom_components.irish_rail.pyirishrail import RequestGate
 from custom_components.irish_rail.types import IrishRailConfigEntry
 
@@ -146,6 +147,48 @@ async def test_unload_last_entry_drops_the_shared_gate(
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
     assert get_request_gate(hass) is None
+
+
+async def test_unloading_one_of_two_entries_keeps_the_shared_gate(
+    hass: HomeAssistant,
+) -> None:
+    """Unloading a sibling must not drop the gate the survivor uses.
+
+    The gate is released only when the last loaded entry leaves; releasing
+    on every unload would strand the surviving entry on a dropped gate
+    while new clients built a second one, splitting the shared rate
+    budget. The health probe follows the same lifetime.
+    """
+    entry_a = _add_entry(hass, unique_id="PEARS_northbound")
+    with patch(
+        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        return_value=[],
+    ):
+        assert await hass.config_entries.async_setup(entry_a.entry_id)
+        await hass.async_block_till_done()
+        entry_b = _add_entry(hass, unique_id="PEARS_southbound")
+        assert await hass.config_entries.async_setup(entry_b.entry_id)
+        await hass.async_block_till_done()
+
+    shared = get_request_gate(hass)
+    assert isinstance(shared, RequestGate)
+    monitor = get_health_monitor(hass)
+    assert monitor is not None
+    assert monitor.as_dict()["timer_active"] is True
+
+    assert await hass.config_entries.async_unload(entry_a.entry_id)
+    await hass.async_block_till_done()
+    # The sibling entry is still loaded: the gate and the probe survive.
+    assert get_request_gate(hass) is shared
+    assert entry_b.runtime_data.client._gate is shared
+    assert get_health_monitor(hass) is monitor
+    assert monitor.as_dict()["timer_active"] is True
+
+    # Only the last unload releases both singletons.
+    assert await hass.config_entries.async_unload(entry_b.entry_id)
+    await hass.async_block_till_done()
+    assert get_request_gate(hass) is None
+    assert monitor.as_dict()["timer_active"] is False
 
 
 async def test_user_config_flow_uses_the_shared_gate(

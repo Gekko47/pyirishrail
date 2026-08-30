@@ -29,6 +29,7 @@ from .const import (
     MIN_SCAN_INTERVAL_SECONDS,
 )
 from .gate import async_get_request_gate
+from .identity import build_unique_id
 from .pyirishrail import IrishRailClient, IrishRailError, Station
 from .store import async_load_bundled_stops_matrix, get_stops_store, lookup_in_matrix
 from .types import IrishRailConfigEntry
@@ -36,21 +37,6 @@ from .types import IrishRailConfigEntry
 _LOGGER = logging.getLogger(__name__)
 
 NO_FILTER_SENTINEL = "All"
-
-
-def normalized_direction(direction: str | None) -> str:
-    """Return the canonical unique-ID component for a direction filter.
-
-    The "All" filter is stored as ``None`` in entry data but must still be
-    part of the unique ID; it maps to the literal ``all``. Every other
-    direction is lowercased so the identity never depends on display casing.
-    """
-    return (direction or "all").lower()
-
-
-def build_unique_id(station_code: str, direction: str | None) -> str:
-    """Build the stable unique ID for a station/direction combination."""
-    return f"{station_code}_{normalized_direction(direction)}"
 
 
 def build_stops_at_schema_field(
@@ -606,12 +592,16 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
         if preserved_stops_at := entry.data.get(CONF_STOPS_AT):
             new_data[CONF_STOPS_AT] = preserved_stops_at
 
-        self.hass.config_entries.async_update_entry(
-            entry,
-            data=new_data,
-            title=title,
-            unique_id=self.unique_id,
-        )
+        # Only forward the identity when this flow actually claimed a new
+        # one: HA 2026.8's ``async_update_entry`` treats an explicit
+        # ``unique_id=None`` as a real value and reindexes the entry to
+        # ``None``, silently erasing the identity that entity/device
+        # registry linkage depends on. A same-direction reconfigure never
+        # claims a unique ID, so nothing identity-related is passed here.
+        updates: dict[str, Any] = {"data": new_data, "title": title}
+        if self.unique_id is not None and self.unique_id != entry.unique_id:
+            updates["unique_id"] = self.unique_id
+        self.hass.config_entries.async_update_entry(entry, **updates)
         return self.async_abort(reason="reconfigure_successful")
 
 

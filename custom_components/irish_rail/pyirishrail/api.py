@@ -408,13 +408,24 @@ class IrishRailClient:
             except IrishRailError:
                 return []
 
-        routes = await asyncio.gather(
-            *(_route_stops(train.code) for train in trains)
+        outcomes = await asyncio.gather(
+            *(_route_stops(train.code) for train in trains),
+            return_exceptions=True,
         )
 
         exclude_lower = exclude.lower() if exclude else None
         seen: dict[str, str] = {}
-        for train, route in zip(trains, routes, strict=True):
+        for train, route in zip(trains, outcomes, strict=True):
+            if isinstance(route, BaseException):
+                # A non-IrishRailError bug in one route lookup must not
+                # escape into the config flow; skip this train's route
+                # exactly like a known failure and keep the union intact.
+                _LOGGER.warning(
+                    "Route lookup for train %s failed unexpectedly: %s",
+                    train.code,
+                    route,
+                )
+                continue
             journey = _scoped_journey_stops(
                 route,
                 train.destination,

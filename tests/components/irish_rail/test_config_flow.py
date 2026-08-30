@@ -1263,6 +1263,10 @@ async def test_reconfigure_unchanged_direction_skips_reload(
     assert result["type"] == data_entry_flow.FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
     assert entry.data[CONF_DIRECTION] == "Northbound"
+    # The unchanged identity must be preserved verbatim: forwarding an
+    # explicit ``unique_id=None`` to ``async_update_entry`` would erase it
+    # and break entity/device registry linkage after the next restart.
+    assert entry.unique_id == "PEARS_northbound"
     # Nothing changed, so async_update_entry fired no listeners at all.
     assert mock_schedule.call_count == 0
     assert _no_deprecation_warning(caplog)

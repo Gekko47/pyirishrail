@@ -104,6 +104,10 @@ class StopsMatrixStore:
             hass, STOPS_STORE_VERSION, f"{DOMAIN}.{STOPS_MATRIX_FILENAME}"
         )
         self._data: StopsMatrix | None = None
+        # Serializes read-modify-write across concurrent writers (the
+        # coordinator's live learning, the config flow's discovery and the
+        # rebuild sweep all record through this store).
+        self._record_lock = asyncio.Lock()
 
     async def _async_ensure_loaded(self) -> StopsMatrix:
         """Load the stored matrix once; tolerate missing or corrupt files."""
@@ -134,30 +138,33 @@ class StopsMatrixStore:
 
         Returns ``True`` when the stored matrix changed. Steady-state polling
         re-observes the same stops, so the set comparison keeps converged
-        installations from writing on every poll.
+        installations from writing on every poll. Concurrent callers are
+        serialized on the record lock so each merge observes the previous
+        merge's result and each save carries it.
         """
         if not stops:
             return False
-        data = await self._async_ensure_loaded()
-        stations: dict[str, Any] = data.setdefault("stations", {})
-        entry: dict[str, Any] = stations.setdefault(station_code, {})
-        directions: dict[str, Any] = entry.setdefault("directions", {})
-        key = normalize_direction_key(direction)
+        async with self._record_lock:
+            data = await self._async_ensure_loaded()
+            stations: dict[str, Any] = data.setdefault("stations", {})
+            entry: dict[str, Any] = stations.setdefault(station_code, {})
+            directions: dict[str, Any] = entry.setdefault("directions", {})
+            key = normalize_direction_key(direction)
 
-        existing_raw = directions.get(key)
-        existing = (
-            {stop for stop in existing_raw if isinstance(stop, str) and stop}
-            if isinstance(existing_raw, list)
-            else set()
-        )
-        merged = existing | {stop for stop in stops if stop}
-        if merged == existing:
-            return False
+            existing_raw = directions.get(key)
+            existing = (
+                {stop for stop in existing_raw if isinstance(stop, str) and stop}
+                if isinstance(existing_raw, list)
+                else set()
+            )
+            merged = existing | {stop for stop in stops if stop}
+            if merged == existing:
+                return False
 
-        directions[key] = sorted(merged, key=str.casefold)
-        entry["updated"] = dt_util.utcnow().isoformat()
-        await self._store.async_save(data)
-        return True
+            directions[key] = sorted(merged, key=str.casefold)
+            entry["updated"] = dt_util.utcnow().isoformat()
+            await self._store.async_save(data)
+            return True
 
 
 @callback

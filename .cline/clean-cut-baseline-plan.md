@@ -7,7 +7,7 @@
 > (e.g. the defusedxml guidance in Skill 07, the PyPI-extraction sections),
 > **this file wins** until Phase 4 rewrites the stale sections.
 >
-> **Current status:** Phases 0–1 COMPLETE — next up: **Phase 2**.
+> **Current status:** Phases 0–2 COMPLETE — next up: **Phase 3**.
 
 ## Ground rules
 
@@ -39,6 +39,7 @@ shims · entity `unique_id` changes · live-API behavior changes.
 
 - 2026-08-30 — Plan created from the lead-dev review; Phase 0 executed (commit 1).
 - 2026-08-30 — Phase 1 executed (commit 2): 117 stale patch targets retargeted across 6 test files; gate-test expectation and gate-sharing setup-order fixed; 4 ruff + 11 mypy findings cleared; dead `_gate.py` silent guard removed; 2 coverage tests added. Gates green: 226 passed, 100.00% coverage, ruff 0, strict mypy 0.
+- 2026-08-30 — Phase 2 executed (commit 3): reconfigure `unique_id` erasure fixed (identity forwarded only when claimed); gate + health lifecycle unified on the `loaded_entry_ids` set (gate released on last unload only; idempotent setup); stops-at options fan-out isolates unexpected errors; store record lock; `failure_streak` property; `DUBLIN_TZ` dedupe; `identity.py` extraction. Gates green: 229 passed, 100.00% coverage, ruff 0, strict mypy 0.
 
 ## Phase 0 — Workspace & git reset — **Status: COMPLETE (commit 1, 2026-08-30)**
 
@@ -60,12 +61,12 @@ shims · entity `unique_id` changes · live-API behavior changes.
 - [x] Coverage tests added: fallback `HH:MM` resolution in `_parse_expected_arrival` (sensor.py 99–100) and per-bucket persistence-failure isolation in the rebuild (`_FlakyRecordingStore`, matrix_rebuild.py 185–193)
 - [x] Gates: **226 passed · 100.00% coverage (`--cov-fail-under=100`) · ruff 0 · strict mypy 0**
 
-## Phase 2 — Correctness fixes — **Status: PENDING**
+## Phase 2 — Correctness fixes — **Status: COMPLETE (commit 3, 2026-08-30)**
 
-- [ ] Reconfigure `unique_id` erasure fix in `config_flow.py`: pass `unique_id=` to `async_update_entry` only when the flow actually claimed one; regression tests (same-direction reconfigure preserves `entry.unique_id` across reload/restart; direction-change still claims + aborts on duplicates)
-- [ ] Unify gate + health lifecycle on one `loaded_entry_ids: set[str]` under `hass.data[DOMAIN]`; release the request gate / stop the monitor only when the set empties; idempotent setup (fixes the split rate budget on partial unload and the `ConfigEntryNotReady` retry double-count); tests: unload one of two entries, failed-first-refresh retry, last unload stops both
-- [ ] Hardening: `gather(..., return_exceptions=True)` in `async_get_station_stops_at_options`; `asyncio.Lock` around `StopsMatrixStore.async_record`; `coordinator.failure_streak` public property for diagnostics; `DUBLIN_TZ` defined once in `const.py`; move `build_unique_id`/`normalized_direction` to `identity.py` (removes the coordinator → config_flow import)
-- [ ] Gates: full suite green incl. new tests · ruff 0 · mypy 0
+- [x] Reconfigure `unique_id` erasure fix in `config_flow.py`: the flow forwards an identity to `async_update_entry` only when it actually claimed one (`updates` dict; never `unique_id=None`); regression assertion added to `test_reconfigure_unchanged_direction_skips_reload` (`entry.unique_id` preserved verbatim; the direction-change test already pinned the claimed-identity path)
+- [x] Gate + health lifecycle unified on one `loaded_entry_ids: set[str]` under `hass.data[DOMAIN]` (`health.py::LOADED_ENTRY_IDS_KEY`): `async_note_entry_loaded/unloaded` take the entry id and return first/last booleans; `__init__.py` releases the request gate only when the last entry unloads; the monitor stops at the same moment. Idempotent setup fixes the split rate budget on partial unload and the `ConfigEntryNotReady` retry double-count. Tests: `test_unloading_one_of_two_entries_keeps_the_shared_gate` (gate survives sibling unload, both released at last) and the rewritten `test_monitor_lifecycle_tracks_loaded_entries` (idempotent re-registration)
+- [x] Hardening: `gather(..., return_exceptions=True)` in `async_get_station_stops_at_options` with a per-train skip + warning (`test_station_stops_at_options_isolate_unexpected_lookup_errors`); `asyncio.Lock` around `StopsMatrixStore.async_record` (`test_concurrent_records_serialize_and_preserve_every_stop`); `coordinator.failure_streak` public property used by diagnostics; `DUBLIN_TZ` defined once in `const.py` (coordinator imports it, local duplicate and the `ZoneInfo` import removed); `build_unique_id`/`normalized_direction` moved to `identity.py` (coordinator → config_flow import gone)
+- [x] Gates: **229 passed · 100.00% coverage · ruff 0 · strict mypy 0 (39 files)**
 
 ## Phase 3 — Zero-dependency XML (defusedxml removal) — **Status: PENDING**
 

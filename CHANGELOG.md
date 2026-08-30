@@ -55,4 +55,36 @@ migration path. Entries are appended as each phase lands.
   Full suite: 226 passed at 100.00% coverage with ruff and strict mypy
   clean.
 
+### Fixed (Phase 2)
+
+- Same-direction reconfigure no longer erases the config entry's
+  `unique_id`: the flow forwards an identity to `async_update_entry` only
+  when it actually claimed a new one. Home Assistant 2026.8 reindexes an
+  explicit `unique_id=None` to `None`, which silently stripped the identity
+  that entity/device registry linkage depends on and broke the entry after
+  the next restart.
+- The shared request gate is released only when the *last* config entry
+  unloads. Previously any unload dropped the process-wide gate while
+  sibling entries kept running on the dropped instance and new clients
+  built a second one, splitting the shared rate budget.
+- Entry lifecycle is tracked by a set of loaded entry ids instead of a
+  counter, making setup idempotent: automatic retries after
+  `ConfigEntryNotReady` can no longer leave phantom counts — and a running
+  API-health probe — behind after all entries are removed.
+- `async_get_station_stops_at_options` isolates unexpected route-lookup
+  errors (`gather(..., return_exceptions=True)`): a bug in one lookup can
+  no longer escape into the config-flow step that calls it.
+- `StopsMatrixStore.async_record` serializes concurrent writers on a lock
+  so each merge observes the previous merge's result and each save carries
+  it.
+
+### Changed (Phase 2)
+
+- Entry identity helpers (`build_unique_id`, `normalized_direction`) moved
+  to a dedicated `identity.py` module, removing the coordinator →
+  config_flow import; `DUBLIN_TZ` is now defined once in `const.py`;
+  diagnostics reads the backoff state through a new public
+  `coordinator.failure_streak` property. Full suite: 229 passed at
+  100.00% coverage with ruff and strict mypy clean.
+
 <!-- Phases 1–5 append their entries here as they land. -->

@@ -192,31 +192,43 @@ def _entry(
     return entry
 
 
-async def test_monitor_lifecycle_counts_loaded_entries(hass: HomeAssistant) -> None:
-    """The monitor starts once, survives sibling loads and stops at zero."""
+async def test_monitor_lifecycle_tracks_loaded_entries(hass: HomeAssistant) -> None:
+    """The monitor starts once, survives sibling loads and stops at zero.
+
+    Lifecycle is tracked by a set of loaded entry ids (not a counter), so a
+    re-setup — e.g. an automatic retry after ``ConfigEntryNotReady`` — cannot
+    double-count and the probe can never be left running by phantom counts.
+    """
     client = _client()
 
-    await async_note_entry_loaded(hass, client)
+    # The first loaded entry returns True and starts the probe.
+    assert await async_note_entry_loaded(hass, "E1", client) is True
     first = get_health_monitor(hass)
     assert isinstance(first, IrishRailApiHealthMonitor)
 
     # A second entry reuses the same singleton without restarting anything.
-    await async_note_entry_loaded(hass, client)
+    assert await async_note_entry_loaded(hass, "E2", client) is False
     assert get_health_monitor(hass) is first
     # Internal detail, checked deliberately: one running subscription.
     assert first._unsub_interval is not None
 
-    await async_note_entry_unloaded(hass)
+    # Re-registering the same entry (setup retry) is idempotent.
+    assert await async_note_entry_loaded(hass, "E1", client) is False
+    assert get_health_monitor(hass) is first
+    assert first._unsub_interval is not None
+
+    # Unloading a sibling keeps the probe running.
+    assert await async_note_entry_unloaded(hass, "E2") is False
     assert get_health_monitor(hass) is first
     assert first._unsub_interval is not None
 
     # Only when the last entry unloads does probing pause.
-    await async_note_entry_unloaded(hass)
+    assert await async_note_entry_unloaded(hass, "E1") is True
     assert get_health_monitor(hass) is first
     assert first._unsub_interval is None
 
     # And it restarts cleanly for subsequent entries.
-    await async_note_entry_loaded(hass, client)
+    assert await async_note_entry_loaded(hass, "E3", client) is True
     assert first._unsub_interval is not None
 
     # Leave no lingering interval timer for the next test.
