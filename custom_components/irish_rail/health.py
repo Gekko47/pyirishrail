@@ -336,15 +336,20 @@ def _purge_orphan_global_entities(
 
     # Wipe the shared service device if the dead owner was its sole
     # config-entry link. A live co-owner would mean the device still
-    # belongs to the integration, so we leave it alone. Iteration is
-    # over a snapshot of ``devices.values()`` because the purge call
-    # mutates the registry's internal mapping.
+    # belongs to the integration, so we leave it alone. The new
+    # ``async_get_device(identifiers=...)`` returns at most one device
+    # (identifiers are unique per device), so a direct
+    # ``async_remove_device`` replaces the old ``for dev in
+    # registry.devices.values()`` iteration: equivalent semantics on
+    # the single device that can match the integration's
+    # ``GLOBAL_SERVICES_IDENTIFIER``, and one call to a public API
+    # instead of iterating a private mapping that the modern registry
+    # no longer exposes.
     device_registry = dr.async_get(hass)
-    for device_entry in list(device_registry.devices.values()):
-        if GLOBAL_SERVICES_IDENTIFIER not in device_entry.identifiers:
-            continue
-        if device_entry.config_entries != {expected_owner}:
-            continue
+    device_entry = device_registry.async_get_device(
+        identifiers={GLOBAL_SERVICES_IDENTIFIER}
+    )
+    if device_entry is not None and device_entry.config_entry_id == expected_owner:
         _LOGGER.info(
             "Removing orphan Irish Rail Services device %s "
             "(config_entry_id=%s)",

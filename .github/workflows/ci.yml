@@ -49,7 +49,25 @@ jobs:
           pip install \
             pytest pytest-asyncio pytest-cov aresponses \
             pytest-homeassistant-custom-component \
-            ruff mypy
+            "ruff>=0.16" mypy
+
+      # D4: the stale-patch-target grep guard. Phase 1 of the v0.3.0
+      # Clean Baseline retargeted 117 ``patch("pyirishrail.*"...)`` test
+      # targets to the vendored package; this guard fails the build
+      # the moment a future hand-edit reintroduces the old top-level
+      # name, so the issue cannot reappear silently. The integration's
+      # own ``pyirishrail/`` package is the only legitimate ``pyirishrail``
+      # import, and the tests patch it through the full
+      # ``custom_components.irish_rail.pyirishrail`` path. ``grep -Pnz``
+      # matches across the arbitrary whitespace that Python allows
+      # between ``patch(`` and the quoted target string.
+      - name: Guard against stale pyirishrail patch targets
+        run: |
+          if grep -Pnzq 'patch\s*\(\s*["\x27]pyirishrail\.' tests/components/irish_rail; then
+            echo "::error::stale 'pyirishrail.X' patch target found in tests; use 'custom_components.irish_rail.pyirishrail.X' instead"
+            grep -Pnz 'patch\s*\(\s*["\x27]pyirishrail\.' tests/components/irish_rail
+            exit 1
+          fi
 
       - name: Ruff lint (integration + tests)
         run: ruff check custom_components/irish_rail tests/components/irish_rail scripts

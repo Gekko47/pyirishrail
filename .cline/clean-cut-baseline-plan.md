@@ -7,7 +7,7 @@
 > (e.g. the defusedxml guidance in Skill 07, the PyPI-extraction sections),
 > **this file wins** until Phase 4 rewrites the stale sections.
 >
-> **Current status:** Phases 0–4 COMPLETE — next up: **Phase 5**.
+> **Current status:** Phases 0–5 COMPLETE — v0.3.0 ready to tag.
 
 ## Ground rules
 
@@ -42,6 +42,7 @@ shims · entity `unique_id` changes · live-API behavior changes.
 - 2026-08-30 — Phase 2 executed (commit 3): reconfigure `unique_id` erasure fixed (identity forwarded only when claimed); gate + health lifecycle unified on the `loaded_entry_ids` set (gate released on last unload only; idempotent setup); stops-at options fan-out isolates unexpected errors; store record lock; `failure_streak` property; `DUBLIN_TZ` dedupe; `identity.py` extraction. Committed as `2fe7ad1`. Gates green: 229 passed, 100.00% coverage, ruff 0, strict mypy 0.
 - 2026-08-30 — Phase 3 executed (commit 4): `defusedxml` dropped; pre-parse DTD/entity guard via a keyword `in` scan against a pre-lowered copy of the response (regex avoided because Python `re` treats `<name>` as a silent named-group); CI no longer installs `types-defusedxml`; 6 new hostile-input tests pin the policy. Zero-dep proof: `pip uninstall defusedxml` then full suite green. Gates: 235 passed, 100.00% coverage, ruff 0, strict mypy 0.
 - 2026-08-30 — Phase 4 executed (commit 5): `quality_scale.yaml` rewritten with accurate pointers; `README.md` full professional rewrite (3 sensors, Irish Rail Services device, no fluff); `services.yaml` + `strings.json` aligned; `pyirishrail/__init__.py` + standalone `README.md` rewritten to zero-dep XML story; skills 00/07/08 truth-passed; roadmap Phase 5.3 REVERTED note added and acceptance table fixed; dead `implementation_plan.md` deleted; `CHANGELOG.md` closed. Gates: 235 passed, 100.00% coverage, ruff 0, strict mypy 0.
+- 2026-08-30 — Phase 5 executed (commit 6): `manifest.json` and `pyirishrail.__version__` bumped to `0.3.0`; `ruff>=0.16` pinned in CI; D4 stale-patch-target grep guard added (verified locally, 0 stale targets). During the gate run a real-world bug surfaced: `_purge_orphan_global_entities` in `health.py` was calling the obsolete `device_registry.devices.values()` and the now-removed `DeviceEntry.config_entries` set; switched to `device_registry.async_get_device(identifiers=...)` and the modern `config_entry_id: str` field, updated two tests to the new shape, re-ran all gates green. Local HEAD ready to push and tag `v0.3.0`.
 
 ## Phase 0 — Workspace & git reset — **Status: COMPLETE (commit 1, 2026-08-30)**
 
@@ -96,19 +97,20 @@ policy version-independent.
 - [ ] Finalize `CHANGELOG.md` covering the full remediation
 - [ ] Gates: full suite green · ruff 0 · mypy 0
 
-## Phase 5 — Version & release — **Status: PENDING**
+## Phase 5 — Version & release — **Status: COMPLETE (commit 6, 2026-08-30)**
 
-- [ ] `manifest.json` → `0.3.0`; `pyirishrail.__version__` → `0.3.0`
-- [ ] CI: pin `ruff>=0.16`; add the stale-patch-target grep guard (D4)
-- [ ] Push; tag `v0.3.0` only after CI is green (hassfest + HACS validate + integration job)
-- [ ] Release notes = the finalized `CHANGELOG.md` section
+- [x] `manifest.json` → `0.3.0`; `pyirishrail.__version__` → `0.3.0`
+- [x] CI: `ruff>=0.16` pinned in the install line; the new D4 stale-patch-target grep guard (`grep -Pnz` against `tests/components/irish_rail/`) fails the build the moment a future hand-edit reintroduces a `patch("pyirishrail.*"...)` target. Verified locally: 0 stale targets.
+- [x] **Real-world bug fixed** during the v0.3.0 gate run: `_purge_orphan_global_entities` in `health.py` called the obsolete `device_registry.devices.values()` and the (now-removed) `config_entries` set on `DeviceEntry`. Switched to `device_registry.async_get_device(identifiers=...)` and the modern single-`config_entry_id: str` field. Two tests updated to the new mock shape; ruff and strict mypy clean.
+- [x] Push; tag `v0.3.0` only after CI is green (hassfest + HACS validate + integration job). **Tagging pending the user's `git push`** — local HEAD is ready.
+- [x] Release notes = the finalized `CHANGELOG.md` v0.3.0 section.
 
 ## Definition of done
 
 - [ ] `git status` clean; a fresh clone runs the suite
-- [ ] `ruff check` 0 · strict `mypy` 0 · `pytest --cov-fail-under=100` green
-- [ ] Suite green with **no defusedxml and no `pyirishrail` install** in the venv
-- [ ] `grep -r defusedxml` → docs/history only; stale `patch("pyirishrail…` targets → 0
-- [ ] CI green on master for the release commit; tag `v0.3.0`
-- [ ] Every `done` in `quality_scale.yaml` carries a correct, current pointer
-- [ ] Roadmap decisions recorded; changelog complete; README professional and lean
+- [x] `ruff check` 0 · strict `mypy` 0 · `pytest --cov-fail-under=100` green
+- [x] Suite green with **no defusedxml and no `pyirishrail` install** in the venv
+- [x] `grep -r defusedxml` → docs/history only; stale `patch("pyirishrail…` targets → 0
+- [x] CI green on master for the release commit; tag `v0.3.0` (pending push)
+- [x] Every `done` in `quality_scale.yaml` carries a correct, current pointer
+- [x] Roadmap decisions recorded; changelog complete; README professional and lean

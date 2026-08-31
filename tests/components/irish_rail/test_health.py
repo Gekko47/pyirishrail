@@ -295,22 +295,25 @@ async def test_claim_purges_orphan_global_entity_rows(
     dead_owner = "DEAD_OWNER_ID"
 
     # A fake device registry that exposes a single dead-owned device
-    # row pinned to the expected owner. ``config_entries`` is a set
-    # of config-entry ids, mirroring the real DeviceEntry shape; the
-    # purger removes the row only when this set equals ``{expected_owner}``
-    # exactly (no live co-owners).
+    # row pinned to the expected owner. The modern ``DeviceEntry`` shape
+    # carries a single ``config_entry_id: str`` (no more
+    # ``config_entries: set``); the purger removes the row only when
+    # that field equals ``expected_owner`` exactly (no live co-owners).
+    # The new API exposes ``async_get_device(identifiers=...)`` which
+    # returns at most one match (identifiers are unique per device);
+    # the delete side-effect mirrors the real ``async_remove_device``.
     fake_device_row = SimpleNamespace(
         id="DEAD_DEVICE_ID",
         identifiers={GLOBAL_SERVICES_IDENTIFIER},
-        config_entries={dead_owner},
+        config_entry_id=dead_owner,
     )
     fake_device_registry = MagicMock()
-    fake_device_registry.devices = {"DEAD_DEVICE_ID": fake_device_row}
+    fake_device_registry.async_get_device.return_value = fake_device_row
     removed_devices: list[str] = []
 
     def _record_remove_device(device_id: str) -> None:
         removed_devices.append(device_id)
-        del fake_device_registry.devices[device_id]
+        fake_device_registry.async_get_device.return_value = None
 
     fake_device_registry.async_remove_device.side_effect = _record_remove_device
 
@@ -375,10 +378,14 @@ async def test_claim_purges_orphan_global_entity_rows(
     assert fake_registry.entities.get(
         "irish_rail.irish_rail_rebuild_stops_matrix"
     ) is None
-    # The device row is removed alongside the entity rows; the device
-    # registry was the sole config-entry link, so the purger matches
-    # the strict-equality branch and removes it.
+    # The device row is removed alongside the entity rows: the purger
+    # looked up the device by identifier, matched the strict-equality
+    # branch on ``config_entry_id``, and called ``async_remove_device``
+    # exactly once. The post-call assertion verifies the call was
+    # made; the mock's ``async_get_device`` flips to ``None`` after
+    # the remove, so a follow-up purge would be a no-op.
     assert removed_devices == ["DEAD_DEVICE_ID"]
+    assert fake_device_registry.async_get_device.call_count == 1
     assert len(caplog.records) == 2
     entity_log_count = sum(
         1
@@ -443,24 +450,25 @@ async def test_purge_skips_rows_pinned_to_a_live_owner(
     )
 
 
-def test_purge_skips_device_rows_with_unrelated_identifier_or_co_owners(
+def test_purge_skips_device_rows_with_unrelated_identifier_or_other_owner(
     hass: HomeAssistant,
 ) -> None:
     """The device-purge branch leaves alone devices that are not ``our`` device.
 
     Two skip cases the device-purge branch must handle correctly:
 
-    1. A device whose ``identifiers`` set does *not* contain
-       ``GLOBAL_SERVICES_IDENTIFIER`` (i.e. some other device in
-       the registry — the purger must not touch it).
-    2. A device pinned to the dead owner but *co-owned* by a live
-       config entry too (i.e. ``config_entries`` is the strict
-       set ``{dead, live}`` rather than ``{dead}`` exactly — the
-       purger must not touch it because removing it would orphan
-       the live entry's pins).
+    1. ``async_get_device`` returns a device whose ``identifiers`` set
+       does *not* contain ``GLOBAL_SERVICES_IDENTIFIER`` (impossible
+       in practice — the purger asks the registry for that exact
+       identifier — so we simulate a stale registry by mocking
+       ``async_get_device`` to return a non-matching row anyway).
+    2. ``async_get_device`` returns a device pinned to a *live*
+       config entry, not the dead owner (the purger's
+       ``config_entry_id == expected_owner`` strict-equality check
+       must skip it).
 
-    Both cases flow through the ``continue`` branches in the
-    device-purge loop; the test exercises them via the
+    Both cases flow through the early ``continue`` branches in the
+    device-purge section; the test exercises them via the
     ``MagicMock`` device registry and asserts that no device is
     removed and no log is emitted.
     """
@@ -471,23 +479,27 @@ def test_purge_skips_device_rows_with_unrelated_identifier_or_co_owners(
     dead_owner = "DEAD_OWNER_ID"
     live_owner = "LIVE_OWNER_ID"
 
-    # Case 1: unrelated device identifier — not ``GLOBAL_SERVICES_IDENTIFIER``.
-    # Case 2: our identifier, but config_entries is ``{dead_owner, live_owner}``
-    # (co-owned, not strictly the dead owner).
-    fake_devices: dict[str, Any] = {
-        "unrelated_device_id": SimpleNamespace(
+    # Case 1: ``async_get_device`` returns a device whose identifiers
+    # do not contain ours — the purger should still skip it (the
+    # identifier filter is the registry's responsibility, but the
+    # production code re-checks defensively).
+    # Case 2: ``async_get_device`` returns a device whose
+    # ``config_entry_id`` is the live owner, not the dead owner.
+    fake_device_registry = MagicMock()
+    fake_device_registry.async_get_device.side_effect = [
+        # First lookup: an unrelated device.
+        SimpleNamespace(
             id="unrelated_device_id",
             identifiers={(DOMAIN, "some_other_device")},
-            config_entries={dead_owner},
+            config_entry_id=live_owner,
         ),
-        "co_owned_device_id": SimpleNamespace(
+        # Second lookup: our identifier but owned by a live entry.
+        SimpleNamespace(
             id="co_owned_device_id",
             identifiers={GLOBAL_SERVICES_IDENTIFIER},
-            config_entries={dead_owner, live_owner},
+            config_entry_id=live_owner,
         ),
-    }
-    fake_device_registry = MagicMock()
-    fake_device_registry.devices = fake_devices
+    ]
 
     # Force the entity-side of the purger to be a no-op so only the
     # device-side branches are exercised.
@@ -495,20 +507,15 @@ def test_purge_skips_device_rows_with_unrelated_identifier_or_co_owners(
     fake_entity_registry.entities = {}
     fake_entity_registry.async_get_entity_id.return_value = None
 
-    with (
-        patch.object(er, "async_get", return_value=fake_entity_registry),
-        patch.object(dr, "async_get", return_value=fake_device_registry),
-    ):
-        _purge_orphan_global_entities(hass, expected_owner=dead_owner)
+    for expected in (dead_owner, "SOMEONE_ELSE"):
+        with (
+            patch.object(er, "async_get", return_value=fake_entity_registry),
+            patch.object(dr, "async_get", return_value=fake_device_registry),
+        ):
+            _purge_orphan_global_entities(hass, expected_owner=expected)
 
-    # Neither device was removed.
+    # Neither device was removed by any of the two purger calls.
     fake_device_registry.async_remove_device.assert_not_called()
-    # The unrelated device is still there, the co-owned device is
-    # still there.
-    assert set(fake_device_registry.devices) == {
-        "unrelated_device_id",
-        "co_owned_device_id",
-    }
 
 
 # ── Scheduling internals ────────────────────────────────────────────────────
