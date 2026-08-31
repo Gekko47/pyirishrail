@@ -409,7 +409,7 @@ async def test_valid_namespaced_response_still_parses(
 ) -> None:
     """Namespaced valid XML still parses end-to-end.
 
-    Pin the parse path the client must keep working: ``_strip_namespaces``
+    Pin the parse path the client must keep working: ``strip_namespaces``
     handles the namespace, the pre-parse guard lets it through, and
     ``ET.fromstring`` returns the document.
     """
@@ -920,7 +920,7 @@ async def test_station_by_code_stops_at_multiple_candidates_concurrently(
         """
         from xml.etree.ElementTree import fromstring
 
-        from custom_components.irish_rail.pyirishrail.api import _strip_namespaces
+        from custom_components.irish_rail.pyirishrail import strip_namespaces
 
         async with self._gate.acquire(priority):
             # Inside the gate's critical section, so the sample is
@@ -932,7 +932,7 @@ async def test_station_by_code_stops_at_multiple_candidates_concurrently(
                 # The outer call must return quickly or the fan-out
                 # never starts; the gate still records this slot
                 # briefly above.
-                return _strip_namespaces(fromstring(_station_data_xml(codes)))
+                return strip_namespaces(fromstring(_station_data_xml(codes)))
             await release.wait()
             code = (params or {}).get("TrainId", "E777")
             # Two movements: PEARS (the station we're polling) followed
@@ -942,7 +942,7 @@ async def test_station_by_code_stops_at_multiple_candidates_concurrently(
             # match. The real ``_request`` strips namespaces before
             # returning; the stub has to do the same so plain tag
             # lookups in the parser see the rows.
-            return _strip_namespaces(
+            return strip_namespaces(
                 fromstring(
                     f"""
 <ArrayOfObjTrainMovements xmlns="http://api.irishrail.ie/realtime/">
@@ -1375,6 +1375,40 @@ def test_scoped_journey_stops_cuts_upstream_and_other_journeys() -> None:
     )
 
     assert [stop.location for stop in scoped] == ["Bray", "Greystones"]
+
+
+def test_scope_journey_stops_method_delegates_to_helper() -> None:
+    """The public ``scope_journey_stops`` method reaches the same result as the helper.
+
+    Pins the public surface: cross-package consumers (the stops-matrix
+    rebuild button, the offline ``scripts/build_stops_matrix.py`` seed
+    generator) must be able to call the scoping logic through
+    :class:`IrishRailClient` without reaching for the leading-underscore
+    module helper. The method is a pure delegate; the exhaustive
+    algorithm coverage already lives in the ``test_scoped_journey_stops_*``
+    tests above (each of which exercises the helper). This test only
+    confirms the public entry point is reachable and produces the same
+    answer on a representative input.
+    """
+    movements = [
+        _journey_movement("Dublin Pearse", "PEARS", destination="Greystones"),
+        _journey_movement("Bray", "BRAY", destination="Greystones"),
+        _journey_movement("Greystones", "GREYS", destination="Greystones"),
+    ]
+
+    client = IrishRailClient(MagicMock())
+    scoped = client.scope_journey_stops(
+        movements, "Greystones", station_code="PEARS"
+    )
+
+    assert [stop.location for stop in scoped] == ["Bray", "Greystones"]
+    # Same answer the helper produces, by construction.
+    expected = ir_api._scoped_journey_stops(
+        movements, "Greystones", station_code="PEARS"
+    )
+    assert [stop.location for stop in scoped] == [
+        stop.location for stop in expected
+    ]
 
 
 def test_scoped_journey_stops_cuts_by_station_name_fallback() -> None:

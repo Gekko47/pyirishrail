@@ -195,3 +195,93 @@ remove that test and document the change here.
   byte-level guard layer.
 - All gates green: 244 passed, 100.00% coverage, ruff clean,
   strict mypy clean (39 files).
+
+## [0.3.1] — 2026-08-31
+
+### Public surface — cross-package underscore-prefix dependency removed
+
+The v0.3.0 release shipped a deliberate "cross-package
+private-symbol contract" where the integration's
+`matrix_rebuild` button and the offline
+`scripts/build_stops_matrix.py` seed generator both reached into
+`pyirishrail.api` for the leading-underscore helper
+`_scoped_journey_stops`. The contract was documented in the
+`pyirishrail` package docstring and in the integration
+roadmap. With the package now vendored in the same repo under
+the same commits and the same CI, the external-drift risk that
+originally motivated the contract is gone, but the
+underscore convention still signalled "don't build on this
+shape" and was a footgun for future contributors editing
+`api.py` in isolation. The contract has been replaced with a
+documented public surface.
+
+- **`IrishRailClient.scope_journey_stops(...)`** is a new public
+  method on the client that delegates to the module-private
+  `_scoped_journey_stops` helper. The integration's
+  `matrix_rebuild` button and `scripts/build_stops_matrix.py`
+  both call it via the client instance they already hold; no
+  cross-package underscore imports remain in the production
+  tree.
+- **`strip_namespaces`** is a new public re-export at
+  `pyirishrail` package level. It is an alias for
+  `pyirishrail.api._strip_namespaces` (the function name is
+  unchanged for `git blame` continuity). Test stubs that need
+  to mimic the client's parse-side normalization now import the
+  public name; the only cross-module consumer of the
+  underscore helper was in `tests/components/irish_rail/test_client.py`
+  and has been moved over.
+
+### Documentation
+
+- `pyirishrail/__init__.py` docstring rewritten: the duplicated
+  "Public surface" block (a paste artifact from the v0.2.0
+  → vendored transition) is collapsed to a single copy; the
+  import example now includes `strip_namespaces`; the
+  "Private helpers" paragraph no longer documents the
+  cross-package underscore import and instead states the
+  general convention. The stale reference to a non-existent
+  `pyirishrail.api._DTD_DECL_RE` symbol is corrected to
+  `_DTD_KEYWORDS` (the actual pre-parse-guard constant).
+- `pyirishrail/README.md` "Public API" table gains a row for
+  `strip_namespaces` and an annotation on the `IrishRailClient`
+  row pointing at `scope_journey_stops`. The "deliberately
+  reaches into one of them" paragraph is replaced with a
+  description of the new public method.
+
+### Tests
+
+- `test_scope_journey_stops_method_delegates_to_helper` (new)
+  pins the public method on a real `IrishRailClient` instance
+  and confirms it returns the same answer as the helper.
+- `tests/components/irish_rail/test_matrix_rebuild.py` and
+  `test_button.py` switch from `patch.object(IrishRailClient,
+  "scope_journey_stops", ...)` (which triggered mypy --strict
+  `[method-assign]` errors) to the module-level string-path
+  form `patch("custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops", ...)`
+  that `test_config_flow.py` already uses for class-method
+  patches. `_client_mock` is updated to return a real
+  `IrishRailClient(MagicMock())` instance (with `cast(MagicMock, ...)`
+  on the return) so class-level patches reach the test
+  client through normal attribute lookup while the static
+  type remains `MagicMock` for test-body attribute
+  assignment.
+- The implementation note at
+  `.cline/irish-rail-improvement-roadmap.md:487–494` (the
+  "cross-package private-symbol contract" entry) is preserved
+  for audit history and annotated with a **Resolved
+  2026-08-31** closure that names the new public surface and
+  explicitly says "do not reinstate" the underscore import
+  pattern.
+
+### Gates
+
+- All gates green: 245 passed (one new test for
+  `scope_journey_stops`), 100.00% coverage, ruff clean,
+  strict mypy clean (39 files).
+- `grep` audit: zero cross-module
+  `from .pyirishrail.api import _*` or `ir_api._*` references
+  remain in `custom_components/irish_rail/` and `scripts/`.
+- The pre-existing 3 ruff errors in
+  `tests/test_win_stubs.py` (an import-ordering issue and two
+  `BLE001` blind-`except` findings) are unchanged on master
+  and not introduced by this work.

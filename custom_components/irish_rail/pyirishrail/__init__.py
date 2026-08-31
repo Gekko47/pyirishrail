@@ -12,8 +12,8 @@ Public surface
 --------------
 
 Importing the package gives you the client, the gate, the four public
-exception classes, the four public dataclasses, and the pure parser
-helper::
+exception classes, the four public dataclasses, and the two pure
+helpers re-exported for cross-module consumers::
 
     from custom_components.irish_rail.pyirishrail import (
         IrishRailClient,            # the async client
@@ -24,39 +24,23 @@ helper::
         IrishRailParseError,        # XML/security errors
         Station, TrainDueTime, TrainMovement, TrainPosition,
         parse_station_data,         # pure parser helper
+        strip_namespaces,           # namespace-normalizing helper
     )
 
-The pure XML helper ``parse_station_data`` is re-exported here because
-it is used by external code (notably the integration's ``matrix_rebuild``
-button). Private helpers in :mod:`pyirishrail.api` (prefixed with
-``_``) are deliberately not re-exported; cross-package consumers that
-genuinely need them should import from the submodule explicitly
-(``from custom_components.irish_rail.pyirishrail.api import
-_scoped_journey_stops``).
+The pure helpers ``parse_station_data`` and ``strip_namespaces`` are
+re-exported here because they are used by external code (notably the
+integration's ``matrix_rebuild`` button and the offline
+``scripts/build_stops_matrix.py`` seed generator for
+``parse_station_data``; test stubs that mimic the client's parse-side
+normalization for ``strip_namespaces``). For transformation logic that
+operates on already-fetched movement rows, use
+:meth:`IrishRailClient.scope_journey_stops` rather than reaching into
+:mod:`pyirishrail.api` directly.
 
-Internal package: framework-agnostic async client for the Irish Rail RTPI
-API. Importing the package gives you the client, the gate, the four public
-exception classes, the four public dataclasses, and the pure parser
-helper::
-
-    from custom_components.irish_rail.pyirishrail import (
-        IrishRailClient,            # the async client
-        RequestGate,                # concurrency-and-pacing gate
-        IrishRailError,             # base exception
-        IrishRailConnectionError,   # network failures
-        IrishRailTimeoutError,      # aiohttp timeouts
-        IrishRailParseError,        # XML/security errors
-        Station, TrainDueTime, TrainMovement, TrainPosition,
-        parse_station_data,         # pure parser helper
-    )
-
-The pure XML helper ``parse_station_data`` is re-exported here because
-it is used by external code (notably the integration's ``matrix_rebuild``
-button). Private helpers in :mod:`pyirishrail.api` (prefixed with
-``_``) are deliberately not re-exported; cross-package consumers that
-genuinely need them should import from the submodule explicitly
-(``from custom_components.irish_rail.pyirishrail.api import
-_scoped_journey_stops``).
+Private helpers in :mod:`pyirishrail.api` (functions whose name begins
+with ``_``) are not part of the public API. They are implementation
+details of the methods above; new code should not import them across
+the module boundary.
 
 Zero-dep XML parsing
 --------------------
@@ -69,7 +53,7 @@ external-entity resolution with ``ParseError``; the only gap it leaves
 open is silently allowing a DTD *without* entities, which is harmless
 by itself but weakens the policy to be version-dependent on the bundled
 expat. The client closes that gap with an explicit pre-parse guard
-(:data:`pyirishrail.api._DTD_DECL_RE`) that rejects ``<!doctype``,
+(:data:`pyirishrail.api._DTD_KEYWORDS`) that rejects ``<!doctype``,
 ``<!entity``, ``<!element``, ``<!attlist`` and ``<!notation`` before the
 parser is invoked, raising :class:`IrishRailParseError` on match. The
 guard runs in microseconds on the small XML documents the RTPI
@@ -108,6 +92,7 @@ from .api import (
     DEFAULT_TIMEOUT,
     IrishRailClient,
     parse_station_data,
+    strip_namespaces,
 )
 from .errors import (
     IrishRailConnectionError,
@@ -122,7 +107,7 @@ from .models import (
     TrainPosition,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "DEFAULT_TIMEOUT",
@@ -138,4 +123,5 @@ __all__ = [
     "TrainPosition",
     "__version__",
     "parse_station_data",
+    "strip_namespaces",
 ]

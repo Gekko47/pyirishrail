@@ -128,7 +128,7 @@ async def test_press_runs_rebuild_and_reports_attributes(
             new=patches["stops"],
         ),
         patch(
-            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
             side_effect=apply_scoped,
         ),
     ):
@@ -329,7 +329,7 @@ async def test_service_call_drives_the_loaded_button(
             new=patches["stops"],
         ),
         patch(
-            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
             side_effect=apply_scoped,
         ),
     ):

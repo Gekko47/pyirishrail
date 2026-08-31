@@ -3,9 +3,9 @@
 The Irish Rail RTPI API exposes no static route directory, so the seed is a
 snapshot derived the same way the integration derives it at runtime: due
 trains are sampled per station, each train code's movement history is scoped
-to its current journey and cut downstream of the sampled station (see
-``_scoped_journey_stops``), and the resulting stops are stored per direction
-bucket plus an ``_all`` union.
+to its current journey and cut downstream of the sampled station via
+``IrishRailClient.scope_journey_stops``, and the resulting stops are stored
+per direction bucket plus an ``_all`` union.
 
 Run from the repository root inside the dev environment (requires the
 integration's dependencies):
@@ -36,7 +36,6 @@ import aiohttp
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
-import custom_components.irish_rail.pyirishrail.api as ir_api
 from custom_components.irish_rail.pyirishrail import (
     IrishRailClient,
     IrishRailError,
@@ -131,7 +130,7 @@ async def _build_matrix(
                 movements = await _train_movements(
                     client, movement_cache, train.code, today
                 )
-                journey = ir_api._scoped_journey_stops(
+                journey = client.scope_journey_stops(
                     movements,
                     train.destination,
                     station_code=station.code,

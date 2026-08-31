@@ -4,7 +4,7 @@ Faithful in-process port of ``scripts/build_stops_matrix.py``: every network
 station is sampled for currently-due trains, each train code's movement
 history is scoped to its current journey and cut downstream of the sampled
 station (:func:`IrishRailClient.async_get_train_stops` +
-:func:`~pyirishrail.api._scoped_journey_stops`), and the
+:meth:`IrishRailClient.scope_journey_stops`), and the
 resulting stops are unioned per direction bucket plus an ``_all`` union.
 
 Differences from the offline script, by design:
@@ -44,7 +44,6 @@ from .pyirishrail import (
     IrishRailError,
     TrainMovement,
 )
-from .pyirishrail.api import _scoped_journey_stops
 from .store import (
     ALL_DIRECTIONS_KEY,
     get_stops_store,
@@ -157,7 +156,7 @@ async def async_run_matrix_rebuild(
                             "Movement lookup failed for %s: %s", train.code, err
                         )
                         movement_cache[cache_key] = []
-                journey = _scoped_journey_stops(
+                journey = client.scope_journey_stops(
                     movement_cache[cache_key],
                     train.destination,
                     station_code=station.code,

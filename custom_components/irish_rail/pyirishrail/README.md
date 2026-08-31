@@ -46,7 +46,7 @@ The package exports a deliberately small surface:
 
 | Symbol | Kind | Notes |
 |---|---|---|
-| `IrishRailClient` | class | Async client; takes an injected `aiohttp.ClientSession` and an optional shared `RequestGate`. |
+| `IrishRailClient` | class | Async client; takes an injected `aiohttp.ClientSession` and an optional shared `RequestGate`. The method `IrishRailClient.scope_journey_stops` is the public entry point for movement-row transformation (used by the integration's rebuild button and the offline seed script; see below). |
 | `RequestGate` | class | Concurrency-and-pacing gate. The integration passes one gate per `HomeAssistant` instance to every client it creates (see `custom_components/irish_rail/gate.py`). |
 | `IrishRailError` | exception | Base class. |
 | `IrishRailConnectionError` | exception | Network / non-200 responses. |
@@ -57,14 +57,18 @@ The package exports a deliberately small surface:
 | `TrainMovement` | frozen dataclass | Train route / movement record. |
 | `TrainPosition` | frozen dataclass | Real-time position record. |
 | `parse_station_data` | function | Pure parser; unit-testable without a session. |
+| `strip_namespaces` | function | Pure namespace-normalization helper; alias of the module-private `pyirishrail.api._strip_namespaces`, exposed for test stubs that need to mimic the client's parse-side normalization. |
 | `DEFAULT_TIMEOUT` | constant | The 10 s per-request timeout used internally. |
 
-Private helpers in `pyirishrail.api` (prefixed with `_`, e.g.
-`_scoped_journey_stops`) are intentionally **not** re-exported. The
-integration's stops-matrix rebuild button reaches into one of them
-deliberately via
-`from custom_components.irish_rail.pyirishrail.api import _scoped_journey_stops`;
-non-HA consumers should prefer the public API.
+Private helpers in `pyirishrail.api` (functions whose name begins with
+`_`) are implementation details of the methods above and are not part
+of the public API. New code should not import them across the module
+boundary. The integration's stops-matrix rebuild button and the
+offline `scripts/build_stops_matrix.py` seed generator both consume
+`IrishRailClient.scope_journey_stops` — a public method on the client
+that scopes a movement history to one train's current journey and cuts
+downstream of a station. Non-HA consumers can use the same method
+directly.
 
 ## Zero-dependency XML
 

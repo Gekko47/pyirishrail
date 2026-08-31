@@ -492,6 +492,23 @@ strict-typing sub-gap 3 of 3)
         `from pyirishrail.api import _scoped_journey_stops` in
         `matrix_rebuild.py` (cross-package private-symbol contract,
         documented in `pyirishrail/api.py`).
+        — **Resolved 2026-08-31:** the cross-package underscore-prefix
+        contract documented above is no longer the active pattern. The
+        helper is now reached through the public method
+        `IrishRailClient.scope_journey_stops(...)`, which the rebuild
+        button and the offline `scripts/build_stops_matrix.py` seed
+        generator consume directly; `_scoped_journey_stops` remains the
+        module-private implementation in `pyirishrail/api.py` and the
+        in-class `_async_prune_trains` call site still uses it, but no
+        cross-module consumer reaches for the leading-underscore symbol
+        anymore. Do not reinstate the cross-package underscore import
+        described in the implementation note above; if you need the
+        scoping logic, call `client.scope_journey_stops(...)` on an
+        `IrishRailClient` instance, or import the helper from
+        `pyirishrail.api` only as part of an in-class or in-module
+        refactor. The README's "Public API" table and the
+        `pyirishrail/__init__.py` docstring were updated in the same
+        pass to reflect the new public surface.
   - [x] Update `custom_components/irish_rail/manifest.json`:
         `"requirements": ["pyirishrail>=0.2,<1.0"]`; remove `defusedxml`
         (it becomes a transitive dep of `pyirishrail` and listing transitive

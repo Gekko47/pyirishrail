@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,6 +24,7 @@ from custom_components.irish_rail.matrix_rebuild import (
     async_run_matrix_rebuild,
 )
 from custom_components.irish_rail.pyirishrail import (
+    IrishRailClient,
     IrishRailConnectionError,
     TrainMovement,
 )
@@ -102,12 +104,32 @@ class _FlakyRecordingStore(_RecordingStore):
 
 
 def _client_mock(stations: list[MagicMock]) -> MagicMock:
-    """Build an API client mock over the given station records."""
-    client = MagicMock()
-    client.async_get_all_stations = AsyncMock(return_value=stations)
-    client.async_get_station_by_code = AsyncMock(return_value=[])
-    client.async_get_train_stops = AsyncMock(return_value=[])
-    return client
+    """Build a test client that pretends to be an :class:`IrishRailClient`.
+
+    At runtime the returned object is a real
+    :class:`IrishRailClient` instance with a stubbed
+    ``aiohttp.ClientSession``, so the module-level
+    ``patch("custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops", ...)``
+    used by every test in this file actually reaches the client through
+    normal class-level attribute lookup. A bare ``MagicMock()`` would
+    shadow the patched method via its auto-generated child mock and the
+    rebuild would silently observe an empty journey.
+
+    The static return type is ``MagicMock`` rather than
+    :class:`IrishRailClient` so test bodies can keep their existing
+    direct attribute assignments (``client.async_get_station_by_code =
+    AsyncMock(...)``) without mypy --strict's ``[method-assign]``
+    complaint; the runtime contract is what matters for the rebuild's
+    behavior, and the wider static type on the test bodies hides the
+    fact that the runtime object is a real, structurally-typed client.
+    ``cast`` to ``MagicMock`` keeps mypy happy for the return without
+    affecting the object at runtime.
+    """
+    client = IrishRailClient(MagicMock())
+    client.async_get_all_stations = AsyncMock(return_value=stations)  # type: ignore[method-assign]
+    client.async_get_station_by_code = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    client.async_get_train_stops = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    return cast(MagicMock, client)
 
 
 def _scoped_factory(
@@ -116,7 +138,7 @@ def _scoped_factory(
     [list[TrainMovement], str | None, str | None, str | None],
     list[_FakeMovement],
 ]:
-    """Build a ``_scoped_journey_stops`` stand-in returning the given stops."""
+    """Build an :meth:`IrishRailClient.scope_journey_stops` stand-in returning the given stops."""
 
     def fake_scoped(
         movements: list[TrainMovement],
@@ -160,7 +182,7 @@ async def test_rebuild_writes_every_station_through_stops_store(
             return_value=recording,
         ),
         patch(
-            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
             side_effect=_scoped_factory(["Craughill"]),
         ),
         caplog.at_level(logging.WARNING),
@@ -216,7 +238,7 @@ async def test_rebuild_persistence_failure_isolated_per_bucket(
             return_value=store,
         ),
         patch(
-            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
             side_effect=_scoped_factory(["Bray"]),
         ),
         caplog.at_level(logging.WARNING),
@@ -262,7 +284,7 @@ async def test_rebuild_output_visible_to_subsequent_lookup(
             return_value=recording,
         ),
         patch(
-            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
             side_effect=_scoped_factory(["Howth"]),
         ),
     ):
@@ -307,7 +329,7 @@ async def test_rebuild_uses_background_priority_on_every_call(
             return_value=_RecordingStore(),
         ),
         patch(
-            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
             side_effect=_scoped_factory(["Howth"]),
         ),
     ):
@@ -361,7 +383,7 @@ async def test_rebuild_with_existing_observations_unions(
             return_value=recording,
         ),
         patch(
-            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
             side_effect=_scoped_factory(["Cherrywood", "Greystones"]),
         ),
     ):
@@ -411,7 +433,7 @@ async def test_rebuild_persists_through_real_storage(
             return_value=real_store,
         ),
         patch(
-            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
             side_effect=_scoped_factory(["Dún Laoghaire"]),
         ),
     ):
@@ -447,7 +469,7 @@ async def test_rebuild_invalidates_bundled_seed_cache(
             return_value=_RecordingStore(),
         ),
         patch(
-            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
             side_effect=_scoped_factory([]),
         ),
         patch(
@@ -490,7 +512,7 @@ async def test_movement_lookup_failure_skips_train_without_failing(
             return_value=_RecordingStore(),
         ),
         patch(
-            "custom_components.irish_rail.matrix_rebuild._scoped_journey_stops",
+            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
             side_effect=fake_scoped,
         ),
         caplog.at_level(logging.WARNING),

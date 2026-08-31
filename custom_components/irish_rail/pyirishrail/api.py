@@ -132,6 +132,16 @@ def _strip_namespaces(root: Element) -> Element:
     return root
 
 
+# Public re-export of the namespace-normalizing helper. The leading-
+# underscore name is the implementation; this alias is the documented
+# entry point for cross-module consumers (e.g. test stubs that need to
+# mimic the client's parse-side normalization) that should not reach
+# for a private symbol. Adding a new public name rather than renaming
+# the underlying function keeps ``git log -p -- _strip_namespaces``
+# intact for anyone diagnosing the normalization step.
+strip_namespaces = _strip_namespaces
+
+
 def _find_tag_text(element: Element, tag_name: str) -> str | None:
     """Return the stripped text of the first matching child, or None.
 
@@ -446,6 +456,57 @@ class IrishRailClient:
             seen.setdefault(train.direction.lower(), train.direction)
         return sorted(seen.values(), key=str.lower)
 
+    def scope_journey_stops(
+        self,
+        movements: list[TrainMovement],
+        journey_destination: str | None,
+        *,
+        station_code: str | None = None,
+        station_name: str | None = None,
+    ) -> list[TrainMovement]:
+        """Return a movement list scoped to one journey and cut downstream of a station.
+
+        Pure transformation on the supplied rows: no I/O, no gate, no
+        shared state. Delegates to the module-private
+        :func:`_scoped_journey_stops` helper, which carries the algorithm
+        and its full regression coverage. This thin public wrapper exists
+        so cross-package consumers (notably the integration's stops-matrix
+        rebuild button and the offline ``scripts/build_stops_matrix.py``
+        seed generator) can call the same scoping logic the client uses
+        internally without reaching for a leading-underscore symbol.
+
+        Args:
+            movements: The full day's movement rows for a train code, as
+                returned by :meth:`async_get_train_stops`. Order matters:
+                rows of one journey are adjacent in the list, and the
+                downstream cut is bounded to the contiguous run containing
+                the matched station.
+            journey_destination: The candidate journey's destination as
+                reported on the due-train record (used for journey
+                scoping). A blank/``None`` value degrades to the unscoped
+                day history rather than emptying the result.
+            station_code: The monitored station's code; the first match
+                on ``movement.location_code`` is the cut point. Takes
+                precedence over ``station_name`` when both match.
+            station_name: The monitored station's display name; the
+                first match on ``movement.location`` is the cut point
+                when no ``station_code`` hit exists. If neither matches
+                anything in the journey-scoped rows, the rows are
+                returned uncut (an unmatched station must never silently
+                empty the result).
+
+        Returns:
+            The journey-scoped rows cut downstream of the matched
+            station. May be empty if the candidate train's journey has
+            no downstream stops past the monitored station.
+        """
+        return _scoped_journey_stops(
+            movements,
+            journey_destination,
+            station_code=station_code,
+            station_name=station_name,
+        )
+
     async def async_get_station_stops_at_options(
         self,
         station_code: str,
@@ -461,7 +522,7 @@ class IrishRailClient:
         the fan-out is paced by the client's shared request gate and
         yields to concurrent live polling.
         Routes are scoped to each train's current journey and cut
-        downstream of ``station_code`` via :func:`_scoped_journey_stops`, so
+        downstream of ``station_code`` via :meth:`scope_journey_stops`, so
         the union only contains stations the selected services actually
         reach after this station. A route whose history cannot be fetched is
         skipped rather than failing the union. The departure station itself
@@ -662,7 +723,7 @@ class IrishRailClient:
         a candidate whose movement history cannot be fetched is pruned
         rather than failing the whole poll.
 
-        Matching is journey-scoped like :func:`_scoped_journey_stops`: a
+        Matching is journey-scoped like :meth:`scope_journey_stops`: a
         candidate only counts as "stopping at" the target when the target is
         reached *after* the monitored station on its current journey, not
         merely somewhere in the train code's whole-day history. Successfully
