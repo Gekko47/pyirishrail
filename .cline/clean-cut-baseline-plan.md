@@ -8,6 +8,7 @@
 > **this file wins** until Phase 4 rewrites the stale sections.
 >
 > **Current status:** Phases 0–5 COMPLETE — v0.3.0 ready to tag.
+> **Post-v0.3.0 design 2 amendment** (see below).
 
 ## Ground rules
 
@@ -43,6 +44,7 @@ shims · entity `unique_id` changes · live-API behavior changes.
 - 2026-08-30 — Phase 3 executed (commit 4): `defusedxml` dropped; pre-parse DTD/entity guard via a keyword `in` scan against a pre-lowered copy of the response (regex avoided because Python `re` treats `<name>` as a silent named-group); CI no longer installs `types-defusedxml`; 6 new hostile-input tests pin the policy. Zero-dep proof: `pip uninstall defusedxml` then full suite green. Gates: 235 passed, 100.00% coverage, ruff 0, strict mypy 0.
 - 2026-08-30 — Phase 4 executed (commit 5): `quality_scale.yaml` rewritten with accurate pointers; `README.md` full professional rewrite (3 sensors, Irish Rail Services device, no fluff); `services.yaml` + `strings.json` aligned; `pyirishrail/__init__.py` + standalone `README.md` rewritten to zero-dep XML story; skills 00/07/08 truth-passed; roadmap Phase 5.3 REVERTED note added and acceptance table fixed; dead `implementation_plan.md` deleted; `CHANGELOG.md` closed. Gates: 235 passed, 100.00% coverage, ruff 0, strict mypy 0.
 - 2026-08-30 — Phase 5 executed (commit 6): `manifest.json` and `pyirishrail.__version__` bumped to `0.3.0`; `ruff>=0.16` pinned in CI; D4 stale-patch-target grep guard added (verified locally, 0 stale targets). During the gate run a real-world bug surfaced: `_purge_orphan_global_entities` in `health.py` was calling the obsolete `device_registry.devices.values()` and the now-removed `DeviceEntry.config_entries` set; switched to `device_registry.async_get_device(identifiers=...)` and the modern `config_entry_id: str` field, updated two tests to the new shape, re-ran all gates green. Local HEAD ready to push and tag `v0.3.0`.
+- 2026-08-30 — Phase 3a executed (commit 7): design 2 final form, with the byte-level substring guard restored in front of the stdlib parse. Empirically re-verified that stdlib `xml.etree.ElementTree` on Python 3.14.2 / expat 2.7.5 does *not* reject a real 10×10×10 billion-laughs bomb on its own (parses in 0.4 ms with 1000 chars of expanded content); `SetParamEntityParsing(NEVER)` only covers external parameter-entity processing, not internal subsets, so the guard is load-bearing for the billion-laughs case. A post-parse tree-walk layer was tried and removed because it backfires on the real RTPI shape (`&lt;` decodes back to `<` in `elem.text`). New hostile-payload case `billion-laughs-real`; CDATA case flipped to assert rejection as a pinned documented tradeoff. Gates: 244 passed, 100.00% coverage, ruff 0, strict mypy 0.
 
 ## Phase 0 — Workspace & git reset — **Status: COMPLETE (commit 1, 2026-08-30)**
 
@@ -84,6 +86,73 @@ policy version-independent.
 - [x] Remove `types-defusedxml` from the `ci.yml` pip line
 - [x] **Zero-dep proof**: `pip uninstall defusedxml` from `.venv`, then the full suite runs green; `importlib.util.find_spec('defusedxml')` returns `None` in the same environment that ran the suite
 - [x] Gates: **235 passed · 100.00% coverage · ruff 0 · strict mypy 0**
+
+## Phase 3a — Design 2 final form (post-v0.3.0) — **Status: COMPLETE (commit 7, 2026-08-30)**
+
+The original Phase 3 commit (`c8552de`) shipped a byte-level substring
+guard as the *sole* XML safety policy. Empirical re-verification on
+2026-08-30 found that the stdlib `xml.etree.ElementTree` parser on
+Python 3.14.2 / expat 2.7.5 does **not** reject a real 10×10×10
+billion-laughs bomb on its own (it parses in 0.4 ms with 1000 chars
+of expanded content; `SetParamEntityParsing(NEVER)` only disables
+*external* parameter-entity processing, not internal subset
+processing). That confirmed the byte-level guard was load-bearing
+for the billion-laughs case, not a defensive overlay on the parser.
+
+The user then reviewed a CDATA / escaped-form / external-DTD /
+whitespace class of inputs and asked whether the guard could run
+*after* the stdlib parse instead of before. The answer (validated
+empirically) is:
+
+- **stdlib parse first** -> catches whitespace-obfuscated forms
+  (``<! DOCTYPE`` etc.) via `ET.ParseError`. The integration wraps
+  the parser error as `IrishRailParseError`.
+- **Byte-level substring guard second** -> catches the billion-laughs
+  bomb via the `<!entity` keyword in the internal subset, before any
+  entity expansion happens. This is the single most important case
+  in the hostile list.
+- A **third layer (post-parse tree-walk) was tried and removed.**
+  It backfires on the real RTPI shape: Irish Rail's serialiser
+  emits special characters in plain text fields as ``&lt;``, so the
+  parsed tree's `elem.text` contains the literal text `<!doctype`
+  after entity decoding, and the tree-walk rejected a perfectly
+  valid response. The test
+  `test_escaped_doctype_substring_in_text_parses` pins that success
+  path.
+
+Final design 2 form: **byte-level guard + stdlib `ET.fromstring`**,
+no third layer. The CDATA false-positive class is preserved as a
+documented, pinned tradeoff
+(`test_cdata_section_with_doctype_substring_is_rejected`). The
+billion-laughs bomb is a new hostile-payload case
+(`billion-laughs-real`); the prior `dtd-without-entities` and
+`uppercase-doctype` cases are restored; the external-DTD-only test
+is flipped to assert rejection (the guard rejects the `<!doctype`
+keyword, not because the doc is dangerous but because the policy is
+"no DTD declarations in API responses").
+
+- [x] `pyirishrail/api.py` docstring rewritten to describe the final
+      two-layer policy, with a clear note that the third layer was
+      tried and removed because it backfires on the real RTPI shape.
+      `_has_dtd_keyword_in_tree` function deleted (lines 89-127 of
+      the previous revision); layer-2 call site in `_request`
+      deleted.
+- [x] `tests/components/irish_rail/test_client.py`:
+      - `test_dtd_or_entity_payload_is_rejected` expanded to 6 cases
+        (5 v0.3.0 Phase 3 cases + the new `billion-laughs-real`
+        bomb).
+      - `test_cdata_section_with_doctype_substring_is_rejected`
+        (was option A's `*_parses`) now asserts the documented
+        tradeoff: the byte-level guard rejects CDATA containing
+        `<!doctype`, pinned as a known-bad.
+      - `test_external_dtd_only_doc_is_rejected_by_guard` (was
+        option A's `*_parses_under_option_a`) now asserts rejection
+        at the byte-level guard layer.
+      - `test_escaped_doctype_substring_in_text_parses` docstring
+        updated: this is the "real RTPI shape" case that must parse
+        cleanly, the *only* guard bypass.
+- [x] Final gates: **244 passed - 100.00% coverage - ruff 0 -
+      strict mypy 0 (39 files)**.
 
 ## Phase 4 — Documentation & claims truth-pass — **Status: COMPLETE (commit 5, 2026-08-30)**
 

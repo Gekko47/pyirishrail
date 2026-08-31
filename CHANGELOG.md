@@ -130,3 +130,68 @@ decisions are recorded in
 - Skills 00 / 07 / 08 and the plan file truth-passed: the
   "2026-08-28 PyPI extraction" section in the roadmap is marked
   REVERTED with a pointer to this changelog and the plan file.
+
+## [0.3.0] — post-release amendment (2026-08-30)
+
+### Security — XML safety policy (design 2)
+
+The v0.3.0 release shipped a byte-level substring guard on the
+response body as the *sole* XML safety policy, on the assumption
+that the stdlib `xml.etree.ElementTree` parser alone is sufficient.
+Empirical re-verification on 2026-08-30 found that the stdlib
+parser on Python 3.14.2's bundled expat 2.7.5 does **not** reject a
+real 10×10×10 billion-laughs bomb on its own: it parses in 0.4 ms
+with 1000 chars of expanded content, because the default
+`XML_PARAM_ENTITY_PARSING_ALWAYS` mode lets the internal subset
+expand. `SetParamEntityParsing(NEVER)` only disables *external*
+parameter-entity (DTD) processing, not internal subset processing,
+so it does not block the billion-laughs case either. The byte-level
+guard is therefore load-bearing for the billion-laughs case, not a
+defensive overlay.
+
+Final design (design 2, two-layer, no third layer):
+
+- **stdlib `ET.fromstring` first** — catches whitespace-obfuscated
+  forms (`<! DOCTYPE` etc.) via `ET.ParseError`; the integration
+  wraps the parser error as `IrishRailParseError`.
+- **Byte-level substring guard second** — catches the
+  billion-laughs bomb via the `<!entity` keyword in the internal
+  subset, *before* any entity expansion happens. The lowercased
+  scan is case-insensitive on the keyword and the `&lt;`
+  entity-escaped form is not a hit (no literal `<!` in the raw
+  bytes).
+- A **third layer (post-parse tree-walk) was tried and removed**
+  because it backfires on the real RTPI shape: Irish Rail's
+  serialiser emits special characters in plain text fields as
+  `&lt;`, so the parsed tree's `elem.text` contains the literal text
+  `<!doctype` after entity decoding, and the tree-walk rejected a
+  perfectly valid response. The test
+  `test_escaped_doctype_substring_in_text_parses` pins that
+  success path.
+
+### Known tradeoff — CDATA false-positive class
+
+The byte-level guard has a known false-positive class:
+`<![CDATA[...<!doctype ...]]>` sections in a station field trip
+the substring check because the inert prose inside CDATA contains
+the literal text `<!doctype`. Empirically verified 2026-08-30 that
+Irish Rail's RTPI responses use the standard entity-escaped form
+(`&lt;!doctype`) in plain text fields, not CDATA, so this case is
+not observed on the real API. The CDATA case is pinned by the
+regression test
+`test_cdata_section_with_doctype_substring_is_rejected`, so the
+documented tradeoff cannot regress silently. If a future revision
+ever needs to accept CDATA-bearing payloads, it must explicitly
+remove that test and document the change here.
+
+### Tests
+
+- New hostile-payload case `billion-laughs-real` in
+  `test_dtd_or_entity_payload_is_rejected` (6 cases total).
+- `test_cdata_section_with_doctype_substring_is_rejected` (was
+  option A's `*_parses`) now asserts the documented tradeoff.
+- `test_external_dtd_only_doc_is_rejected_by_guard` (was option
+  A's `*_parses_under_option_a`) now asserts rejection at the
+  byte-level guard layer.
+- All gates green: 244 passed, 100.00% coverage, ruff clean,
+  strict mypy clean (39 files).

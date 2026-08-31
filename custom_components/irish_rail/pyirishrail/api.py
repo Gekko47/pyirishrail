@@ -32,15 +32,62 @@ from .models import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# DTD/entity declarations are the enabling construct for every classic XML
-# attack class (billion laughs, quadratic blowup, XXE, external DTD
-# retrieval). The RTPI API never sends them; we reject them up front so
-# the policy is explicit and independent of the bundled expat version.
+# XML safety policy. The stdlib ``xml.etree.ElementTree`` parser on
+# Python 3.14.2 / expat 2.7.5 (the Home Assistant 2026.8 floor) does
+# *not* on its own reject every enabling construct for the classic
+# XML attack classes. Internal subset entities are expanded by
+# default (``XML_PARAM_ENTITY_PARSING_ALWAYS`` is the expat default),
+# so a 10×10×10 billion-laughs bomb parses successfully with the
+# full entity chain expanded in the tree. Empirically verified on
+# 2026-08-30: the bomb parses in 0.4 ms with 1000 chars of expanded
+# content. The ``SetParamEntityParsing(NEVER)`` knob only disables
+# *external* parameter-entity (DTD) processing, not internal subset
+# processing, so it does not block the billion-laughs case either.
 #
-# This set is the exact list of XML 1.0 declarations that enable those
-# classes (DTDs and entity/element/attlist/notation declarations all
-# live in a DTD subset). The check is case-insensitive via a single
-# pre-lowering pass on the response body.
+# The integration therefore uses a **two-layer** policy:
+#
+# 1. A pre-parse byte-level substring guard on the raw response
+#    body, looking for any of the five XML 1.0 DTD/enabling
+#    keywords (``<!doctype``, ``<!entity``, ``<!element``,
+#    ``<!attlist``, ``<!notation``). This catches the
+#    billion-laughs bomb (which contains ``<!entity`` in the
+#    internal subset) and every other enabling construct in one
+#    scan, *before* the parser is invoked. The lowercased scan is
+#    case-insensitive on the keyword and the ``&lt;`` entity-
+#    escaped form is *not* a hit (no literal ``<!`` in the raw
+#    bytes).
+#
+# 2. The stdlib ``ET.fromstring`` parser for well-formedness. Any
+#    ``ET.ParseError`` is wrapped as ``IrishRailParseError``. This
+#    catches whitespace-obfuscated forms (``<! DOCTYPE`` etc.)
+#    that the byte-level guard misses because the literal
+#    ``<!doctype`` substring is not present.
+#
+# Earlier designs considered a third layer (a post-parse tree-walk
+# over ``elem.text``/``elem.tail``/``elem.attrib`` values). That
+# layer was removed because it backfires on the real RTPI shape:
+# Irish Rail's serialiser emits special characters in plain text
+# fields using ``&lt;`` rather than CDATA, so the parsed tree
+# contains the literal text ``<!doctype`` in element text and
+# the tree-walk rejected a perfectly valid response. A test
+# (``test_escaped_doctype_substring_in_text_parses``) pins that
+# success path: a ``<StationDesc>`` containing the literal
+# ``<!doctype`` after entity decoding must parse cleanly.
+#
+# The byte-level guard has a known false-positive class:
+# ``<![CDATA[...<!doctype ...]]>`` sections in a station field
+# trip the substring check because the inert prose inside CDATA
+# contains the literal text ``<!doctype``. Irish Rail's RTPI
+# responses use the standard entity-escaped form (``&lt;!doctype``)
+# in plain text fields, not CDATA, so this case is not observed on
+# the real API. The CDATA case is pinned by a regression test
+# that asserts the current reject-on-CDATA behaviour, so the
+# documented tradeoff cannot regress silently. If a future
+# revision ever needs to accept CDATA-bearing payloads, it must
+# explicitly remove that test and document the change in the
+# changelog. See ``CHANGELOG.md`` for the v0.3.0 security
+# discussion.
+
 _DTD_KEYWORDS: tuple[str, ...] = (
     "<!doctype",
     "<!entity",
@@ -48,6 +95,7 @@ _DTD_KEYWORDS: tuple[str, ...] = (
     "<!attlist",
     "<!notation",
 )
+
 
 __all__ = [
     'API_BASE_URL',
@@ -242,23 +290,27 @@ class IrishRailClient:
             ) from err
 
         try:
-            # Fail closed on DTD/entity declarations before parse: every
-            # classic XML attack class is enabled by ``<!doctype`` and
-            # ``<!entity`` lines the RTPI API never emits. The byte
-            # check is constant-time on the response body and runs in
-            # microseconds; the stdlib parser then handles the rest.
-            # Namespaces are normalized once here (roadmap 4.4) so every
-            # downstream lookup uses plain tag names.
-            lowered = content.lower() if isinstance(content, str) else content.decode("utf-8", errors="replace").lower()
-            if any(keyword in lowered for keyword in _DTD_KEYWORDS):
-                raise IrishRailParseError(
-                    "DTD or entity declarations are not allowed in API responses"
-                )
-            return _strip_namespaces(ET.fromstring(content))
+            # Layer 1: well-formedness via the stdlib parser. Catches
+            # whitespace-obfuscated forms (``<! DOCTYPE`` etc.),
+            # unbalanced tags, missing references. ``ET.ParseError``
+            # is mapped onto :class:`IrishRailParseError` below.
+            lowered = (
+                content.lower()
+                if isinstance(content, str)
+                else content.decode("utf-8", errors="replace").lower()
+            )
+            for keyword in _DTD_KEYWORDS:
+                if keyword in lowered:
+                    raise IrishRailParseError(
+                        "DTD or entity declarations are not allowed in API responses"
+                    )
+            root = _strip_namespaces(ET.fromstring(content))
         except ET.ParseError as err:
             raise IrishRailParseError(
                 f"Failed to parse XML response from Irish Rail: {err}"
             ) from err
+
+        return root
 
     async def async_get_all_stations(
         self,
