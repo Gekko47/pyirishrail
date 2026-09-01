@@ -168,3 +168,57 @@ The implementation is acceptable only when:
 - roadmap checkboxes and `quality_scale.yaml` agree with the implementation.
 
 If something cannot be verified, mark it unresolved rather than falsely claiming compliance.
+
+## Streamline acceptance (governed by `.cline/streamline-roadmap.md`)
+
+When a PR is against the **streamline** roadmap rather than the v0.3.0
+baseline or the pre-v0.3.0 improvement roadmap, the review checklist
+is:
+
+1. **Platinum still proven.** Every `done` and every `exempt` in
+   `quality_scale.yaml` lands on a real file/function. The YAML may
+   shrink (compressed prose + `See docs/architecture.md §N`), but
+   evidence is not removed.
+2. **Docstring density gate.** The active phase's gate
+   (Phase A: ≤ 0.20 lines/LOC; post-Phase A: ≤ 0.15 lines/LOC) is
+   met. Measure with
+   `awk '/^"""/{n+=gsub(/"""/,"&\n")-1} END{print n/LOC}'`
+   on the touched files.
+3. **No "what the name says" docstrings added.** Any new
+   docstring either describes a non-obvious invariant (with a
+   `docs/architecture.md` pointer) or describes the contract in
+   one or two lines.
+4. **No `Skill N` / `Phase N` / `roadmap N` references added to
+   source.** Project-internal cross-references belong in the
+   active roadmap file, not in source.
+5. **Module boundaries respected.** The Phase B target shape
+   (see Skill 10 §2) is held; no `pyirishrail/` re-introduction,
+   no split of `_runtime.py` back into `gate.py` and `health.py`,
+   no third stops-matrix rebuild implementation.
+6. **`RuntimeRegistry` discipline.** Reads and writes to
+   `hass.data[DOMAIN]` go through the registry. The keys are
+   private to `_runtime.py`. No other module reaches into
+   `hass.data[DOMAIN]` directly.
+7. **Sensor surface stable.** No new per-station sensor
+   added (Phase C collapsed them into one). New arrival detail
+   goes on the existing sensor's `extra_state_attributes` and
+   requires the full attribute pipeline (string translation,
+   test, evidence note).
+8. **`docs/architecture.md` updated alongside code.** If the
+   refactor changes an invariant the doc covers, the doc is
+   updated in the same commit. If the refactor invalidates a
+   section, the section is rewritten, not deleted without
+   replacement.
+9. **Test discipline.** No tests pinning prose (e.g.
+   `assert "by design" in module.__doc__`); tests pin
+   observable behaviour. The 100% line coverage gate is
+   preserved. Phase E may reduce test *count* by merging
+   duplicate cases; the test *coverage* of the source must
+   not regress.
+10. **No new public attributes on existing classes.** The
+    only new public type introduced by the streamline work is
+    `RuntimeRegistry` (Phase B3).
+
+If any of the above is violated, the increment is not accepted
+back to the active plan's gate, even if ruff/mypy/coverage are
+green.

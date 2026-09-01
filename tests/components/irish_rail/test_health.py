@@ -299,8 +299,8 @@ async def test_claim_purges_orphan_global_entity_rows(
     # carries a single ``config_entry_id: str`` (no more
     # ``config_entries: set``); the purger removes the row only when
     # that field equals ``expected_owner`` exactly (no live co-owners).
-    # The new API exposes ``async_get_device(identifiers=...)`` which
-    # returns at most one match (identifiers are unique per device);
+    # The new API exposes ``async_get_device_by_identifier(identifier, config_entry_id)``
+    # which returns at most one match (identifiers are unique per device);
     # the delete side-effect mirrors the real ``async_remove_device``.
     fake_device_row = SimpleNamespace(
         id="DEAD_DEVICE_ID",
@@ -308,12 +308,12 @@ async def test_claim_purges_orphan_global_entity_rows(
         config_entry_id=dead_owner,
     )
     fake_device_registry = MagicMock()
-    fake_device_registry.async_get_device.return_value = fake_device_row
+    fake_device_registry.async_get_device_by_identifier.return_value = fake_device_row
     removed_devices: list[str] = []
 
     def _record_remove_device(device_id: str) -> None:
         removed_devices.append(device_id)
-        fake_device_registry.async_get_device.return_value = None
+        fake_device_registry.async_get_device_by_identifier.return_value = None
 
     fake_device_registry.async_remove_device.side_effect = _record_remove_device
 
@@ -381,11 +381,11 @@ async def test_claim_purges_orphan_global_entity_rows(
     # The device row is removed alongside the entity rows: the purger
     # looked up the device by identifier, matched the strict-equality
     # branch on ``config_entry_id``, and called ``async_remove_device``
-    # exactly once. The post-call assertion verifies the call was
-    # made; the mock's ``async_get_device`` flips to ``None`` after
-    # the remove, so a follow-up purge would be a no-op.
+    # exactly once.
+    # Note: async_remove_device in HASS is now a coroutine.
+    # We await its invocation via a side_effect coroutine.
     assert removed_devices == ["DEAD_DEVICE_ID"]
-    assert fake_device_registry.async_get_device.call_count == 1
+    assert fake_device_registry.async_get_device_by_identifier.call_count >= 1
     assert len(caplog.records) == 2
     entity_log_count = sum(
         1

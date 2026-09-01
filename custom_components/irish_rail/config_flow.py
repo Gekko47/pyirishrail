@@ -1,4 +1,7 @@
-"""Config flow for the Irish Rail integration."""
+"""Config flow for the Irish Rail integration.
+
+See docs/architecture.md §13 for config flow, reconfigure, and options flow.
+"""
 
 from __future__ import annotations
 
@@ -42,13 +45,7 @@ NO_FILTER_SENTINEL = "All"
 def build_stops_at_schema_field(
     stations: list[Station], current: str
 ) -> dict[Any, Any]:
-    """Build the ``stops_at`` schema field for the available stations.
-
-    With a station list a dropdown of canonical station names (plus an
-    ``All`` no-filter entry) is offered to prevent typos. If the station
-    list could not be fetched the field degrades to free text so the form
-    remains usable offline.
-    """
+    """Build the ``stops_at`` schema field for available stations."""
     if not stations:
         return {vol.Optional(CONF_STOPS_AT, default=current): str}
     options = {NO_FILTER_SENTINEL: NO_FILTER_SENTINEL}
@@ -57,14 +54,7 @@ def build_stops_at_schema_field(
 
 
 def filter_stations(stations: list[Station], text: str) -> list[Station]:
-    """Return the stations matching a free-text filter.
-
-    Mirrors the word-prefix semantics of irishrail.ie's own station search
-    (verified against ``getStationsFilterXML``): case-insensitively, every
-    whitespace-separated term must be a prefix of some whitespace-delimited
-    word of the station name or alias. Blank text matches everything so the
-    full list stays browsable; there is deliberately no fuzziness.
-    """
+    """Return stations matching a free-text filter."""
     terms = text.casefold().split()
     if not terms:
         return list(stations)
@@ -79,20 +69,7 @@ def filter_stations(stations: list[Station], text: str) -> list[Station]:
 
 
 class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Irish Rail.
-
-    Step one narrows the station list with an optional free-text filter
-    using the same word-prefix semantics as irishrail.ie's own search; a
-    single match skips straight ahead, otherwise a pick screen lists the
-    candidates (the full list when the filter is left blank). The
-    connection is validated up front (``test_before_configure``). The
-    final step offers only the direction values that are actually valid
-    *for the chosen station*, discovered live from its due-trains list:
-    ``Northbound`` / ``Southbound`` on the Dundalk-Rosslare and
-    Sligo-Dublin corridors, free-text values such as ``To Cork``
-    everywhere else. When nothing is currently due (e.g. overnight) the
-    field degrades to free text so setup never blocks.
-    """
+    """Handle a config flow for Irish Rail."""
 
     VERSION = 1
 

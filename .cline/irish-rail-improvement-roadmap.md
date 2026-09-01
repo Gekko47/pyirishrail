@@ -593,3 +593,17 @@ strict-typing sub-gap 3 of 3)
 **Standing requirements for every phase:** ruff clean · strict mypy clean ·
 all tests passing · coverage ≥90% (target ≥95%) · no blocking calls in async
 paths · `quality_scale.yaml` updated whenever a rule's status changes.
+
+---
+
+## Status: COMPLETE (2026-08-31)
+
+This roadmap is **done**. Every item is ticked above; the v0.3.0
+Clean Baseline (`.cline/clean-cut-baseline-plan.md`) carried the
+post-completion hardening pass.
+
+**For new work, see `.cline/streamline-roadmap.md`** — a
+maintainability pass that preserves Platinum quality-scale
+compliance and the 100% line coverage gate. Skill 10 governs
+per-step execution; `docs/architecture.md` is the design source
+of truth the source code's short docstrings point to.

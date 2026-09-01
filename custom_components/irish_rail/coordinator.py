@@ -1,4 +1,8 @@
-"""DataUpdateCoordinator for the Irish Rail integration."""
+"""DataUpdateCoordinator for the Irish Rail integration.
+
+See docs/architecture.md §9 for adaptive backoff, the empty-data
+repair issue, and downstream-stops learning.
+"""
 
 from __future__ import annotations
 
@@ -119,9 +123,9 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
         # changes (applied live) apart from data/identity changes (reload).
         self._applied_entry_data = dict(config_entry.data)
 
-        # Adaptive-backoff state (roadmap 4.3). Initialized before
-        # super().__init__() because the base class assigns update_interval,
-        # which flows through the setter below.
+        # Adaptive-backoff state. Initialized before super().__init__()
+        # because the base class assigns update_interval, which flows
+        # through the setter below.
         self._configured_interval = resolve_scan_interval(config_entry)
         self._failure_streak = 0
 
@@ -133,24 +137,21 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
             config_entry=config_entry,
         )
 
-        # Persistent-empty-data repair-issue tracking (roadmap Phase 3).
+        # Persistent-empty-data repair-issue tracking.
         self._empty_streak = 0
         self._empty_issue_reported = False
 
     @property
     def update_interval(self) -> timedelta:
-        """Return the effective polling interval.
+        """Return the effective (possibly backed-off) polling interval.
 
-        While refreshes keep failing, the interval grows geometrically from
-        the user-configured value, capped at ``MAX_BACKOFF_INTERVAL``; the
-        configured interval applies whenever the last refresh succeeded
+        See docs/architecture.md §9 for the adaptive-backoff shape and
+        why the configured interval applies whenever the last refresh
+        succeeded.
         """
         if self._failure_streak == 0:
             return self._configured_interval
-        # Geometric growth from the configured interval, capped at
-        # MAX_BACKOFF_INTERVAL. Computed iteratively because typeshed types
-        # ``int.__pow__`` as returning ``Any``; the iteration count is tiny
-        # (the cap is reached within a handful of doublings).
+        # Iterative (not pow) because typeshed types int.__pow__ as Any.
         interval = self._configured_interval
         for _ in range(min(self._failure_streak, 16)):
             interval = min(interval * BACKOFF_MULTIPLIER, MAX_BACKOFF_INTERVAL)
@@ -160,13 +161,10 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
     def update_interval(self, value: timedelta) -> None:
         """Store a newly configured base interval (e.g. options updates).
 
-        Delegates to the base-class setter afterwards so its internal
-        scheduler bookkeeping (``_update_interval`` and the cached
-        ``_update_interval_seconds`` its ``_schedule_refresh()`` consumes)
-        stays in sync; the getter keeps deriving the effective backed-off
-        interval from ``_configured_interval``. The property object is
-        taken off the base class because ``super().update_interval = ...``
-        cannot target a same-named property from within its own setter.
+        Delegates to the base-class setter so its internal scheduler
+        bookkeeping stays in sync; the getter keeps deriving the
+        effective backed-off interval from ``_configured_interval``.
+        See docs/architecture.md §9.
         """
         self._configured_interval = value
         # ``fset`` is invisible to mypy's class-level property view.
@@ -174,25 +172,15 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
 
     @property
     def failure_streak(self) -> int:
-        """Number of consecutive failed refreshes driving the backoff.
-
-        Public read-only view for diagnostics (and tests) so callers never
-        reach into the private backoff state.
-        """
+        """Number of consecutive failed refreshes driving the backoff."""
         return self._failure_streak
 
     @callback
     def _schedule_refresh(self) -> None:
         """Schedule a refresh using the effective (backed-off) interval.
 
-        HA 2026.8+ schedules from ``_update_interval_seconds``, which the
-        base class populates when ``update_interval`` is assigned rather
-        than by re-reading the property at schedule time, so mirror the
-        getter into that cache before delegating. With no failure streak
-        this equals the configured interval and behavior is unchanged;
-        while backing off it makes consecutive failures genuinely widen
-        the polling spacing (and recovery narrows it at the next schedule
-        point). The base method's ``_retry_after`` handling still wins.
+        Mirrors the property into the base class' cached seconds value
+        before delegating; see docs/architecture.md §9.
         """
         self._update_interval_seconds = self.update_interval.total_seconds()
         super()._schedule_refresh()
@@ -211,22 +199,17 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
     def requires_reload(self) -> bool:
         """Return True when entry data changed since this coordinator loaded.
 
-        Entry-data changes alter the entry's identity (station/direction)
-        and therefore require a full config-entry reload; option-only
-        changes are applied to the live coordinator instead. Used by the
-        integration's update listener, which owns reload scheduling since
-        HA 2026.6.
+        See docs/architecture.md §8.
         """
         return self._applied_entry_data != dict(self.config_entry.data)
 
     def previous_unique_id(self) -> str | None:
         """Return the entry unique ID this coordinator was loaded for.
 
-        Derived from the entry-data snapshot taken at construction time, so
+        Derived from the entry-data snapshot at construction time, so
         it identifies the pre-reconfigure identity even after
-        ``config_entry.unique_id`` already reflects the new one. The update
-        listener uses it to target registry cleanup positively at exactly
-        the old station/direction identity.
+        ``config_entry.unique_id`` has been rewritten. See
+        docs/architecture.md §8.
         """
         station_code = self._applied_entry_data.get(CONF_STATION_CODE)
         if not isinstance(station_code, str) or not station_code:
@@ -255,19 +238,8 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
     def _async_update_empty_data_issue(self, trains: list[TrainDueTime]) -> None:
         """Raise or clear the persistent-empty-data repair issue.
 
-        A station that keeps returning an empty list during service hours
-        suggests the API or its schema changed rather than a genuine quiet
-        period. Only consecutive empty polls during service hours count:
-        an empty poll outside service hours resets the streak, so an
-        overnight accumulation can never pre-seed the next morning's
-        count. The issue is created exactly once per streak and removed on
-        the first refresh that returns actual trains (Gold rule
-        ``repair-issues``; roadmap Phase 3).
-
-        When the shared API-health monitor confirms the RTPI API answered a
-        recent probe, an empty result here is classified as "no scheduled
-        services within the look-ahead window": no issue is raised, any
-        already-open one is cleared immediately, and the streak resets.
+        See docs/architecture.md §9 for the full semantics (service-hours
+        window, healthy-API suppression, registry-as-source-of-truth).
         """
         if trains:
             self._empty_streak = 0
@@ -397,14 +369,8 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
     async def _async_learn_downstream_stops(self) -> None:
         """Merge stops observed this poll into the persistent stops matrix.
 
-        While a "stops_at" filter is active, pruning already fetches each
-        candidate's movement history; :meth:`IrishRailClient._async_prune_trains`
-        records the journey-scoped downstream stops it saw in
-        ``client.last_downstream_stop_names`` at zero extra API cost. Merging
-        them here keeps the config flow's option list current ("static, but
-        routinely checked and updated") without any additional requests.
-        Persistence failures are logged and never fail the poll: the matrix
-        is an optimization over live sampling, not a data source of record.
+        See docs/architecture.md §9 (downstream-stops learning) and §10
+        (stops-matrix store).
         """
         if resolve_stops_at(self.config_entry) is None:
             return

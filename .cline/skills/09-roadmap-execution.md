@@ -2,13 +2,19 @@
 
 ## Purpose
 
-The Bronze migration is complete. This skill governs all post-Bronze work defined in
-`.cline/irish-rail-improvement-roadmap.md`. Every roadmap item must be implemented
-against the current Home Assistant developer documentation, not against memory.
+The Bronze migration, the v0.3.0 Clean Baseline, and the
+pre-v0.3.0 improvement roadmap are all **complete**. This skill
+remains in the pack as the completion record for those phases and
+as the per-step *how* for any work those plans cover.
 
-## Active execution: v0.3.0 Clean Baseline (2026-08-30)
+**For new work, the active plan is `.cline/streamline-roadmap.md`
+and the active skill is `10-streamline-execution.md`.** Read that
+skill before touching the source for anything new.
 
-Current work is governed by `.cline/clean-cut-baseline-plan.md`. Protocol:
+## Active execution (historical): v0.3.0 Clean Baseline (2026-08-30)
+
+The v0.3.0 work was governed by `.cline/clean-cut-baseline-plan.md`.
+Protocol:
 
 1. Work one checkbox at a time, in the plan's phase order.
 2. Run the phase's gates after each increment (ruff · strict mypy · pytest at

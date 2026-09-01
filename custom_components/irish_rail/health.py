@@ -1,22 +1,7 @@
 """Shared Irish Rail RTPI API health monitoring and global-entity wiring.
 
-Two integration-wide features must exist exactly once regardless of how many
-station config entries are installed:
-
-* the **connectivity binary sensor** driven by a periodic reachability probe;
-* the **stops-matrix rebuild button** (see ``matrix_rebuild.py``).
-
-Both are registered as integration-level service entities (no device, with
-``EntityCategory.DIAGNOSTIC`` / ``CONFIG`` respectively) by whichever config
-entry *claims* providership first (arbitration below). This module hosts
-two concerns:
-
-* :class:`IrishRailApiHealthMonitor` - pings a lightweight endpoint on a
-  fixed interval and tracks recent reachability so the coordinator can tell
-  "the whole API is down" apart from "this station simply has no services
-  scheduled inside the RTPI look-ahead window";
-* providership arbitration for the global entities (sticky for the session,
-  transferred only when the owning entry is removed outright).
+See docs/architecture.md §11 for probe semantics, ping coalescing, the
+singleton lifecycle, and providership arbitration.
 """
 
 from __future__ import annotations
@@ -57,12 +42,8 @@ _GLOBAL_UNIQUE_IDS = (GLOBAL_HEALTH_UNIQUE_ID, GLOBAL_REBUILD_UNIQUE_ID)
 class IrishRailApiHealthMonitor:
     """Probe the RTPI API periodically and remember how it responded.
 
-    A probe failing while station polls keep succeeding (or vice versa) is
-    diagnostic gold: consecutive empty-but-successful polls at one station
-    mean quiet scheduling, whereas an unhealthy probe means any station-level
-    emptiness is just downstream fallout. State starts ``healthy=None``
-    ("not yet probed") so consumers conservatively fall back to the legacy
-    behaviour until the very first probe has landed.
+    See docs/architecture.md §11 for the probe contract and ``healthy: bool | None``
+    initial state.
     """
 
     def __init__(self, hass: HomeAssistant, client: IrishRailClient) -> None:
@@ -112,9 +93,7 @@ class IrishRailApiHealthMonitor:
     async def async_ping(self) -> None:
         """Run one reachability probe and publish the outcome."""
         try:
-            # A single lightweight station poll stands in for reachability:
-            # it exercises the same HTTP/XML path as station polling without
-            # the full ~155-record station-list payload every interval.
+            # See docs/architecture.md §11 for why HEALTH_PROBE_STATION_CODE.
             trains = await self.client.async_get_station_by_code(
                 HEALTH_PROBE_STATION_CODE
             )
@@ -180,9 +159,6 @@ class IrishRailApiHealthMonitor:
             "consecutive_failures": self.consecutive_failures,
             "last_error": self.last_error,
             "interval_minutes": HEALTH_CHECK_INTERVAL.total_seconds() / 60,
-            # Monitor lifecycle flags: a maintainer reading a "sensor is
-            # stuck" report needs to know whether the periodic probe is
-            # actually still running and whether one is in flight.
             "timer_active": self._unsub_interval is not None,
             "probe_in_flight": (
                 self._ping_task is not None and not self._ping_task.done()
@@ -192,14 +168,7 @@ class IrishRailApiHealthMonitor:
 
 # ── Singleton lifecycle ─────────────────────────────────────────────────────
 
-# The set of loaded config-entry ids under ``hass.data[DOMAIN]``: the single
-# source of truth for the shared singletons' lifetime. The API-health monitor
-# runs while the set is non-empty and stops when the last entry deregisters;
-# the shared request gate (``gate.py``) is released by the integration at the
-# same moment. A set — not a counter — keeps setup idempotent: an automatic
-# retry after ``ConfigEntryNotReady`` re-runs ``async_setup_entry`` and
-# re-adds the same id without double counting, so a failed first refresh can
-# never leave phantom counts (and a running probe) behind.
+# Single source of truth for shared singleton lifetime (see docs/architecture.md §11).
 LOADED_ENTRY_IDS_KEY = "loaded_entry_ids"
 
 
@@ -225,12 +194,7 @@ def ensure_health_monitor_started(
 async def async_note_entry_loaded(
     hass: HomeAssistant, entry_id: str, client: IrishRailClient
 ) -> bool:
-    """Register a loaded config entry; return True when it is the first.
-
-    The API-health monitor is (re)started unconditionally: ``async_start``
-    is idempotent, so a re-setup re-attaches without duplicating the
-    periodic probe.
-    """
+    """Register a loaded config entry; return True when it is the first."""
     loaded: set[str] = hass.data.setdefault(DOMAIN, {}).setdefault(
         LOADED_ENTRY_IDS_KEY, set()
     )
@@ -244,13 +208,7 @@ async def async_note_entry_loaded(
 async def async_note_entry_unloaded(
     hass: HomeAssistant, entry_id: str
 ) -> bool:
-    """Deregister a loaded config entry; return True when none remain.
-
-    A partial platform-unload failure still deregisters here: the entry is
-    leaving anyway, and any automatic retry re-runs ``async_setup_entry``,
-    which re-registers it. When the last entry leaves, the health probe is
-    stopped; the caller releases the shared request gate at the same moment.
-    """
+    """Deregister a loaded config entry; return True when none remain."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     loaded: set[str] = domain_data.get(LOADED_ENTRY_IDS_KEY, set())
     loaded.discard(entry_id)
@@ -268,16 +226,7 @@ async def async_note_entry_unloaded(
 def async_claim_global_provider(
     hass: HomeAssistant, entry: IrishRailConfigEntry
 ) -> bool:
-    """Claim (once per session) providership of the global entities.
-
-    Returns ``True`` when ``entry`` should add them. The first successful
-    claim sticks until the owning entry disappears entirely or HA restarts.
-    If the previous owner was removed, its orphan entity-registry rows for
-    the two global unique IDs are wiped before the new claim is granted
-    so the new entry's ``async_add_entities`` does not collide (and the
-    user does not end up with a "Entity already exists, restore?" prompt
-    every reload).
-    """
+    """Claim providership of the global entities (see docs/architecture.md §11)."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     current_owner = domain_data.get(GLOBAL_PROVIDER_KEY)
     if current_owner == entry.entry_id:
@@ -289,11 +238,7 @@ def async_claim_global_provider(
         )
         if owner_still_installed:
             return False
-        # The previous owner is gone. Wipe the orphan entity rows so the
-        # new claiming entry starts from a clean slate — without this the
-        # global entities would re-bind to a config entry that no longer
-        # exists in the registry, rendering as "entity not available" in
-        # the integrations page.
+        # Wipe orphan entity rows from previous dead owner before re-claiming.
         _purge_orphan_global_entities(hass, expected_owner=current_owner)
     domain_data[GLOBAL_PROVIDER_KEY] = entry.entry_id
     return True
@@ -303,29 +248,14 @@ def async_claim_global_provider(
 def _purge_orphan_global_entities(
     hass: HomeAssistant, *, expected_owner: str
 ) -> None:
-    """Remove global entity rows still pinned to a removed config entry.
-
-    The two global entities share a fixed-identifier "Irish Rail
-    Services" device (see ``const.GLOBAL_SERVICES_IDENTIFIER``). The
-    matching device-registry row is wiped alongside the entity rows
-    so a dead owner does not leave a stray service device behind after
-    an ownership transfer. The membership check is the same as for
-    entity rows: only device entries whose ``config_entries`` set
-    references the dead owner are removed, so a live co-owned device
-    is left alone.
-    """
+    """Remove global entity rows and device still pinned to a removed config entry."""
     entity_registry = er.async_get(hass)
     for unique_id in _GLOBAL_UNIQUE_IDS:
         entity_id = entity_registry.async_get_entity_id(DOMAIN, DOMAIN, unique_id)
         if entity_id is None:
             continue
         registry_entry = entity_registry.entities.get(entity_id)
-        if registry_entry is None:
-            continue
-        # Only remove if the row still points at the dead owner; a manual
-        # reassignment by the user (which HA does not currently expose)
-        # would be left alone.
-        if registry_entry.config_entry_id != expected_owner:
+        if registry_entry is None or registry_entry.config_entry_id != expected_owner:
             continue
         _LOGGER.info(
             "Removing orphan global entity %s (config_entry_id=%s)",
@@ -334,25 +264,13 @@ def _purge_orphan_global_entities(
         )
         entity_registry.async_remove(entity_id)
 
-    # Wipe the shared service device if the dead owner was its sole
-    # config-entry link. A live co-owner would mean the device still
-    # belongs to the integration, so we leave it alone. The new
-    # ``async_get_device(identifiers=...)`` returns at most one device
-    # (identifiers are unique per device), so a direct
-    # ``async_remove_device`` replaces the old ``for dev in
-    # registry.devices.values()`` iteration: equivalent semantics on
-    # the single device that can match the integration's
-    # ``GLOBAL_SERVICES_IDENTIFIER``, and one call to a public API
-    # instead of iterating a private mapping that the modern registry
-    # no longer exposes.
     device_registry = dr.async_get(hass)
-    device_entry = device_registry.async_get_device(
-        identifiers={GLOBAL_SERVICES_IDENTIFIER}
+    device_entry = device_registry.async_get_device_by_identifier(
+        GLOBAL_SERVICES_IDENTIFIER, expected_owner
     )
     if device_entry is not None and device_entry.config_entry_id == expected_owner:
         _LOGGER.info(
-            "Removing orphan Irish Rail Services device %s "
-            "(config_entry_id=%s)",
+            "Removing orphan Irish Rail Services device %s (config_entry_id=%s)",
             device_entry.id,
             expected_owner,
         )

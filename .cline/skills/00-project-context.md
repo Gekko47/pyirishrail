@@ -2,11 +2,12 @@
 
 ## Mission
 
-The `irish_rail` Home Assistant custom integration has completed its Bronze
-migration (Home Assistant 2026.8 Bronze Integration Quality Scale — all 20
-rules satisfied). Current work is driven by
-`.cline/irish-rail-improvement-roadmap.md`: functional improvements, Silver and
-Gold quality rules, and engineering robustness.
+The `irish_rail` Home Assistant custom integration has completed its
+Bronze migration, the v0.3.0 Clean Baseline, and the pre-v0.3.0
+improvement roadmap. The currently active plan is the **Streamline
+Roadmap** (`.cline/streamline-roadmap.md`) — a maintainability pass
+that preserves Platinum quality-scale compliance and the 100% line
+coverage gate.
 
 Historical origin (for context only):
 - Source project: https://github.com/ttroy50/pyirishrail
@@ -16,15 +17,20 @@ Target integration:
 - domain: `irish_rail`
 - name: `Irish Rail`
 - custom integration, HACS-installable
-- baseline tier: Bronze (complete); roadmap targets Silver, Gold, and Platinum-path items
+- tier: **Platinum** (preserved through the streamline work)
+- governance: 3-tier — roadmap → skill → architecture doc
+  - `.cline/streamline-roadmap.md` — the active plan and per-step gates
+  - `.cline/skills/` — per-step execution discipline
+  - `docs/architecture.md` — long-form design notes the source points to
 
-## Current state (2026-08-30)
+## Current state (2026-08-31)
 
-> **Active work is governed by `.cline/clean-cut-baseline-plan.md` (the
-> v0.3.0 Clean Baseline).** The snapshot below is the **post-Phase 4**
-> state of the repo; the plan file is the source of truth for phase
-> status, decisions, and the changelog. Treat the plan file as the
-> authority; this skill preserves the architecture invariants only.
+> **Active work is governed by `.cline/streamline-roadmap.md`.** The
+> snapshot below is the **post-v0.3.0-baseline** state of the repo; the
+> streamline roadmap is the source of truth for phase status, decisions,
+> and the changelog. Skill 10 governs per-step execution. Treat the
+> streamline roadmap as the authority; this skill preserves the
+> architecture invariants only.
 
 - Async client vendored at `custom_components/irish_rail/pyirishrail/`
   (no PyPI package: the name is owned by an unrelated project; Phase 5.3
@@ -98,22 +104,30 @@ When uncertain:
 
 ## Scope discipline
 
-Work is bounded by the roadmap phases. Do not claim a rule is satisfied without
-implementation plus tests. Classify each item by tier:
-- Phase 1: functional improvements (reconfigure flow = Gold rule, options flow,
-  next-N-trains entities, no-trains semantics)
-- Phase 2: Silver rules (`parallel-updates`, `log-when-unavailable`,
-  `entity-unavailable`, `config-entry-unloading`, `test-coverage`)
-- Phase 3: Gold rules (docs expansion, `icon-translations`,
-  `exception-translations`, `repair-issues`, diagnostics edge cases)
-- Phase 4: engineering (Platinum-path client extraction, conditional requests,
-  adaptive backoff, XML hardening, CI breadth)
-- Phase 5: Platinum tier attainment (typed config entry, test-inclusive mypy
-  gate, extract `api.py` into a top-level `pyirishrail/` sibling package in
-  this same repo and publish to PyPI, evidence & tier-claim paperwork)
+Pre-v0.3.0 work is complete and recorded in
+`.cline/irish-rail-improvement-roadmap.md` and
+`.cline/clean-cut-baseline-plan.md` for historical context. New work is
+governed by the **Streamline Roadmap** (`.cline/streamline-roadmap.md`),
+a maintainability pass with five phases:
 
-Do not turn a stronger-tier requirement into a fake lower-tier rule, and do not
-implement items outside the roadmap without recording them in it.
+- **Phase A** — Docstring pass (lift design history to
+  `docs/architecture.md`; target 0.15 docstring lines per source LOC).
+- **Phase B** — Module consolidation (fold `pyirishrail/` into the
+  integration; merge `gate.py` + `health.py` into a single
+  `_runtime.py` `RuntimeRegistry`; unify the two stops-matrix rebuild
+  implementations).
+- **Phase C** — Sensor consolidation (collapse three per-station
+  sensors into one rich sensor; trim the attribute surface from 18 to
+  ~7 keys).
+- **Phase D** — Cosmetics (tighten README; compress
+  `quality_scale.yaml` from 21 KB to ~7 KB without losing evidence;
+  rename for clarity; v0.4.0 changelog entry).
+- **Phase E** — Test deduplication (optional, low priority).
+
+Platinum quality-scale compliance is preserved through every phase:
+no `done` or `exempt` rule loses its file/function pointer. The 100%
+line coverage gate does not drop. Do not implement items outside
+the active streamline roadmap without recording them there.
 
 ## Actual project tree (post-Phase 5.3, Platinum tier)
 

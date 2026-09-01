@@ -1,4 +1,7 @@
-"""The Irish Rail integration."""
+"""The Irish Rail integration.
+
+See docs/architecture.md §12 for entry setup, update listener, and unload.
+"""
 
 from __future__ import annotations
 
@@ -77,24 +80,7 @@ async def async_setup_entry(
 def _async_drop_stale_identity_registries(
     hass: HomeAssistant, entry: IrishRailConfigEntry, previous_uid: str
 ) -> None:
-    """Remove registry entries belonging to the entry's previous identity.
-
-    Reconfiguring a station/direction pair rewrites the entry's unique ID,
-    which mints fresh entity/device identities. Without cleanup, the previous
-    direction's entities would linger forever as unavailable ghosts (HA never
-    sweeps live registry entries that a reloaded platform stops providing).
-
-    Matching is strictly positive: only items carrying the exact previous
-    identity are removed, and enumeration is scoped to this config entry.
-    Sibling entries at the same station — e.g. an "All" direction alongside
-    a reconfigured Northbound — are different config entries and therefore
-    can never be touched.
-
-    Removal goes through the registries' normal removal, so the entries move
-    into the restorable deleted state tied to this config entry: switching
-    back to the prior direction re-registers them (unique IDs match again)
-    with names, area assignments and customizations intact.
-    """
+    """Remove registry entries belonging to the entry's previous identity."""
     entity_registry = er.async_get(hass)
     old_prefix = f"{previous_uid}_"
     for registry_entry in er.async_entries_for_config_entry(
@@ -114,15 +100,7 @@ def _async_drop_stale_identity_registries(
 async def _async_update_listener(
     hass: HomeAssistant, entry: IrishRailConfigEntry
 ) -> None:
-    """Handle config-entry updates: reload on data changes, options in place.
-
-    Since HA 2026.6 an integration with an update listener must own reload
-    scheduling itself (a flow-scheduled reload alongside the listener can
-    double-reload or race; hard error in 2026.12). A change to
-    ``entry.data`` (station/direction identity) therefore schedules exactly
-    one reload here, while option-only changes apply to the live
-    coordinator without any reload.
-    """
+    """Handle config-entry updates: reload on data changes, options in place."""
     coordinator = entry.runtime_data.coordinator
     if coordinator.requires_reload():
         # Drop the previous identity's entities/device before reloading so
@@ -132,8 +110,6 @@ async def _async_update_listener(
             _async_drop_stale_identity_registries(hass, entry, previous_uid)
         hass.config_entries.async_schedule_reload(entry.entry_id)
         return
-    # resolve_scan_interval() guards against invalid/non-numeric stored
-    # option values, falling back to the default instead of raising.
     coordinator.update_interval = resolve_scan_interval(entry)
 
 
@@ -141,20 +117,9 @@ async def async_unload_entry(
     hass: HomeAssistant, entry: IrishRailConfigEntry
 ) -> bool:
     """Unload a config entry."""
-    # Remove any pending empty-data repair issue so a stale warning is not
-    # left behind for an unloaded entry; a reload re-evaluates from scratch.
     ir.async_delete_issue(hass, DOMAIN, empty_data_issue_id(entry))
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    # Deregister this entry: the shared singletons (health probe, request
-    # gate) live exactly as long as the set of loaded entries.
     last = await async_note_entry_unloaded(hass, entry.entry_id)
     if last:
-        # The last Irish Rail entry left. Drop the shared request gate so the
-        # next setup starts a fresh singleton via ``async_get_request_gate``;
-        # the health probe has already been stopped by the deregistration
-        # above. Releasing only here keeps the one-gate-per-HA contract
-        # intact while sibling entries stay loaded — releasing on every
-        # unload would strand those siblings on a dropped gate while new
-        # clients built a second one, splitting the shared rate budget.
         async_release_request_gate(hass)
     return unloaded

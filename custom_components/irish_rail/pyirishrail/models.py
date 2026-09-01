@@ -8,9 +8,10 @@ so consumers can rely on attribute access without ``Optional``-checking
 in hot paths.
 
 These types deliberately do *not* include any Home Assistant imports:
-the library is framework-agnostic by design (Skill 02) so it can be
-unit-tested without an HA fixture and could be consumed by non-HA
-applications in the future.
+the library is framework-agnostic by design so it can be unit-tested
+without an HA fixture and could be consumed by non-HA applications in
+the future. See docs/architecture.md §16 for the vendoring rationale
+and the no-HA-imports invariant.
 """
 
 from __future__ import annotations

@@ -72,6 +72,57 @@ jobs:
       - name: Ruff lint (integration + tests)
         run: ruff check custom_components/irish_rail tests/components/irish_rail scripts
 
+      # Streamline roadmap gate (Phase A acceptance):
+      # docstring density must stay at or below 0.20 lines per source
+      # LOC during Phase A and 0.15 after Phase A completes. The
+      # streamline-roadmap also bans "Skill N" / "Phase N" / "roadmap N"
+      # cross-references in source (those are project-internal
+      # scratchpad breadcrumbs that belong in the active roadmap file).
+      # See .cline/streamline-roadmap.md Phase A and
+      # .cline/skills/10-streamline-execution.md §1.
+      - name: Docstring density + project-internal reference gate
+        run: |
+          python - <<'PY'
+          import re, sys
+          from pathlib import Path
+          root = Path("custom_components/irish_rail")
+          py_files = [p for p in root.rglob("*.py") if "__pycache__" not in p.parts]
+          total_loc = 0
+          total_doc = 0
+          for p in py_files:
+              text = p.read_text(encoding="utf-8")
+              loc = sum(1 for _ in text.splitlines() if _.strip())
+              doc = sum(
+                  len(m.group(1).splitlines())
+                  for m in re.finditer(r'"""(.*?)"""', text, re.DOTALL)
+              )
+              total_loc += loc
+              total_doc += doc
+          density = total_doc / total_loc if total_loc else 0
+          print(f"docstring lines: {total_doc}  source LOC: {total_loc}  density: {density:.3f}")
+          # Phase A intermediate gate; tighten to 0.15 in a later commit
+          # once Phase A lands.
+          if density > 0.20:
+              sys.exit(
+                  f"docstring density {density:.3f} exceeds the Phase A gate of 0.20; "
+                  f"see .cline/streamline-roadmap.md Phase A"
+              )
+          # Project-internal cross-references belong in the active
+          # roadmap file, not in source.
+          offenders: list[str] = []
+          for p in py_files:
+              for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+                  if re.search(r"\b(Skill\s+\d+|Phase\s+\d|roadmap\s+\d\.\d|roadmap\s+\d\.)", line):
+                      offenders.append(f"{p}:{i}: {line.rstrip()}")
+          if offenders:
+              for o in offenders:
+                  print(o)
+              sys.exit(
+                  "project-internal cross-reference(s) found in source; "
+                  "delete the reference or replace with a docs/architecture.md pointer"
+              )
+          PY
+
       # mypy covers the integration *and* its tests, mirroring the
       # home-assistant/core ``.strict-typing`` convention. The bundled
       # ``pyirishrail/`` client module is included in the strict run.

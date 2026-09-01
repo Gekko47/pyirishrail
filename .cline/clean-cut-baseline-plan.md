@@ -183,3 +183,17 @@ keyword, not because the doc is dangerous but because the policy is
 - [x] CI green on master for the release commit; tag `v0.3.0` (pending push)
 - [x] Every `done` in `quality_scale.yaml` carries a correct, current pointer
 - [x] Roadmap decisions recorded; changelog complete; README professional and lean
+
+---
+
+## Status: COMPLETE (v0.3.0 Clean Baseline released 2026-08-30)
+
+This plan is the completion record for the v0.3.0 work. All
+boxes are ticked; the changelog entry
+([`CHANGELOG.md`](../CHANGELOG.md)) is closed.
+
+**For new work, see `.cline/streamline-roadmap.md`** — a
+maintainability pass that preserves the Platinum quality scale
+and 100% coverage gate that this plan established. Skill 10
+governs per-step execution; `docs/architecture.md` is the design
+source of truth.

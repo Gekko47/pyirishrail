@@ -22,22 +22,23 @@ CONF_STOPS_AT = "stops_at"
 CONF_ENABLE_DIRECTION_FILTER = "enable_direction_filter"
 CONF_ENABLE_STOPS_AT_FILTER = "enable_stops_at_filter"
 
-# Bounds for the user-configurable polling interval (roadmap 1.2).
+# Bounds for the user-configurable polling interval.
+# See docs/architecture.md §13.
 MIN_SCAN_INTERVAL_SECONDS = 30
 MAX_SCAN_INTERVAL_SECONDS = 600
 
-# Number of upcoming trains exposed via the ``upcoming_trains`` attribute
-# (roadmap 1.3). Configurable at setup and changeable later via options.
+# Number of upcoming trains exposed via the ``upcoming_trains`` attribute.
+# See docs/architecture.md §15 for the attribute contract.
 DEFAULT_NUM_TRAINS = 3
 MIN_NUM_TRAINS = 1
 MAX_NUM_TRAINS = 5
 
-# Service hours for the persistent-empty-data repair issue (roadmap Phase 3,
-# Gold rule ``repair-issues``). Irish Rail services run until around
-# midnight, so the gate below stays open through every evening hour; empty
-# responses between 00:00 and 06:00 are a normal overnight quiet period,
-# while a persistent empty result during service hours suggests an API or
-# schema change worth surfacing to the user.
+# Service hours for the persistent-empty-data repair issue. Irish Rail
+# services run until around midnight, so the gate below stays open
+# through every evening hour; empty responses between 00:00 and 06:00
+# are a normal overnight quiet period, while a persistent empty result
+# during service hours suggests an API or schema change worth surfacing
+# to the user. See docs/architecture.md §9.
 SERVICE_HOURS_START_HOUR = 6
 # 24 means "through the end of the day": a local (Europe/Dublin) hour never
 # reaches 24, so the half-open check keeps the gate open for all of 06:00-23:59
@@ -55,11 +56,12 @@ EMPTY_DATA_ISSUE_THRESHOLD = 10
 # passenger information (RTPI) in Home Assistant remains fresh.
 DEFAULT_SCAN_INTERVAL = timedelta(minutes=1)
 
-# Adaptive backoff polling (roadmap 4.3). On consecutive failed refreshes
-# the effective polling interval grows geometrically from the user-configured
-# interval, capped at MAX_BACKOFF_INTERVAL; any successful refresh restores
-# the configured interval immediately. The cap deliberately exceeds the
-# normal 600 s maximum so a downed public API is not hammered.
+# Adaptive backoff polling. On consecutive failed refreshes the
+# effective polling interval grows geometrically from the
+# user-configured interval, capped at MAX_BACKOFF_INTERVAL; any
+# successful refresh restores the configured interval immediately.
+# The cap deliberately exceeds the normal 600 s maximum so a downed
+# public API is not hammered. See docs/architecture.md §9.
 BACKOFF_MULTIPLIER = 2
 MAX_BACKOFF_INTERVAL = timedelta(minutes=15)
 
@@ -70,11 +72,11 @@ MAX_BACKOFF_INTERVAL = timedelta(minutes=15)
 # evicted lazily once the cap is exceeded.
 MOVEMENT_CACHE_MAX_ENTRIES = 1024
 
-# "Stops at" option discovery (roadmap 4.8). Live sampling of due trains is
-# the source of truth; its results are persisted per install in a versioned
-# Store file and layered over a bundled seed matrix so the config flow can
-# still offer valid options when no services are currently due (e.g.
-# overnight).
+# "Stops at" option discovery. Live sampling of due trains is the
+# source of truth; its results are persisted per install in a
+# versioned Store file and layered over a bundled seed matrix so the
+# config flow can still offer valid options when no services are
+# currently due (e.g. overnight). See docs/architecture.md §10.
 #
 # Two distinct files now exist:
 # * ``stops_matrix.seed.json`` ships inside the integration folder (read-

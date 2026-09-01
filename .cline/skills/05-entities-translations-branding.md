@@ -103,6 +103,26 @@ Translation keys should exist for:
 
 Keep `strings.json` and `translations/en.json` structurally aligned with current Home Assistant conventions.
 
+## One-sensor-per-station model (streamline roadmap Phase C)
+
+The current design exposes **one** per-station sensor
+(`sensor.<station>_<direction>_next_train_due`) with the full
+arrival context as `extra_state_attributes`. The pre-streamline
+design had three near-identical sensors; the streamline work
+collapses them into one. Maintainers and contributors:
+
+- Do **not** add a second per-station sensor. New arrival detail
+  goes on the existing sensor's `extra_state_attributes` (and
+  every new key needs a `strings.json` translation entry, a
+  `quality_scale.yaml` evidence note, and a test that pins the
+  new key).
+- Do **not** add a per-train list entity. The
+  `upcoming_trains[]` array on the primary sensor's attributes is
+  the contract for "show me the next 5 trains."
+- See `docs/architecture.md` §6 for the rationale (one rich
+  sensor > three thin sensors; HA dashboards consume attributes
+  as easily as separate entities).
+
 ## Next-N-trains entities (roadmap 1.3)
 
 - Decide the surface before implementing and record the decision in the

@@ -138,8 +138,14 @@ https://developers.home-assistant.io/docs/integration_fetching_data/
 
 ## Roadmap-driven architecture work
 
-The improvement roadmap adds these engineering concerns. Apply the same async,
-typed, framework-agnostic principles to each.
+The improvement roadmap adds these engineering concerns. Apply the
+same async, typed, framework-agnostic principles to each.
+
+**The long-form design notes for every non-trivial invariant in the
+integration live in `docs/architecture.md`.** When a docstring in
+source carries design history, lift it into that file and keep the
+source docstring short (contract-only). The streamline roadmap's
+Phase A and Skill 10 §1 govern this discipline.
 
 ### Adaptive backoff polling (roadmap 4.3)
 

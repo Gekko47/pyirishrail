@@ -1,480 +1,73 @@
-# Home Assistant Integration Quality Scale — Irish Rail
-# (all four tiers: Bronze, Silver, Gold, Platinum)
-#
-# Rule IDs verified against the live rules page:
-# https://developers.home-assistant.io/docs/core/integration-quality-scale/rules/
-# Keys use the underscore form of the official hyphenated rule names, matching
-# home-assistant/core quality_scale.yaml convention.
-#
-# Statuses:
-#   done   — implemented and evidenced in this repository (file/function
-#            pointers in each comment)
-#   exempt — the rule's own exception clause applies; justification given
-#   todo   — assessed but not yet satisfied; the precise remaining work is
-#            named here and tracked in .cline/irish-rail-improvement-roadmap.md
+# Irish Rail — HA Quality Scale (Bronze / Silver / Gold / Platinum).
+# Rule IDs: underscore form of the official hyphenated names. Statuses:
+#   done   — evidenced by a file/function pointer in the comment; long-form
+#            rationale lives in docs/architecture.md (or CHANGELOG.md for
+#            per-phase history) and is not duplicated here.
+#   exempt — the rule's own exception clause applies; one-line justification.
+#   todo   — assessed but not yet satisfied; tracked in the active roadmap.
 
 rules:
-  # ── Bronze ──────────────────────────────────────────────────────────────
-  action_setup:
-    status: exempt
-    comment: >
-      Read-only integration with no service actions; nothing to register in
-      async_setup.
+  # Bronze
+  action_setup: {status: exempt, comment: Read-only integration; no service actions to register.}
+  appropriate_polling: {status: done, comment: const.py DEFAULT_SCAN_INTERVAL (60s) via DataUpdateCoordinator; user-adjustable 30s–10min via options flow. See docs/architecture.md §9.}
+  brands: {status: done, comment: brand/icon.png, brand/logo.png, brand/small.png ship with the integration.}
+  common_modules: {status: done, comment: Vendored client at custom_components/irish_rail/pyirishrail/; shared entity base in entity.py; types.py holds IrishRailRuntimeData + IrishRailConfigEntry. See docs/architecture.md §1, §16.}
+  config_flow_test_coverage: {status: done, comment: tests/components/irish_rail/test_config_flow.py covers success, cannot_connect, invalid_station, duplicate-abort paths.}
+  config_flow: {status: done, comment: IrishRailConfigFlow.async_step_user in config_flow.py.}
+  reconfiguration_flow: {status: done, comment: IrishRailConfigFlow.async_step_reconfigure in config_flow.py; same-direction preserves unique ID. See docs/architecture.md §8.}
+  dependency_transparency: {status: done, comment: 'manifest.json requirements: []; XML parsed by stdlib xml.etree.ElementTree; transport is aiohttp (HA core, no listing). Pinned by a test asserting requirements is empty. See docs/architecture.md §4.'}
+  docs_actions: {status: done, comment: 'README "Actions" section.'}
+  docs_conditions: {status: done, comment: 'README "Conditions" section.'}
+  docs_high_level_description: {status: done, comment: 'README "Description" section.'}
+  docs_installation_instructions: {status: done, comment: 'README "Installation" section (HACS + manual); no API key needed.'}
+  docs_removal_instructions: {status: done, comment: 'README "Removal" section.'}
+  docs_triggers: {status: done, comment: 'README "Triggers" section: startup refresh + 60s polling.'}
+  entity_event_setup: {status: done, comment: sensor/binary_sensor/button entities extend CoordinatorEntity; lifecycle subscription handled by the base.}
+  entity_unique_id: {status: done, comment: entity.py builds unique IDs from config_entry.unique_id + per-entity suffix; the two integration-level entities use fixed identifiers. See docs/architecture.md §6.}
+  has_entity_name: {status: done, comment: entity.py sets _attr_has_entity_name = True on the base class.}
+  runtime_data: {status: done, comment: __init__.py stores IrishRailRuntimeData (client + coordinator) on entry.runtime_data; types.py defines the container and IrishRailConfigEntry alias.}
+  test_before_configure: {status: done, comment: config_flow.py validates connection by fetching the station list before allowing entry creation; failures map to cannot_connect.}
+  test_before_setup: {status: done, comment: __init__.py awaits coordinator.async_config_entry_first_refresh(), raising ConfigEntryNotReady on failure. See docs/architecture.md §12.}
+  unique_config_entry: {status: done, comment: 'config_flow.py sets unique_id = "{station_code}_{direction}"; reconfigures to the same direction preserve the existing ID. See docs/architecture.md §8.'}
 
-  appropriate_polling:
-    status: done
-    comment: >
-      const.py DEFAULT_SCAN_INTERVAL (60s) with documented cadence evidence;
-      applied via DataUpdateCoordinator update_interval; user-adjustable
-      30s-10min via options flow with in-place listener update.
+  # Silver
+  parallel_updates: {status: done, comment: sensor.py declares PARALLEL_UPDATES = 0; coordinator-based read-only platform, per-entity updates are pure property reads. See docs/architecture.md §15.}
+  log_when_unavailable: {status: done, comment: coordinator.py raises UpdateFailed on IrishRailError; the built-in DataUpdateCoordinator handles the success-to-failure and recovery log transitions. Pinned by transition tests in test_coordinator.py.}
+  entity_unavailable: {status: done, comment: Entities extend CoordinatorEntity so availability follows the coordinator result; test_sensor.py asserts the IrishRailError -> UpdateFailed -> unavailable path and recovery.}
+  config_entry_unloading: {status: done, comment: __init__.py async_unload_entry calls async_unload_platforms; update listener registered through entry.async_on_unload. See docs/architecture.md §12.}
+  test_coverage: {status: done, comment: CI gate --cov-fail-under=100 in .github/workflows/ci.yml and pyproject.toml; suite runs at exactly 100% line coverage.}
+  action_exceptions: {status: exempt, comment: Read-only integration; mirrors the action_setup exemption.}
+  docs_configuration_parameters: {status: done, comment: 'README Configuration section: direction filter, scan interval 30s–10min, upcoming-trains 1–5, stops-at filter (incl. All sentinel).'}
+  docs_installation_parameters: {status: done, comment: README Installation + Configuration sections document every setup-flow parameter; no API key or credentials required.}
+  integration_owner: {status: done, comment: 'manifest.json declares codeowners ["@Gekko47"].'}
+  reauthentication_flow: {status: exempt, comment: Keyless public RTPI API; the rule's own exception clause applies.}
 
-  brands:
-    status: done
-    comment: brand/icon.png, brand/logo.png and brand/small.png ship with the integration.
+  # Gold
+  diagnostics: {status: done, comment: diagnostics.py implements async_get_config_entry_diagnostics; async_redact_data + _mask_identifier applied. Edge cases pinned in test_diagnostics.py.}
+  docs_examples: {status: done, comment: 'README "Example automations" section: departure alert + delay notification.'}
+  docs_use_cases: {status: done, comment: 'README "Use cases" section: commuter dashboard, delay alerts, presence-based reminders, service-health awareness.'}
+  docs_troubleshooting: {status: done, comment: 'README "Troubleshooting" section: API downtime, SETUP_RETRY, overnight empties, persistent empty-data repair issue, diagnostics.'}
+  entity_device_class: {status: done, comment: next_train_due is TIMESTAMP (ISO 8601 datetime), next_train_delay is DURATION + UnitOfTime.MINUTES + MEASUREMENT, next_train_destination is classless. Connectivity binary sensor uses BinarySensorDeviceClass.CONNECTIVITY. See docs/architecture.md §15.}
+  exception_translations: {status: exempt, comment: No service actions and no HomeAssistantError raised to users (asserted by test_translations.py::test_no_homeassistanterror_raised_to_users); every user-facing failure surface is translation-keyed.}
+  icon_translations: {status: done, comment: icons.json defines per-entity icons (next_train_due, destination, delay, connectivity, rebuild button). Alignment pinned by test_icons.py.}
+  repair_issues: {status: done, comment: coordinator.py raises ir.async_create_issue with translation_key=empty_data_during_service_hours after EMPTY_DATA_ISSUE_THRESHOLD consecutive empty polls in Dublin service hours; cleared on the first data-bearing refresh or when the shared API-health monitor confirms reachability. See docs/architecture.md §9. tests in test_coordinator.py and test_init.py.}
+  devices: {status: done, comment: entity.py sets _attr_device_info on the per-station sensors with identifiers (DOMAIN + entry.unique_id) and entry_type=SERVICE; the two integration-level entities share a fixed-identifier "Irish Rail Services" device. See docs/architecture.md §6, §7.}
+  discovery: {status: exempt, comment: Keyless cloud XML API; no discoverable hardware or network protocol.}
+  discovery_update_info: {status: exempt, comment: Same as discovery; no IP/host configuration.}
+  docs_data_update: {status: done, comment: 'README "Triggers (data updates)" section: immediate first refresh, 60s default polling, user-configurable 30s–10min, failure/retry behaviour.'}
+  docs_known_limitations: {status: done, comment: README "Known Limitations" section lists genuine limitations (unofficial API downtime, plain HTTP/HTTPS, RoI/NI scope, stops-at extra requests) without duplicating bug-tracker material.}
+  docs_supported_devices: {status: exempt, comment: Monitors a national rail timetable service; no device model or hardware compatibility matrix to document.}
+  docs_supported_functions: {status: done, comment: 'README "Entities", "Actions", "Triggers", "Conditions" sections cover every sensor (meaning, device class, unit, state class), attribute table, and behaviour.'}
+  dynamic_devices: {status: done, comment: Per-station devices are created on entry setup; the two integration-level entities are static and live on the fixed-identifier Services device. See docs/architecture.md §6.}
+  entity_category: {status: done, comment: Per-station sensors are primary (default category). Connectivity binary_sensor is DIAGNOSTIC, rebuild button is CONFIG; both share the fixed-identifier Services device; health.py purges orphan device rows on ownership transfer. See docs/architecture.md §7, §11.}
+  entity_disabled_by_default: {status: done, comment: 'sensor.py + entity.py: per-station sensors are the integration''s core value, update ~1/min, no auxiliary diagnostics; enabling by default is correct.'}
+  entity_translations: {status: done, comment: Every sensor sets _attr_translation_key with has_entity_name=True; strings.json + translations/en.json define a name per key. Alignment enforced by test_icons.py and test_translations.py.}
+  stale_devices: {status: done, comment: entity.py binds each service device to exactly one config entry via identifiers=(DOMAIN, entry.unique_id); HA registry cleanup removes the device when the entry is removed. One device per entry ⇒ no hub list to sweep.}
 
-  common_modules:
-    status: done
-    comment: >
-      The async client lives at ``custom_components/irish_rail/pyirishrail/api.py``
-      (with ``custom_components/irish_rail/pyirishrail/errors.py`` and
-      ``custom_components/irish_rail/pyirishrail/models.py``) as an internal
-      module of the integration; it has no Home Assistant imports. ``entity.py``
-      holds the shared entity base, ``types.py`` holds the shared
-      ``IrishRailRuntimeData`` runtime-data container and the
-      ``IrishRailConfigEntry`` type alias. The integration consumes the client
-      via ``from .pyirishrail import ...``; the package is not separately
-      published (manifest.json's requirements array is empty).
-
-  config_flow_test_coverage:
-    status: done
-    comment: >
-      tests/components/irish_rail/test_config_flow.py covers success,
-      cannot_connect, invalid_station and duplicate-abort paths.
-
-  config_flow:
-    status: done
-    comment: IrishRailConfigFlow.async_step_user in config_flow.py.
-
-  reconfiguration_flow:
-    status: done
-    comment: >
-      IrishRailConfigFlow.async_step_reconfigure updates the direction filter
-      in place via async_update_reload_and_abort, preserving the unique ID;
-      strings and full-branch tests included.
-
-  dependency_transparency:
-    status: done
-    comment: >
-      The integration declares no third-party runtime dependencies
-      (``manifest.json`` ``"requirements": []``). XML parsing is performed by
-      Python's standard library ``xml.etree.ElementTree`` on bytes already
-      fetched by aiohttp; the only transport is ``aiohttp``, which Home
-      Assistant core provides (no listing required). Pinned by an explicit
-      test that asserts ``manifest.json["requirements"]`` is empty.
-
-  docs_actions:
-    status: done
-    comment: README "Actions" section describes add/remove/reload effects.
-
-  docs_conditions:
-    status: done
-    comment: README "Conditions" section describes normal vs degraded states.
-
-  docs_high_level_description:
-    status: done
-    comment: README "Description" section.
-
-  docs_installation_instructions:
-    status: done
-    comment: README "Installation" section (HACS + manual); notes no API key needed.
-
-  docs_removal_instructions:
-    status: done
-    comment: README "Removal" section.
-
-  docs_triggers:
-    status: done
-    comment: README "Triggers" section describes startup refresh and 60s polling.
-
-  entity_event_setup:
-    status: done
-    comment: >
-      Entities extend CoordinatorEntity, which subscribes/unsubscribes the
-      coordinator listener in the correct lifecycle methods.
-
-  entity_unique_id:
-    status: done
-    comment: >
-      ``entity.py`` and ``health.py`` build stable unique IDs from the
-      config-entry unique ID plus a static per-entity suffix; the two
-      integration-level entities use fixed-identifier strings
-      (``irish_rail_api_connectivity`` and ``irish_rail_rebuild_stops_matrix``)
-      so their registry identity survives reloads and ownership changes.
-
-  has_entity_name:
-    status: done
-    comment: entity.py sets _attr_has_entity_name = True on the base class.
-
-  runtime_data:
-    status: done
-    comment: >
-      __init__.py stores an IrishRailRuntimeData container (client +
-      coordinator) on entry.runtime_data (types.py).
-
-  test_before_configure:
-    status: done
-    comment: >
-      config_flow.py validates the connection by fetching the station list
-      before allowing entry creation, mapping failures to cannot_connect.
-
-  test_before_setup:
-    status: done
-    comment: >
-      __init__.py awaits coordinator.async_config_entry_first_refresh(),
-      raising ConfigEntryNotReady on failure.
-
-  unique_config_entry:
-    status: done
-    comment: >
-      The config flow sets ``unique_id = "{station_code}_{direction}"``
-      (API-assigned station code + lowercased direction or the literal
-      ``all`` sentinel) and aborts if already configured, allowing one
-      entry per station per direction filter while preventing exact
-      duplicates. Reconfiguring to a different direction claims a new
-      unique ID; reconfiguring to the same direction preserves the
-      existing ID (Phase 2 regression: ``test_reconfigure_unchanged_direction_skips_reload``).
-
-  # ── Silver ────────────────────────────────────────────────────────────────
-  parallel_updates:
-    status: done
-    comment: >
-      sensor.py declares PARALLEL_UPDATES = 0: the platform is read-only and
-      all three entities share one DataUpdateCoordinator refresh, so
-      per-entity updates are pure property reads with no outbound calls
-      (official rule guidance for coordinator-based read-only platforms).
-
-  log_when_unavailable:
-    status: done
-    comment: >
-      coordinator.py raises UpdateFailed on IrishRailError; the built-in
-      DataUpdateCoordinator then logs the error exactly once on the
-      success-to-failure transition and an info recovery line exactly once
-      on failure-to-success (verified against the installed HA
-      helpers/update_coordinator.py). Pinned by explicit transition tests in
-      test_coordinator.py instead of adding duplicate logging.
-
-  entity_unavailable:
-    status: done
-    comment: >
-      All entities extend CoordinatorEntity whose availability follows the
-      coordinator result; test_sensor.py asserts every sensor reports
-      unavailable via the realistic IrishRailError -> UpdateFailed path and
-      recovers on the next successful refresh.
-
-  config_entry_unloading:
-    status: done
-    comment: >
-      ``__init__.py`` implements ``async_unload_entry`` via
-      ``async_unload_platforms``; the options update listener is
-      registered through ``entry.async_on_unload``. test_init.py verifies
-      the unload + reload round-trip (entities removed, entry NOT_LOADED,
-      reload restores the same entities) and the docs in
-      ``README.md`` describe runtime unload/reload behaviour.
-
-  test_coverage:
-    status: done
-    comment: >
-      CI gate raised to 100% (``.github/workflows/ci.yml``
-      ``--cov-fail-under=100``; mirrored by ``pyproject.toml``
-      ``[tool.coverage.report] fail_under = 100``). The v0.3.0 Clean
-      Baseline runs the suite at exactly 100% line coverage.
-
-  action_exceptions:
-    status: exempt
-    comment: >
-      Read-only integration: no service actions are registered and sensor
-      entities expose no callable platform actions, so there is no failure
-      path from which exceptions must be raised (mirrors the action_setup
-      exemption).
-
-  docs_configuration_parameters:
-    status: done
-    comment: >
-      README Configuration section documents every option: direction filter
-      (via reconfigure), scan interval 30s-10min with 60s default, number of
-      upcoming trains 1-5 with default 3, and the stops-at filter including
-      the disabling All sentinel.
-
-  docs_installation_parameters:
-    status: done
-    comment: >
-      README Installation + Configuration sections describe each parameter
-      the setup flow asks for (station dropdown fetched live from the API,
-      optional direction filter, optional number of upcoming trains) and
-      state explicitly that no API key or credentials are required.
-
-  integration_owner:
-    status: done
-    comment: >
-      manifest.json declares codeowners ["@Gekko47"], the owner and
-      maintainer of the repository.
-
-  reauthentication_flow:
-    status: exempt
-    comment: >
-      The integration uses no authentication of any kind (keyless public
-      RTPI API); per the rule's own exception clause, the rule does not
-      apply.
-
-  # ── Gold  ────────────────────────────────────────────────────────────────
-  diagnostics:
-    status: done
-    comment: >
-      diagnostics.py implements async_get_config_entry_diagnostics; entry
-      data/options pass through async_redact_data and identifiers are
-      partially masked (_mask_identifier). Redaction edge cases are pinned in
-      test_diagnostics.py (None/empty/unicode masking, determinism, never
-      set-up entry without runtime_data, sensitive options redacted).
-
-  docs_examples:
-    status: done
-    comment: >
-      README "Example automations" section provides departure-alert and
-      delay-notification automations built on the exposed sensors and
-      attributes.
-
-  docs_use_cases:
-    status: done
-    comment: >
-      README "Use cases" section covers commuter dashboard, delay alerts,
-      presence-based departure reminders and service-health awareness.
-
-  docs_troubleshooting:
-    status: done
-    comment: >
-      README "Troubleshooting" section covers unavailable sensors during API
-      downtime, SETUP_RETRY behaviour, empty data at night (expected), the
-      persistent empty-data repair issue and its resolution steps, plus
-      diagnostics for bug reports.
-
-  entity_device_class:
-    status: done
-    comment: >
-      Phase 3 review as entities grew: ``next_train_due`` is a
-      ``SensorDeviceClass.TIMESTAMP`` carrying the API's expected
-      arrival as an ISO 8601 ``datetime``; ``next_train_delay`` keeps
-      ``SensorDeviceClass.DURATION`` with ``UnitOfTime.MINUTES`` and the
-      ``MEASUREMENT`` state class (genuine minute-based measurements
-      eligible for long-term statistics); ``next_train_destination`` is
-      a classless free-text sensor. The previous ``next_train_type``
-      dedicated entity was retired; the train type now lives on the
-      device's ``extra_state_attributes`` (no separate device class is
-      required for attribute values, only for the primary sensor
-      state). The two integration-level entities carry their
-      semantically-correct classes: the connectivity binary sensor
-      uses ``BinarySensorDeviceClass.CONNECTIVITY`` and the rebuild
-      button is tagged ``EntityCategory.CONFIG`` (no device class
-      required for button entities).
-
-  exception_translations:
-    status: exempt
-    comment: >
-      Audit: the integration registers no service actions and raises no
-      HomeAssistantError toward users (asserted by test_translations.py::
-      test_no_homeassistanterror_raised_to_users); typed API exceptions and
-      coordinator UpdateFailed messages surface only in logs. Every
-      user-facing failure surface that exists - config flow errors/aborts and
-      repair issues - is translation-keyed, pinned by test_translations.py.
-
-  icon_translations:
-    status: done
-    comment: >
-      icons.json defines per-entity default icons for the three sensor
-      translation keys (``next_train_due``: mdi:train,
-      ``next_train_destination``: mdi:map-marker,
-      ``next_train_delay``: mdi:clock-alert-outline) and the two
-      integration-level entities (connectivity binary sensor:
-      mdi:api; stops-matrix rebuild button: mdi:database-refresh).
-      Alignment with entity translation keys is enforced by test_icons.py.
-
-  repair_issues:
-    status: done
-    comment: >
-      ``coordinator.py`` raises ``ir.async_create_issue`` with
-      ``translation_key="empty_data_during_service_hours"``, severity
-      ``WARNING``, ``is_fixable=False``, and a ``learn_more_url`` pointing
-      to the README's *Known Limitations* section. The issue is raised
-      once after ``EMPTY_DATA_ISSUE_THRESHOLD`` consecutive empty polls
-      during Dublin-time service hours and cleared the moment a refresh
-      returns real trains, or whenever the shared API-health monitor
-      confirms the upstream API is reachable.
-      successful-but-empty polls during service hours; created exactly once
-      per streak, deleted on the first data-bearing refresh and on entry
-      unload. Pinned by tests in test_coordinator.py and test_init.py.
-
-  devices:
-    status: done
-    comment: >
-      entity.py sets _attr_device_info on the three per-station sensors with
-      identifiers (DOMAIN + config entry unique_id), station/direction name,
-      manufacturer "Iarnród Éireann / Irish Rail" and entry_type=
-      DeviceEntryType.SERVICE, per the rule's guidance for service-type
-      devices. The two integration-level service entities (API connectivity
-      binary_sensor, stops-matrix rebuild button) also set their own
-      DeviceInfo on a shared fixed-identifier "Irish Rail Services" device
-      (GLOBAL_SERVICES_IDENTIFIER), so the connectivity diagnostic and the
-      rebuild button render together on the integration's Services tab
-      instead of appearing as orphan rows.
-
-  discovery:
-    status: exempt
-    comment: >
-      The rule's own exception clause exempts integrations whose devices
-      cannot be discovered. Irish Rail RTPI is a keyless cloud XML API with
-      no discoverable hardware or network protocol (no mDNS/SSDP/BT/USB);
-      setup is by explicit user station selection.
-
-  discovery_update_info:
-    status: exempt
-    comment: >
-      Same exception clause as the discovery rule; there is no discovery
-      info to update connection data from (cloud service, no IP/host
-      configuration at all).
-
-  docs_data_update:
-    status: done
-    comment: >
-      README "Triggers (data updates)" section documents how data is
-      updated: immediate first refresh on startup/reload, periodic polling
-      every 60 s by default with cadence rationale (server-side ~1 min feed
-      changes), user-configurable 30 s-10 min interval, and failure/retry
-      behaviour.
-
-  docs_known_limitations:
-    status: done
-    comment: >
-      README "Known Limitations" section lists genuine limitations
-      (unofficial API that may experience downtime, unauthenticated plain
-      HTTP/HTTPS service, Republic of Ireland/Northern Ireland scope only,
-      extra per-train API requests when the stops-at filter is active)
-      without duplicating bug-tracker material.
-
-  docs_supported_devices:
-    status: exempt
-    comment: >
-      The rule does not apply to integrations that do not integrate physical
-      devices. This integration monitors a national rail timetable/RTPI
-      service; there is no device model or hardware compatibility matrix to
-      document.
-
-  docs_supported_functions:
-    status: done
-    comment: >
-      README "Entities" section describes each provided sensor (meaning,
-      device class, unit, state class) plus the full attribute table;
-      "Actions", "Triggers (data updates)" and "Conditions" describe the
-      remaining functionality including normal vs degraded behaviour.
-
-  dynamic_devices:
-    status: done
-    comment: >
-      Per-station device creation follows config entries dynamically: adding
-      an entry for a station/direction creates its service device immediately
-      during platform setup. The two integration-level service entities (API
-      connectivity binary_sensor, stops-matrix rebuild button) are static
-      service entities that share their own fixed-identifier DeviceInfo on
-      the integration's "Irish Rail Services" device; they appear under the
-      integration's Services tab and never on any per-station device, so no
-      further re-add listener logic is required.
-
-  entity_category:
-    status: done
-    comment: >
-      Reviewed: the three per-station sensors are primary user-facing train
-      data entities for which the default category (None) is appropriate.
-      The API connectivity binary_sensor is tagged EntityCategory.DIAGNOSTIC
-      and the stops-matrix rebuild button is tagged EntityCategory.CONFIG.
-      Both attach to a single fixed-identifier "Irish Rail Services" device
-      (``entry_type=SERVICE``) so the two integration-level entities appear
-      together on a shared device card in the HA UI rather than as orphan
-      rows in the Entities tab. The device row is purged by
-      ``health.py::_purge_orphan_global_entities`` on ownership transfer
-      so a dead owner never leaves a stray service device behind.
-
-  entity_disabled_by_default:
-    status: done
-    comment: >
-      Reviewed against the rule's noisy/unpopular criterion: all three
-      sensors are the integration's core value, update at most once per poll
-      (~1/min), and none are auxiliary diagnostics (e.g. signal strength),
-      so enabling them by default is correct.
-
-  entity_translations:
-    status: done
-    comment: >
-      Every sensor sets _attr_translation_key with has_entity_name=True;
-      strings.json and translations/en.json define a name per sensor key.
-      Alignment between sensor.py keys and both strings files is enforced by
-      test_icons.py and test_translations.py.
-
-  stale_devices:
-    status: done
-    comment: >
-      Each service device is bound to exactly one config entry via
-      identifiers=(DOMAIN, entry.unique_id); deleting the entry removes its
-      only config-entry link, so Home Assistant's registry cleanup removes
-      the device automatically. With one device per entry there is no hub
-      list from which devices can silently disappear, so no sweep or manual
-      async_remove_config_entry_device is needed.
-
-  # ── Platinum ──────────────────────────────────────────────────────────────
-  # The official Platinum tier contains exactly three rules, all of which
-  # the integration satisfies without an external PyPI package: the
-  # async client is vendored at ``custom_components/irish_rail/pyirishrail``
-  # (the name ``pyirishrail`` on PyPI is owned by an unrelated project, so
-  # the v0.3.0 Clean Baseline reverts the earlier extraction).
-  async_dependency:
-    status: done
-    comment: >
-      ``manifest.json`` declares zero third-party runtime requirements.
-      Every outbound network call is ``await session.get(...)`` on the
-      injected aiohttp session (``pyirishrail/api.py::IrishRailClient._request``).
-      XML parsing is performed by Python's standard library
-      ``xml.etree.ElementTree`` on bytes already fetched by aiohttp,
-      guarded by an explicit pre-parse policy that rejects DTD and
-      entity declarations before the parser is invoked
-      (``pyirishrail/api.py::_DTD_KEYWORDS``); the parser is therefore
-      async at the transport boundary and synchronous (and stateless
-      over the I/O layer) only over the already-fetched response bytes.
-
-  inject_websession:
-    status: done
-    comment: >
-      ``pyirishrail.api.IrishRailClient.__init__`` accepts an injected
-      ``aiohttp.ClientSession`` and never creates one itself.
-      ``custom_components/irish_rail/__init__.py::async_setup_entry`` and
-      both ``config_flow.py`` flow helpers pass
-      ``async_get_clientsession(hass)``; the health probe and the
-      stops-matrix rebuild button reuse the entry's client.
-
-  strict_typing:
-    status: done
-    comment: >
-      All three ``strict-typing`` sub-gaps are closed.
-      (1) ``type IrishRailConfigEntry = ConfigEntry[IrishRailRuntimeData]``
-      is defined in ``custom_components/irish_rail/types.py`` and used in
-      every entry-taking signature across
-      ``__init__.py`` (setup/listener/unload/registry helper),
-      ``coordinator.py`` (constructor + the three ``resolve_*`` helpers +
-      ``empty_data_issue_id``), ``config_flow.py`` (options flow +
-      ``async_get_options_flow``), ``sensor.py``, ``binary_sensor.py``,
-      ``button.py``, ``diagnostics.py``, and ``health.py``. The coordinator
-      import is guarded by ``TYPE_CHECKING`` to break the import cycle
-      while preserving the static narrowing.
-      (2) The CI mypy gate in ``.github/workflows/ci.yml`` runs
-      ``mypy custom_components/irish_rail tests/components/irish_rail``
-      with ``strict = true`` (mirroring the home-assistant/core
-      convention of covering the component and its tests).
-      (3) ``py.typed`` ships vendored inside
-      ``custom_components/irish_rail/pyirishrail/py.typed`` per PEP-561.
-      No ``# type: ignore`` remains in the integration.
+  # Platinum — three rules, all satisfied without an external PyPI package;
+  # the async client is vendored at custom_components/irish_rail/pyirishrail/
+  # (the name is owned on PyPI by an unrelated project, so the v0.3.0
+  # baseline reverted the earlier extraction).
+  async_dependency: {status: done, comment: manifest.json declares zero third-party runtime requirements; every outbound call is await session.get(...) on the injected aiohttp session (pyirishrail/api.py::IrishRailClient._request); XML parsed by stdlib xml.etree.ElementTree on bytes already fetched, guarded by an explicit pre-parse DTD/entity policy (pyirishrail/api.py::_DTD_KEYWORDS). See docs/architecture.md §4, §16.}
+  inject_websession: {status: done, comment: pyirishrail/api.py::IrishRailClient.__init__ accepts an injected aiohttp.ClientSession; __init__.py and config_flow.py pass async_get_clientsession(hass); the health probe and rebuild button reuse the entry's client.}
+  strict_typing: {status: done, comment: '(1) type IrishRailConfigEntry = ConfigEntry[IrishRailRuntimeData] in types.py, used in every entry-taking signature. (2) CI mypy gate in .github/workflows/ci.yml runs mypy custom_components/irish_rail tests/components/irish_rail with strict = true. (3) py.typed ships vendored per PEP-561. No # type: ignore remains.'}
