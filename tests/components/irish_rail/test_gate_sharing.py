@@ -18,6 +18,12 @@ from unittest.mock import patch
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.irish_rail._runtime import (
+    async_get_request_gate,
+    async_release_request_gate,
+    get_health_monitor,
+    get_request_gate,
+)
 from custom_components.irish_rail.config_flow import (
     IrishRailConfigFlow,
     IrishRailOptionsFlow,
@@ -28,13 +34,7 @@ from custom_components.irish_rail.const import (
     CONF_STATION_CODE,
     DOMAIN,
 )
-from custom_components.irish_rail.gate import (
-    async_get_request_gate,
-    async_release_request_gate,
-    get_request_gate,
-)
-from custom_components.irish_rail.health import get_health_monitor
-from custom_components.irish_rail.pyirishrail import RequestGate
+from custom_components.irish_rail.request_gate import RequestGate
 from custom_components.irish_rail.types import IrishRailConfigEntry
 
 
@@ -77,7 +77,7 @@ async def test_setup_creates_shared_request_gate_singleton(
     assert get_request_gate(hass) is None
     entry = _add_entry(hass)
     with patch(
-        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -100,7 +100,7 @@ async def test_second_entry_reuses_the_same_shared_gate(
     """
     entry_a = _add_entry(hass, unique_id="PEARS_northbound")
     with patch(
-        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_setup(entry_a.entry_id)
@@ -137,7 +137,7 @@ async def test_unload_last_entry_drops_the_shared_gate(
     """
     entry = _add_entry(hass)
     with patch(
-        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -161,7 +161,7 @@ async def test_unloading_one_of_two_entries_keeps_the_shared_gate(
     """
     entry_a = _add_entry(hass, unique_id="PEARS_northbound")
     with patch(
-        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_setup(entry_a.entry_id)
@@ -234,7 +234,7 @@ async def test_options_flow_uses_the_shared_gate(
     """
     entry = _add_entry(hass)
     with patch(
-        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
         return_value=[],
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)

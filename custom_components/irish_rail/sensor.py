@@ -17,7 +17,7 @@ from homeassistant.util import dt as dt_util
 
 from .coordinator import IrishRailDataUpdateCoordinator, resolve_num_trains
 from .entity import IrishRailEntity
-from .pyirishrail import TrainDueTime
+from .models import TrainDueTime
 from .types import IrishRailConfigEntry, IrishRailRuntimeData
 
 _LOGGER = logging.getLogger(__name__)

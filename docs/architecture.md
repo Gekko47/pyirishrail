@@ -23,7 +23,7 @@
 13. [Config flow: user, reconfigure, options](#config-flow-user-reconfigure-options)
 14. [Stops-matrix rebuild](#stops-matrix-rebuild)
 15. [Sensor: timestamp device class and attribute model](#sensor-timestamp-device-class-and-attribute-model)
-16. [`pyirishrail` vendoring rationale](#pyirishrail-vendoring-rationale)
+16. [Async-client placement: integration-internal modules](#async-client-placement-integration-internal-modules)
 
 ---
 
@@ -34,41 +34,38 @@ custom_components/irish_rail/
 ├── __init__.py             # entry setup/unload, update listener
 ├── binary_sensor.py        # connectivity sensor (global)
 ├── button.py               # rebuild stops matrix button (global)
+├── client.py               # IrishRailClient + parse helpers  (was pyirishrail/api.py)
 ├── config_flow.py          # user / reconfigure / options flows
 ├── const.py                # integration constants
 ├── coordinator.py          # DataUpdateCoordinator + backoff + empty-data issue
 ├── diagnostics.py          # redacted config-entry diagnostics
 ├── entity.py               # IrishRailEntity base
-├── gate.py                 # per-HA request-gate singleton  ← simplify target
-├── health.py               # API health monitor + providership arbitration  ← simplify target
+├── errors.py               # exception hierarchy  (was pyirishrail/errors.py)
 ├── icons.json
 ├── identity.py             # build_unique_id / normalized_direction
+├── lib_const.py            # library-only constants  (was pyirishrail/_const.py)
 ├── manifest.json
 ├── matrix_rebuild.py       # in-process rebuild sweep  ← unify with scripts/build_stops_matrix.py
+├── models.py               # frozen dataclasses  (was pyirishrail/models.py)
 ├── quality_scale.yaml
+├── request_gate.py         # RequestGate primitive  (was pyirishrail/_gate.py)
+├── _runtime.py             # RuntimeRegistry: gate + health singleton lifecycles  (was gate.py + health.py)
 ├── sensor.py               # per-station sensors
 ├── services.yaml
 ├── store.py                # stops-matrix store + bundled seed loader
 ├── strings.json
 ├── translations/en.json
 ├── types.py                # IrishRailRuntimeData + IrishRailConfigEntry alias
-├── pyirishrail/            # vendored framework-agnostic client  ← simplify target
-│   ├── __init__.py         #   public re-exports
-│   ├── _const.py           #   library-only constants
-│   ├── _gate.py            #   RequestGate primitive
-│   ├── api.py              #   IrishRailClient + parse helpers
-│   ├── errors.py           #   exception hierarchy
-│   ├── models.py           #   frozen dataclasses
-│   └── py.typed            #   PEP 561 marker
+├── py.typed                # PEP 561 marker
 └── stops_matrix.seed.json  # bundled seed snapshot
 ```
 
-The vendored `pyirishrail/` is **internal-only**: the package name is
-owned on PyPI by an unrelated project, the integration has no
-non-Home-Assistant consumers, and shipping a separate wheel would
-require a published package the team does not intend to maintain. It
-exists as a sub-package so the client can be unit-tested without any
-Home Assistant imports.
+The async client lives in the integration package itself (no
+`pyirishrail/` sub-package). It is **framework-agnostic** — the five
+modules `client.py`, `request_gate.py`, `models.py`, `errors.py`,
+`lib_const.py` carry zero Home Assistant imports, so they remain
+unit-testable in isolation and a future contributor could split them
+into a separate package if the integration ever grew non-HA consumers.
 
 ## 2. Shared singletons
 
@@ -77,11 +74,11 @@ single lifecycle: the set of loaded config entry ids.
 
 | Key | Owner | Purpose |
 |---|---|---|
-| `loaded_entry_ids` | `health.py` | Authoritative count of loaded entries; the gate and the health monitor are released when this set goes empty. |
-| `request_gate` | `gate.py` | One `RequestGate` shared by every `IrishRailClient` the integration constructs. |
-| `api_health_monitor` | `health.py` | One `IrishRailApiHealthMonitor`; backs the connectivity binary sensor and classifies empty polls. |
+| `loaded_entry_ids` | `_runtime.py` | Authoritative count of loaded entries; the gate and the health monitor are released when this set goes empty. |
+| `request_gate` | `_runtime.py` (`RuntimeRegistry`) | One `RequestGate` shared by every `IrishRailClient` the integration constructs. |
+| `api_health_monitor` | `_runtime.py` (`RuntimeRegistry`) | One `IrishRailApiHealthMonitor`; backs the connectivity binary sensor and classifies empty polls. |
 | `stops_matrix_store` | `store.py` | One `StopsMatrixStore`; the gap-fill merge for live, config-flow, and rebuild writes. |
-| `global_provider_entry_id` | `health.py` | Which entry owns the global connectivity sensor and rebuild button. |
+| `global_provider_entry_id` | `_runtime.py` | Which entry owns the global connectivity sensor and rebuild button. |
 | `global_rebuild_entity` | `button.py` | Live handle to the rebuild button so the service alias can reach it. |
 | `global_last_result` | `button.py` / `diagnostics.py` | Most recent `RebuildResult`, exposed in diagnostics. |
 
@@ -89,18 +86,21 @@ single lifecycle: the set of loaded config entry ids.
 `async_setup_entry`; an `int` counter double-counts and leaks a
 running health probe on every failure.
 
-**Why `gate.py` and `health.py` both touch the set today:**
-`__init__.py` calls `async_note_entry_loaded()` (in `health.py`) and
-`async_get_request_gate()` (in `gate.py`) in sequence, and the unload
-path calls `async_note_entry_unloaded()` and `async_release_request_gate()`
-in sequence. The discipline of "release the gate only when the last
-entry leaves" is enforced by convention only — a comment in `__init__.py`
-calls this out. The streamline roadmap consolidates both modules into a
-single `_runtime.py` registry where the coupling becomes structural.
+**Single writer, structural not by-convention (B3, 2026-09-01):** all
+of the lifecycle state above now lives on one
+`_runtime.RuntimeRegistry` instance keyed on `hass.data[DOMAIN]`, and
+every read and write goes through it. The old `gate.py` + `health.py`
+split kept the two singletons' lifecycles coupled only by an ordering
+convention in `__init__.py`; `_runtime.py` makes the coupling
+structural — `RuntimeRegistry.async_release()` drops the shared gate
+and stops the monitor as one operation when `loaded_entry_ids` empties.
+Module-level functions (`async_get_request_gate`, `get_health_monitor`,
+`async_note_entry_loaded`, …) are thin delegates over the registry, so
+call sites did not need to change beyond their import path.
 
 ## 3. Request gate
 
-`pyirishrail._gate.RequestGate` is a concurrency-and-pacing primitive
+`request_gate.RequestGate` is a concurrency-and-pacing primitive
 that mediates every outbound HTTP call the integration makes against
 the unauthenticated public `api.irishrail.ie` endpoints. It enforces
 two coupled limits:
@@ -650,23 +650,22 @@ declares that no artificial serialization limit is needed.
 
 ---
 
-## 16. `pyirishrail` vendoring rationale
+## 16. Async-client placement: integration-internal modules
 
-The async client library lives at
-`custom_components/irish_rail/pyirishrail/` rather than as a
-PyPI package. The PyPI name `pyirishrail` is owned by an
-unrelated project, so the package is not published; the
-in-tree location keeps the HACS install self-contained
-without a `manifest.json` requirement on an external wheel.
+The async client is a set of framework-agnostic modules
+(`client.py`, `request_gate.py`, `models.py`, `errors.py`,
+`lib_const.py`) sitting next to the Home Assistant integration
+code under `custom_components/irish_rail/`. They do **not**
+import Home Assistant, so they remain unit-testable in
+isolation and a future contributor could split them into a
+separate package if the integration ever grew non-HA consumers.
 
-The client is fully framework-agnostic — it does not import
-Home Assistant — and ships `py.typed` (PEP 561). Strict
-mypy passes clean on the bundled surface via
+The PEP 561 `py.typed` marker ships at the integration root.
+Strict mypy passes clean on the bundled surface via
 `mypy custom_components/irish_rail tests/components/irish_rail`.
 
-The vendoring is the integration's intentional shape; the
-streamline roadmap does not plan to re-publish the package
-to PyPI. Anyone re-adding a PyPI requirement to
-`manifest.json` would re-introduce the v0.3.0 baseline's
-reverted decision.
+The PyPI name `pyirishrail` is owned by an unrelated project;
+the streamline roadmap does not plan to re-publish the client.
+Anyone re-adding a PyPI requirement to `manifest.json` would
+re-introduce the v0.3.0 baseline's reverted decision.
 

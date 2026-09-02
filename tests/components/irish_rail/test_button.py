@@ -21,12 +21,13 @@ from custom_components.irish_rail.button import (
     IrishRailRebuildStopsMatrixButton,
     _runtime_client,
 )
+from custom_components.irish_rail.client import IrishRailClient
 from custom_components.irish_rail.const import (
     DOMAIN,
     GLOBAL_HEALTH_UNIQUE_ID,
     GLOBAL_REBUILD_UNIQUE_ID,
 )
-from custom_components.irish_rail.pyirishrail import IrishRailClient, TrainMovement
+from custom_components.irish_rail.models import TrainMovement
 from custom_components.irish_rail.types import IrishRailConfigEntry
 
 
@@ -52,11 +53,11 @@ async def _setup_entry(hass: HomeAssistant) -> MockConfigEntry:
     entry.add_to_hass(hass)
     with (
         patch(
-            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_all_stations",
+            "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
             new=AsyncMock(return_value=[]),
         ),
         patch(
-            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
+            "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
             new=AsyncMock(return_value=[]),
         ),
     ):
@@ -116,19 +117,19 @@ async def test_press_runs_rebuild_and_reports_attributes(
 
     with (
         patch(
-            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_all_stations",
+            "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
             new=patches["get_all"],
         ),
         patch(
-            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
+            "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
             new=patches["by_code"],
         ),
         patch(
-            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_train_stops",
+            "custom_components.irish_rail.client.IrishRailClient.async_get_train_stops",
             new=patches["stops"],
         ),
         patch(
-            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
+            "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
             side_effect=apply_scoped,
         ),
     ):
@@ -317,19 +318,19 @@ async def test_service_call_drives_the_loaded_button(
 
     with (
         patch(
-            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_all_stations",
+            "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
             new=patches["get_all"],
         ),
         patch(
-            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
+            "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
             new=patches["by_code"],
         ),
         patch(
-            "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_train_stops",
+            "custom_components.irish_rail.client.IrishRailClient.async_get_train_stops",
             new=patches["stops"],
         ),
         patch(
-            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
+            "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
             side_effect=apply_scoped,
         ),
     ):

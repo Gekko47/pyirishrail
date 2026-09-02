@@ -11,7 +11,7 @@ rules:
   action_setup: {status: exempt, comment: Read-only integration; no service actions to register.}
   appropriate_polling: {status: done, comment: const.py DEFAULT_SCAN_INTERVAL (60s) via DataUpdateCoordinator; user-adjustable 30s–10min via options flow. See docs/architecture.md §9.}
   brands: {status: done, comment: brand/icon.png, brand/logo.png, brand/small.png ship with the integration.}
-  common_modules: {status: done, comment: Vendored client at custom_components/irish_rail/pyirishrail/; shared entity base in entity.py; types.py holds IrishRailRuntimeData + IrishRailConfigEntry. See docs/architecture.md §1, §16.}
+  common_modules: {status: done, comment: Framework-agnostic client modules (client.py, request_gate.py, models.py, errors.py, lib_const.py) sit alongside the HA integration code; shared entity base in entity.py; types.py holds IrishRailRuntimeData + IrishRailConfigEntry. See docs/architecture.md §1, §4.}
   config_flow_test_coverage: {status: done, comment: tests/components/irish_rail/test_config_flow.py covers success, cannot_connect, invalid_station, duplicate-abort paths.}
   config_flow: {status: done, comment: IrishRailConfigFlow.async_step_user in config_flow.py.}
   reconfiguration_flow: {status: done, comment: IrishRailConfigFlow.async_step_reconfigure in config_flow.py; same-direction preserves unique ID. See docs/architecture.md §8.}
@@ -59,15 +59,16 @@ rules:
   docs_supported_devices: {status: exempt, comment: Monitors a national rail timetable service; no device model or hardware compatibility matrix to document.}
   docs_supported_functions: {status: done, comment: 'README "Entities", "Actions", "Triggers", "Conditions" sections cover every sensor (meaning, device class, unit, state class), attribute table, and behaviour.'}
   dynamic_devices: {status: done, comment: Per-station devices are created on entry setup; the two integration-level entities are static and live on the fixed-identifier Services device. See docs/architecture.md §6.}
-  entity_category: {status: done, comment: Per-station sensors are primary (default category). Connectivity binary_sensor is DIAGNOSTIC, rebuild button is CONFIG; both share the fixed-identifier Services device; health.py purges orphan device rows on ownership transfer. See docs/architecture.md §7, §11.}
+  entity_category: {status: done, comment: Per-station sensors are primary (default category). Connectivity binary_sensor is DIAGNOSTIC, rebuild button is CONFIG; both share the fixed-identifier Services device; _runtime.py purges orphan device rows on ownership transfer. See docs/architecture.md §7, §11.}
   entity_disabled_by_default: {status: done, comment: 'sensor.py + entity.py: per-station sensors are the integration''s core value, update ~1/min, no auxiliary diagnostics; enabling by default is correct.'}
   entity_translations: {status: done, comment: Every sensor sets _attr_translation_key with has_entity_name=True; strings.json + translations/en.json define a name per key. Alignment enforced by test_icons.py and test_translations.py.}
   stale_devices: {status: done, comment: entity.py binds each service device to exactly one config entry via identifiers=(DOMAIN, entry.unique_id); HA registry cleanup removes the device when the entry is removed. One device per entry ⇒ no hub list to sweep.}
 
   # Platinum — three rules, all satisfied without an external PyPI package;
-  # the async client is vendored at custom_components/irish_rail/pyirishrail/
-  # (the name is owned on PyPI by an unrelated project, so the v0.3.0
-  # baseline reverted the earlier extraction).
-  async_dependency: {status: done, comment: manifest.json declares zero third-party runtime requirements; every outbound call is await session.get(...) on the injected aiohttp session (pyirishrail/api.py::IrishRailClient._request); XML parsed by stdlib xml.etree.ElementTree on bytes already fetched, guarded by an explicit pre-parse DTD/entity policy (pyirishrail/api.py::_DTD_KEYWORDS). See docs/architecture.md §4, §16.}
-  inject_websession: {status: done, comment: pyirishrail/api.py::IrishRailClient.__init__ accepts an injected aiohttp.ClientSession; __init__.py and config_flow.py pass async_get_clientsession(hass); the health probe and rebuild button reuse the entry's client.}
+  # the async client lives in the integration package itself
+  # (client.py, request_gate.py, models.py, errors.py, lib_const.py).
+  # The PyPI name "pyirishrail" is owned by an unrelated project and
+  # the v0.3.0 baseline kept the client vendored rather than published.
+  async_dependency: {status: done, comment: manifest.json declares zero third-party runtime requirements; every outbound call is await session.get(...) on the injected aiohttp session (client.py::IrishRailClient._request); XML parsed by stdlib xml.etree.ElementTree on bytes already fetched, guarded by an explicit pre-parse DTD/entity policy (client.py::_DTD_KEYWORDS). See docs/architecture.md §4.}
+  inject_websession: {status: done, comment: client.py::IrishRailClient.__init__ accepts an injected aiohttp.ClientSession; __init__.py and config_flow.py pass async_get_clientsession(hass); the health probe and rebuild button reuse the entry's client.}
   strict_typing: {status: done, comment: '(1) type IrishRailConfigEntry = ConfigEntry[IrishRailRuntimeData] in types.py, used in every entry-taking signature. (2) CI mypy gate in .github/workflows/ci.yml runs mypy custom_components/irish_rail tests/components/irish_rail with strict = true. (3) py.typed ships vendored per PEP-561. No # type: ignore remains.'}

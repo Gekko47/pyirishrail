@@ -14,6 +14,8 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from ._runtime import get_health_monitor
+from .client import IrishRailClient
 from .const import (
     BACKOFF_MULTIPLIER,
     CONF_DIRECTION,
@@ -35,9 +37,9 @@ from .const import (
     SERVICE_HOURS_END_HOUR,
     SERVICE_HOURS_START_HOUR,
 )
-from .health import get_health_monitor
+from .errors import IrishRailError
 from .identity import build_unique_id
-from .pyirishrail import IrishRailClient, IrishRailError, TrainDueTime
+from .models import TrainDueTime
 from .store import get_stops_store
 from .types import IrishRailConfigEntry
 

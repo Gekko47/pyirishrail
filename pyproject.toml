@@ -1,6 +1,8 @@
-# The ``pyirishrail`` library is bundled inside the integration at
-# ``custom_components/irish_rail/pyirishrail/`` (no separate package
-# layout, no wheel build) so this file is intentionally minimal: it
+# The async client lives inside the integration at
+# ``custom_components/irish_rail/`` as a set of framework-agnostic
+# modules (``client.py``, ``request_gate.py``, ``models.py``,
+# ``errors.py``, ``lib_const.py``; no separate package layout,
+# no wheel build). This file is therefore intentionally minimal: it
 # only configures the development tooling that needs to know where
 # source and tests live. The integration itself is loaded by HACS
 # directly from the directory tree; ``manifest.json`` is the source

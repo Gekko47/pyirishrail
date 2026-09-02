@@ -16,6 +16,14 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.irish_rail._runtime import (
+    IrishRailApiHealthMonitor,
+    async_claim_global_provider,
+    async_note_entry_loaded,
+    async_note_entry_unloaded,
+    get_health_monitor,
+    get_runtime,
+)
 from custom_components.irish_rail.const import (
     DOMAIN,
     GLOBAL_HEALTH_UNIQUE_ID,
@@ -24,14 +32,7 @@ from custom_components.irish_rail.const import (
     GLOBAL_SERVICES_IDENTIFIER,
     HEALTH_CHECK_INTERVAL,
 )
-from custom_components.irish_rail.health import (
-    IrishRailApiHealthMonitor,
-    async_claim_global_provider,
-    async_note_entry_loaded,
-    async_note_entry_unloaded,
-    get_health_monitor,
-)
-from custom_components.irish_rail.pyirishrail import IrishRailConnectionError
+from custom_components.irish_rail.errors import IrishRailConnectionError
 
 
 def _client(error: Exception | None = None) -> MagicMock:
@@ -160,7 +161,7 @@ async def test_async_start_is_idempotent_and_probes_immediately(
         return lambda: unsub_calls.append(True)
 
     with patch(
-        "custom_components.irish_rail.health.async_track_time_interval",
+        "custom_components.irish_rail._runtime.async_track_time_interval",
         side_effect=fake_track,
     ):
         await monitor.async_start()
@@ -235,6 +236,20 @@ async def test_monitor_lifecycle_tracks_loaded_entries(hass: HomeAssistant) -> N
     await first.async_stop()
 
 
+async def test_unload_without_any_registry_reports_true(
+    hass: HomeAssistant,
+) -> None:
+    """An unload when no runtime was ever created is a no-op success.
+
+    ``async_note_entry_unloaded`` is normally called from
+    ``async_unload_entry``, which only runs for a loaded entry, so the
+    no-registry path is defensive. It must report "no entries remain"
+    and neither create state nor start/stop anything.
+    """
+    assert await async_note_entry_unloaded(hass, "NEVER_LOADED") is True
+    assert get_runtime(hass) is None
+
+
 async def test_first_setup_claims_global_provider(hass: HomeAssistant) -> None:
     """The first claiming entry wins; siblings are denied, owner sticky."""
     entry_one = _entry(hass)
@@ -290,7 +305,7 @@ async def test_claim_purges_orphan_global_entity_rows(
     runs alongside the entity-purge branches.
     """
 
-    from custom_components.irish_rail.health import _purge_orphan_global_entities
+    from custom_components.irish_rail._runtime import _purge_orphan_global_entities
 
     dead_owner = "DEAD_OWNER_ID"
 
@@ -360,7 +375,7 @@ async def test_claim_purges_orphan_global_entity_rows(
     with (
         patch.object(er, "async_get", return_value=fake_registry),
         patch.object(dr, "async_get", return_value=fake_device_registry),
-        caplog.at_level("INFO", logger="custom_components.irish_rail.health"),
+        caplog.at_level("INFO", logger="custom_components.irish_rail._runtime"),
     ):
         _purge_orphan_global_entities(hass, expected_owner=dead_owner)
 
@@ -414,7 +429,7 @@ async def test_purge_skips_rows_pinned_to_a_live_owner(
     directly with a stale key).
     """
 
-    from custom_components.irish_rail.health import _purge_orphan_global_entities
+    from custom_components.irish_rail._runtime import _purge_orphan_global_entities
 
     live_entry = _entry(hass, unique_id="PEARS_Northbound")
     entity_registry = er.async_get(hass)
@@ -474,7 +489,7 @@ def test_purge_skips_device_rows_with_unrelated_identifier_or_other_owner(
     """
     from homeassistant.helpers import device_registry as dr
 
-    from custom_components.irish_rail.health import _purge_orphan_global_entities
+    from custom_components.irish_rail._runtime import _purge_orphan_global_entities
 
     dead_owner = "DEAD_OWNER_ID"
     live_owner = "LIVE_OWNER_ID"

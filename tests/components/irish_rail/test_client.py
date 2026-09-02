@@ -11,20 +11,25 @@ import aiohttp
 import pytest
 from aresponses import ResponsesMockServer
 
-import custom_components.irish_rail.pyirishrail.api as ir_api
-from custom_components.irish_rail.pyirishrail import (
+import custom_components.irish_rail.client as ir_client
+from custom_components.irish_rail.client import (
     IrishRailClient,
+    parse_station_data,
+    strip_namespaces,
+)
+from custom_components.irish_rail.errors import (
     IrishRailConnectionError,
     IrishRailParseError,
     IrishRailTimeoutError,
-    RequestGate,
-    TrainDueTime,
-    TrainMovement,
-    parse_station_data,
 )
-from custom_components.irish_rail.pyirishrail._const import (
+from custom_components.irish_rail.lib_const import (
     MOVEMENT_CACHE_MAX_ENTRIES,
 )
+from custom_components.irish_rail.models import (
+    TrainDueTime,
+    TrainMovement,
+)
+from custom_components.irish_rail.request_gate import RequestGate
 
 SAMPLE_STATIONS_XML = """
 <ArrayOfObjStation xmlns="http://api.irishrail.ie/realtime/">
@@ -920,7 +925,6 @@ async def test_station_by_code_stops_at_multiple_candidates_concurrently(
         """
         from xml.etree.ElementTree import fromstring
 
-        from custom_components.irish_rail.pyirishrail import strip_namespaces
 
         async with self._gate.acquire(priority):
             # Inside the gate's critical section, so the sample is
@@ -966,7 +970,7 @@ async def test_station_by_code_stops_at_multiple_candidates_concurrently(
     async with aiohttp.ClientSession() as session:
         gate = RequestGate(max_concurrent=cap, min_interval_seconds=0)
         client = IrishRailClient(session, gate=gate)
-        with patch.object(ir_api.IrishRailClient, "_request", blocking_request):
+        with patch.object(ir_client.IrishRailClient, "_request", blocking_request):
             poll = asyncio.create_task(
                 client.async_get_station_by_code("PEARS", stops_at="Greystones")
             )
@@ -1210,14 +1214,14 @@ def test_parse_station_data_skips_record_on_unexpected_error(
 ) -> None:
     """A record raising mid-parse is skipped with a warning, not fatal."""
     root = fromstring(SAMPLE_STATION_DATA_XML)
-    original = ir_api._find_tag_text
+    original = ir_client._find_tag_text
 
     def flaky(element: Element, tag: str) -> str | None:
         if tag == "Traincode":
             raise ValueError("unexpected malformed value")
         return original(element, tag)
 
-    with patch.object(ir_api, "_find_tag_text", flaky):
+    with patch.object(ir_client, "_find_tag_text", flaky):
         trains = parse_station_data(root)
 
     assert trains == []
@@ -1370,7 +1374,7 @@ def test_scoped_journey_stops_cuts_upstream_and_other_journeys() -> None:
         _journey_movement("Bray", "BRAY", destination="Howth"),
     ]
 
-    scoped = ir_api._scoped_journey_stops(
+    scoped = ir_client._scoped_journey_stops(
         movements, "Greystones", station_code="PEARS"
     )
 
@@ -1403,7 +1407,7 @@ def test_scope_journey_stops_method_delegates_to_helper() -> None:
 
     assert [stop.location for stop in scoped] == ["Bray", "Greystones"]
     # Same answer the helper produces, by construction.
-    expected = ir_api._scoped_journey_stops(
+    expected = ir_client._scoped_journey_stops(
         movements, "Greystones", station_code="PEARS"
     )
     assert [stop.location for stop in scoped] == [
@@ -1418,7 +1422,7 @@ def test_scoped_journey_stops_cuts_by_station_name_fallback() -> None:
         _journey_movement("Bray", "BRAY", destination="Greystones"),
     ]
 
-    scoped = ir_api._scoped_journey_stops(
+    scoped = ir_client._scoped_journey_stops(
         movements,
         "Greystones",
         station_code="UNKNOWN",
@@ -1435,7 +1439,7 @@ def test_scoped_journey_stops_blank_destination_keeps_all_rows() -> None:
         _journey_movement("Bray", "BRAY", destination=""),
     ]
 
-    scoped = ir_api._scoped_journey_stops(
+    scoped = ir_client._scoped_journey_stops(
         movements, "", station_code="PEARS"
     )
 
@@ -1449,7 +1453,7 @@ def test_scoped_journey_stops_unknown_station_returns_rows_uncut() -> None:
         _journey_movement("Bray", "BRAY", destination="Greystones"),
     ]
 
-    scoped = ir_api._scoped_journey_stops(
+    scoped = ir_client._scoped_journey_stops(
         movements, "Greystones", station_code="NOWHERE"
     )
 
@@ -1471,7 +1475,7 @@ def test_scoped_journey_stops_cut_limited_to_contiguous_run() -> None:
         _journey_movement("Howth", "HOWTH", destination="Greystones"),
     ]
 
-    scoped = ir_api._scoped_journey_stops(
+    scoped = ir_client._scoped_journey_stops(
         movements, "Greystones", station_code="PEARS"
     )
 

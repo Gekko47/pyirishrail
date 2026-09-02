@@ -20,15 +20,18 @@ from homeassistant.helpers import (
 )
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from ._runtime import (
+    async_get_request_gate,
+    async_note_entry_loaded,
+    async_note_entry_unloaded,
+)
+from .client import IrishRailClient
 from .const import DOMAIN
 from .coordinator import (
     IrishRailDataUpdateCoordinator,
     empty_data_issue_id,
     resolve_scan_interval,
 )
-from .gate import async_get_request_gate, async_release_request_gate
-from .health import async_note_entry_loaded, async_note_entry_unloaded
-from .pyirishrail import IrishRailClient
 from .types import IrishRailConfigEntry, IrishRailRuntimeData
 
 _LOGGER = logging.getLogger(__name__)
@@ -119,7 +122,7 @@ async def async_unload_entry(
     """Unload a config entry."""
     ir.async_delete_issue(hass, DOMAIN, empty_data_issue_id(entry))
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    last = await async_note_entry_unloaded(hass, entry.entry_id)
-    if last:
-        async_release_request_gate(hass)
+    # Also releases the shared gate and stops the probe when this was
+    # the last loaded entry (single registry write path, see _runtime.py).
+    await async_note_entry_unloaded(hass, entry.entry_id)
     return unloaded

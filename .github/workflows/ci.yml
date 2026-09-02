@@ -1,10 +1,12 @@
 name: CI
 
 # Single-job CI: lint + strict mypy + pytest with 100% line coverage.
-# The async client library is bundled inside the integration at
-# ``custom_components/irish_rail/pyirishrail/`` and is tested as part
-# of the integration suite (see tests/components/irish_rail/test_client.py
-# and test_client_gate.py). ``hassfest`` validates manifest.json.
+# The async client library is part of the integration
+# (``custom_components/irish_rail/client.py``,
+# ``request_gate.py``, ``models.py``, ``errors.py``, ``lib_const.py``)
+# and is tested as part of the integration suite
+# (see tests/components/irish_rail/test_client.py and test_client_gate.py).
+# ``hassfest`` validates manifest.json.
 
 on:
   push:
@@ -53,18 +55,19 @@ jobs:
 
       # D4: the stale-patch-target grep guard. Phase 1 of the v0.3.0
       # Clean Baseline retargeted 117 ``patch("pyirishrail.*"...)`` test
-      # targets to the vendored package; this guard fails the build
-      # the moment a future hand-edit reintroduces the old top-level
-      # name, so the issue cannot reappear silently. The integration's
-      # own ``pyirishrail/`` package is the only legitimate ``pyirishrail``
-      # import, and the tests patch it through the full
-      # ``custom_components.irish_rail.pyirishrail`` path. ``grep -Pnz``
+      # targets to the vendored package; the streamline Phase B1
+      # (2026-09-01) collapsed the sub-package into the integration,
+      # so the legacy guard now checks for the obsolete
+      # ``pyirishrail.*`` patch target and fails the build the
+      # moment a future hand-edit reintroduces it. The valid path
+      # is now ``custom_components.irish_rail.client.IrishRailClient.X``
+      # (the class lives directly in ``client.py``). ``grep -Pnz``
       # matches across the arbitrary whitespace that Python allows
       # between ``patch(`` and the quoted target string.
       - name: Guard against stale pyirishrail patch targets
         run: |
           if grep -Pnzq 'patch\s*\(\s*["\x27]pyirishrail\.' tests/components/irish_rail; then
-            echo "::error::stale 'pyirishrail.X' patch target found in tests; use 'custom_components.irish_rail.pyirishrail.X' instead"
+            echo "::error::stale 'pyirishrail.X' patch target found in tests; use 'custom_components.irish_rail.client.IrishRailClient.X' instead"
             grep -Pnz 'patch\s*\(\s*["\x27]pyirishrail\.' tests/components/irish_rail
             exit 1
           fi
@@ -124,8 +127,11 @@ jobs:
           PY
 
       # mypy covers the integration *and* its tests, mirroring the
-      # home-assistant/core ``.strict-typing`` convention. The bundled
-      # ``pyirishrail/`` client module is included in the strict run.
+      # home-assistant/core ``.strict-typing`` convention. The
+      # framework-agnostic client modules
+      # (``client.py`` / ``request_gate.py`` / ``models.py`` /
+      # ``errors.py`` / ``lib_const.py``) are included in the
+      # strict run via the package root.
       - name: Mypy strict (integration + tests)
         run: mypy custom_components/irish_rail tests/components/irish_rail
 

@@ -13,6 +13,8 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFl
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from ._runtime import async_get_request_gate
+from .client import IrishRailClient
 from .const import (
     CONF_DIRECTION,
     CONF_ENABLE_DIRECTION_FILTER,
@@ -31,9 +33,9 @@ from .const import (
     MIN_NUM_TRAINS,
     MIN_SCAN_INTERVAL_SECONDS,
 )
-from .gate import async_get_request_gate
+from .errors import IrishRailError
 from .identity import build_unique_id
-from .pyirishrail import IrishRailClient, IrishRailError, Station
+from .models import Station
 from .store import async_load_bundled_stops_matrix, get_stops_store, lookup_in_matrix
 from .types import IrishRailConfigEntry
 

@@ -36,11 +36,9 @@ import aiohttp
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
-from custom_components.irish_rail.pyirishrail import (
-    IrishRailClient,
-    IrishRailError,
-    TrainMovement,
-)
+from custom_components.irish_rail.client import IrishRailClient
+from custom_components.irish_rail.errors import IrishRailError
+from custom_components.irish_rail.models import TrainMovement
 from custom_components.irish_rail.store import (
     ALL_DIRECTIONS_KEY,
     STOPS_STORE_VERSION,

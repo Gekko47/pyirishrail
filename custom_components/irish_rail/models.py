@@ -1,17 +1,8 @@
 """Typed dataclasses for the Irish Rail RTPI async client.
 
-The four models below are the public data contract that :mod:`pyirishrail.api`
-exposes. They are immutable (``frozen=True``) so a parsed response cannot
-be mutated in place after construction, and every field uses a concrete
-type (including explicit ``str`` defaults for fields the API may omit)
-so consumers can rely on attribute access without ``Optional``-checking
-in hot paths.
-
-These types deliberately do *not* include any Home Assistant imports:
-the library is framework-agnostic by design so it can be unit-tested
-without an HA fixture and could be consumed by non-HA applications in
-the future. See docs/architecture.md §16 for the vendoring rationale
-and the no-HA-imports invariant.
+Public data contract for :mod:`client`. Immutable (``frozen=True``) so a
+parsed response cannot be mutated in place. No Home Assistant imports;
+see docs/architecture.md §4.
 """
 
 from __future__ import annotations

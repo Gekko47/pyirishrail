@@ -163,7 +163,7 @@ changes the user sees.
 
 **Steps:**
 
-- [ ] **B1 — Fold `pyirishrail/` sub-package into the integration
+- [x] **B1 — Fold `pyirishrail/` sub-package into the integration
   package.** Rename `pyirishrail/api.py` → `client.py`,
   `pyirishrail/_const.py` → `lib_const.py`,
   `pyirishrail/_gate.py` → `request_gate.py` (the file collides
@@ -184,8 +184,8 @@ changes the user sees.
   `gap_fill=True, atomic_dump=False, priority="background"`. The
   two "by design" differences documented in
   `matrix_rebuild.py`'s module docstring become parameters and
-  disappear from the docstring.
-- [ ] **B3 — Merge `gate.py` and `health.py` into a single
+  disappear from the docstring. 
+- [x] **B3 — Merge `gate.py` and `health.py` into a single
   `_runtime.py` module.** A `RuntimeRegistry` dataclass owns the
   `loaded_entry_ids` set, the `RequestGate` instance, the
   `IrishRailApiHealthMonitor`, the `StopsMatrixStore`, and the
@@ -354,4 +354,74 @@ coverage gate.
   evidence for the three Platinum rules and the long Gold rules; the
   roadmap's "~7 KB" target was approximate and the remaining bytes
   are minimum-information pointers, not duplicated prose.
+- 2026-09-01 — B1 executed: `pyirishrail/` sub-package folded into
+  the integration package. `pyirishrail/api.py` → `client.py`,
+  `pyirishrail/_const.py` → `lib_const.py`,
+  `pyirishrail/_gate.py` → `request_gate.py`,
+  `pyirishrail/errors.py` → `errors.py`,
+  `pyirishrail/models.py` → `models.py`, `py.typed` moved to the
+  integration root; the `pyirishrail/__init__.py` re-export layer and
+  `pyirishrail/README.md` deleted. 14 import statements across
+  9 integration modules (`__init__.py`, `button.py`, `config_flow.py`,
+  `coordinator.py`, `gate.py`, `health.py`, `matrix_rebuild.py`,
+  `sensor.py`, `types.py`) and `scripts/build_stops_matrix.py`
+  retargeted to the new flat paths; 12 test files updated (imports
+  plus ~100 `mock.patch()` string targets; the `ir_api` test alias
+  renamed to `ir_client` to match). Duplicate
+  `MOVEMENT_CACHE_MAX_ENTRIES` removed from `const.py`. CI stale-
+  patch-target grep guard and its comment updated to match the new
+  layout. `quality_scale.yaml` Platinum evidence pointers
+  (`async_dependency`, `inject_websession`) and the
+  `common_modules` Bronze pointer updated. `docs/architecture.md`
+  §1 module-layout diagram and §16 vendoring rationale rewritten to
+  reflect the new tree (the `pyirishrail` sub-package is gone).
+  Verbose module docstrings trimmed per Skill 10 §1: the ~85-line
+  XML-policy essay in `client.py`, the ~60-line gate-design essay in
+  `request_gate.py`, the 21-line singleton-lifecycle essay in
+  `gate.py`, and the long rationale blocks in `errors.py`,
+  `lib_const.py`, `models.py`, `entity.py`, `types.py` are now
+  1–3 line contract docstrings with `See docs/architecture.md §N`
+  pointers (where the design history already lives). No behaviour
+  changes. Gates green: 245 passed, 100.00% line coverage across
+  19 integration modules (was 21 — one source file less:
+  `pyirishrail/__init__.py` removed), ruff 0, strict mypy 0 across
+  38 source files (was 39 — one less for the same reason),
+  docstring density 0.194 (Phase A 0.20 gate still passes),
+  project-internal reference gate clean.
+- 2026-09-01 — B3 executed: `gate.py` and `health.py` merged into a
+  single `_runtime.py` module. A `RuntimeRegistry` (held on
+  `hass.data[DOMAIN]` under `"runtime"`) is the only writer to
+  `loaded_entry_ids`, the `RequestGate` reference, and the
+  `IrishRailApiHealthMonitor` reference. Module-level
+  `async_get_request_gate` / `get_health_monitor` /
+  `async_note_entry_loaded` / `async_claim_global_provider` are thin
+  delegates onto the registry so call sites needed only an import
+  path change. The coupling "drop the shared gate when the last
+  entry leaves" is now structural: `RuntimeRegistry.async_release()`
+  is the single point that drops the gate and stops the monitor
+  together, called from `async_note_entry_unloaded` when the
+  loaded set empties. The same release keeps the monitor object
+  itself alive so a reload re-starts the same instance and the
+  probe history survives an unload/reload cycle (preserves the
+  `get_health_monitor(hass) is first` invariant pinned by
+  `test_health.py::test_monitor_lifecycle_tracks_loaded_entries`).
+  6 production files updated (`__init__.py`, `binary_sensor.py`,
+  `button.py`, `config_flow.py`, `coordinator.py`,
+  `diagnostics.py`); 5 test files updated
+  (`test_gate_sharing.py`, `test_global_setup_edges.py`,
+  `test_health.py`, `test_health_suppression.py`,
+  `test_init.py`); the `HEALTH_MONITOR_INSTANCE` constant
+  removed from `const.py`. `docs/architecture.md` §1 (module
+  layout) and §2 (shared-singletons table) updated; the
+  `entity_category` quality-scale pointer rewritten to
+  `_runtime.py`. One new test
+  (`test_unload_without_any_registry_reports_true`) pins the
+  defensive no-registry branch of `async_note_entry_unloaded`.
+  No behaviour changes. Gates green: 246 passed (was 245),
+  100.00% line coverage across 19 integration modules (was 21:
+  `gate.py` + `health.py` collapsed into `_runtime.py`),
+  ruff 0, strict mypy 0 across 37 source files (was 38:
+  one less for the same reason), docstring density 0.194
+  (Phase A 0.20 gate still passes), project-internal
+  reference gate clean.
 

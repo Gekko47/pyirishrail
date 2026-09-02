@@ -12,10 +12,8 @@ from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irish_rail.const import DOMAIN
-from custom_components.irish_rail.pyirishrail import (
-    IrishRailConnectionError,
-    TrainDueTime,
-)
+from custom_components.irish_rail.errors import IrishRailConnectionError
+from custom_components.irish_rail.models import TrainDueTime
 from custom_components.irish_rail.sensor import (
     IrishRailDueTrainSensor,
     _parse_expected_arrival,
@@ -84,7 +82,7 @@ async def _setup_entry(
     )
     entry.add_to_hass(hass)
     with patch(
-        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
         return_value=trains,
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -128,7 +126,7 @@ async def test_failed_refresh_marks_entity_unavailable(
 
     coordinator = entry.runtime_data.coordinator
     with patch(
-        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
         side_effect=Exception("boom"),
     ):
         await coordinator.async_refresh()
@@ -166,7 +164,7 @@ async def test_all_entities_unavailable_after_failed_refresh_then_recover(
     )
 
     with patch(
-        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
         side_effect=IrishRailConnectionError("connection lost"),
     ):
         await coordinator.async_refresh()
@@ -180,7 +178,7 @@ async def test_all_entities_unavailable_after_failed_refresh_then_recover(
 
     # Recovery: the next successful refresh restores availability and values.
     with patch(
-        "custom_components.irish_rail.pyirishrail.api.IrishRailClient.async_get_station_by_code",
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
         return_value=[_mock_train(due_in=15)],
     ):
         await coordinator.async_refresh()

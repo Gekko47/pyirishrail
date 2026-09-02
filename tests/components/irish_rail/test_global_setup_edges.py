@@ -23,11 +23,11 @@ from custom_components.irish_rail import (
 from custom_components.irish_rail import (
     button as ir_button,
 )
-from custom_components.irish_rail.const import DOMAIN
-from custom_components.irish_rail.health import (
+from custom_components.irish_rail._runtime import (
     ensure_health_monitor_started,
     get_health_monitor,
 )
+from custom_components.irish_rail.const import DOMAIN
 from custom_components.irish_rail.types import (
     IrishRailConfigEntry,
     IrishRailRuntimeData,

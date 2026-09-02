@@ -19,15 +19,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.core import HomeAssistant
 
+from custom_components.irish_rail.client import IrishRailClient
+from custom_components.irish_rail.errors import IrishRailConnectionError
 from custom_components.irish_rail.matrix_rebuild import (
     _REBUILD_PRIORITY,
     async_run_matrix_rebuild,
 )
-from custom_components.irish_rail.pyirishrail import (
-    IrishRailClient,
-    IrishRailConnectionError,
-    TrainMovement,
-)
+from custom_components.irish_rail.models import TrainMovement
 from custom_components.irish_rail.store import (
     ALL_DIRECTIONS_KEY,
     get_stops_store,
@@ -109,7 +107,7 @@ def _client_mock(stations: list[MagicMock]) -> MagicMock:
     At runtime the returned object is a real
     :class:`IrishRailClient` instance with a stubbed
     ``aiohttp.ClientSession``, so the module-level
-    ``patch("custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops", ...)``
+    ``patch("custom_components.irish_rail.client.IrishRailClient.scope_journey_stops", ...)``
     used by every test in this file actually reaches the client through
     normal class-level attribute lookup. A bare ``MagicMock()`` would
     shadow the patched method via its auto-generated child mock and the
@@ -182,7 +180,7 @@ async def test_rebuild_writes_every_station_through_stops_store(
             return_value=recording,
         ),
         patch(
-            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
+            "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
             side_effect=_scoped_factory(["Craughill"]),
         ),
         caplog.at_level(logging.WARNING),
@@ -238,7 +236,7 @@ async def test_rebuild_persistence_failure_isolated_per_bucket(
             return_value=store,
         ),
         patch(
-            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
+            "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
             side_effect=_scoped_factory(["Bray"]),
         ),
         caplog.at_level(logging.WARNING),
@@ -284,7 +282,7 @@ async def test_rebuild_output_visible_to_subsequent_lookup(
             return_value=recording,
         ),
         patch(
-            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
+            "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
             side_effect=_scoped_factory(["Howth"]),
         ),
     ):
@@ -329,7 +327,7 @@ async def test_rebuild_uses_background_priority_on_every_call(
             return_value=_RecordingStore(),
         ),
         patch(
-            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
+            "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
             side_effect=_scoped_factory(["Howth"]),
         ),
     ):
@@ -383,7 +381,7 @@ async def test_rebuild_with_existing_observations_unions(
             return_value=recording,
         ),
         patch(
-            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
+            "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
             side_effect=_scoped_factory(["Cherrywood", "Greystones"]),
         ),
     ):
@@ -433,7 +431,7 @@ async def test_rebuild_persists_through_real_storage(
             return_value=real_store,
         ),
         patch(
-            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
+            "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
             side_effect=_scoped_factory(["Dún Laoghaire"]),
         ),
     ):
@@ -469,7 +467,7 @@ async def test_rebuild_invalidates_bundled_seed_cache(
             return_value=_RecordingStore(),
         ),
         patch(
-            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
+            "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
             side_effect=_scoped_factory([]),
         ),
         patch(
@@ -512,7 +510,7 @@ async def test_movement_lookup_failure_skips_train_without_failing(
             return_value=_RecordingStore(),
         ),
         patch(
-            "custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops",
+            "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
             side_effect=fake_scoped,
         ),
         caplog.at_level(logging.WARNING),

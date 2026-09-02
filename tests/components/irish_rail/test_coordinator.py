@@ -29,10 +29,8 @@ from custom_components.irish_rail.coordinator import (
     resolve_scan_interval,
     resolve_stops_at,
 )
-from custom_components.irish_rail.pyirishrail import (
-    IrishRailConnectionError,
-    TrainDueTime,
-)
+from custom_components.irish_rail.errors import IrishRailConnectionError
+from custom_components.irish_rail.models import TrainDueTime
 
 
 def _make_train() -> TrainDueTime:

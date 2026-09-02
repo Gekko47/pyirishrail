@@ -10,15 +10,7 @@ from .coordinator import IrishRailDataUpdateCoordinator
 
 
 class IrishRailEntity(CoordinatorEntity[IrishRailDataUpdateCoordinator]):
-    """Common base for Irish Rail entities.
-
-    The per-station ``DeviceInfo`` deliberately keeps ``name`` to just the
-    station (without the direction suffix). HA renders the config-entry
-    title (``"Dublin Pearse (Northbound)"``) next to the device, so adding
-    the suffix to the device name duplicates text in the UI. ``model`` and
-    ``configuration_url`` are populated so the device card has something to
-    display and the manufacturer link works.
-    """
+    """Common base for Irish Rail entities."""
 
     _attr_has_entity_name = True
 

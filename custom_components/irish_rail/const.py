@@ -1,7 +1,7 @@
 """Constants for the Irish Rail integration.
 
 Library-level constants used by the async client (timeouts, semaphore
-caps, movement cache bounds) now live in :mod:`pyirishrail._const`; this
+caps, movement cache bounds) now live in :mod:`lib_const`; this
 module only carries integration-level concerns (Home Assistant config
 keys, options-flow bounds, service-hours gate, etc.).
 """
@@ -64,13 +64,6 @@ DEFAULT_SCAN_INTERVAL = timedelta(minutes=1)
 # public API is not hammered. See docs/architecture.md §9.
 BACKOFF_MULTIPLIER = 2
 MAX_BACKOFF_INTERVAL = timedelta(minutes=15)
-
-# Per-client cache of train movement histories keyed by
-# ``(train_code, date)``. A running train's stop list only grows during its
-# journey, so caching per date is safe for "does this train stop at X?"
-# filtering; failed lookups are never cached. Entries for other dates are
-# evicted lazily once the cap is exceeded.
-MOVEMENT_CACHE_MAX_ENTRIES = 1024
 
 # "Stops at" option discovery. Live sampling of due trains is the
 # source of truth; its results are persisted per install in a
@@ -139,7 +132,6 @@ HEALTH_PROBE_STATION_CODE = "PEARS"
 REBUILD_DELAY_SECONDS = 0.3
 
 # Keys under ``hass.data[DOMAIN]`` for the shared-global runtime objects.
-HEALTH_MONITOR_INSTANCE = "api_health_monitor"
 GLOBAL_PROVIDER_KEY = "global_provider_entry_id"
 # Stores the most recent RebuildResult dict (from button.py) so diagnostics
 # can report the last stops-matrix rebuild outcome without importing it.

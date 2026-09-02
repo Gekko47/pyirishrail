@@ -7,6 +7,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
+from ._runtime import get_health_monitor
 from .const import (
     CONF_STATION,
     CONF_STATION_CODE,
@@ -14,7 +15,6 @@ from .const import (
     DOMAIN,
     GLOBAL_LAST_REBUILD_KEY,
 )
-from .health import get_health_monitor
 from .types import IrishRailConfigEntry, IrishRailRuntimeData
 
 # Sensitive fields are partially masked (not fully redacted) so maintainers

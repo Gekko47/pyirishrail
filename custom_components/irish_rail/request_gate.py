@@ -1,67 +1,10 @@
 """Concurrency-and-pacing gate for outbound Irish Rail API requests.
 
-The public api.irishrail.ie endpoints are shared infrastructure: one
-Home Assistant instance polling several stations, plus occasional
-configuration-flow lookups, all draw from the same unauthenticated rate
-budget. :class:`RequestGate` is the single point through which every
-outbound request of a client passes, enforcing two coupled limits:
-
-* ``max_concurrent`` — at most N requests in flight at any instant.
-* ``min_interval_seconds`` — minimum wall-clock spacing between two
-  consecutive *gate exits* (the moment an admitted request actually
-  starts its HTTP call).
-
-Design notes (all properties are enforced structurally and pinned by
-``tests/components/irish_rail/test_client_gate.py``):
-
-* **One admission function.**
-  :meth:`RequestGate._admit_eligible_waiters_locked` is the only code
-  that decides who is admitted. It runs at exactly two sites: after a
-  caller registers itself in ``acquire()`` and after a caller gives its
-  slot back in :meth:`RequestGate._release_slot`. A waiter is
-  registered in the queue *before* any admission decision is made about
-  it, which removes the "registered vs. admitted" ambiguity that
-  produced deadlocks/livelocks in earlier designs.
-* **One Event, waited on exactly once.** ``acquire()`` registers, calls
-  the admission function, then awaits its waiter's event a single time.
-  If the sweep admitted the caller, the event is already set and the
-  wait returns immediately; otherwise a future release's sweep sets it.
-  No retry loops, no second waits.
-* **Exit-time reservations (two-phase).** Each admission reserves the
-  caller's earliest allowed gate-exit time under the lock
-  (``_next_exit``), so callers admitted in the same sweep exit spaced
-  ``min_interval_seconds`` apart instead of all leaving simultaneously
-  after a shared sleep. Immediately before each request begins, the
-  caller re-acquires the lock and pushes ``_next_exit`` to at least
-  ``now + min_interval``, so a caller whose sleep returned late (or
-  whose path from the wait to yield was slow) still leaves the gate
-  properly spaced from the next caller. ``_next_exit`` is written from
-  exactly two places: ``_admit_eligible_waiters_locked`` (per
-  admission) and ``acquire`` (per actual exit). ``None`` means "no
-  admission ever" so the first caller never waits.
-* **Cancellation safety.** A cancelled caller either gives back the
-  slot it owns (releasing it for the next eligible waiter) or removes
-  itself from the queue before it was admitted. The event being set is
-  exactly the marker that the sweep incremented the in-flight count on
-  the caller's behalf, so the cleanup branch can be chosen without
-  races. A randomized stress test hammers these paths.
-* **Strict priority.** ``priority="background"`` callers are only
-  admitted when no ``"normal"`` caller is queued, so bulk work (e.g. a
-  network-wide sampling run) cannot delay live polling sharing the
-  same gate. When nothing normal is queued, background callers are
-  served in FIFO order and are not starved. Priority governs
-  *admission order*, not preemption: a background caller that has
-  already crossed the gate is allowed to finish its current HTTP
-  call, so a live poll that arrives while the gate is full of
-  background traffic is admitted within one slot release, not
-  blocked until the background sweep ends.
-
-Throughput derivation: the steady-state admission rate is bounded by
-``1 / min_interval_seconds`` (4 req/s with the 0.25 s default),
-*assuming each request completes in less than ``min_interval_seconds``*
-— if requests take longer, the next admission happens only after the
-previous release and throughput drops accordingly. ``max_concurrent``
-bounds burst parallelism; it is not a throughput knob.
+Single point through which every outbound request of a client passes;
+couples a ``max_concurrent`` cap with a ``min_interval_seconds`` spacing.
+Design history (admission sweep, exit-time reservations, cancellation
+safety, priority rules) lives in docs/architecture.md §3. Behaviour
+pinned by tests/components/irish_rail/test_client_gate.py.
 """
 
 from __future__ import annotations
@@ -96,7 +39,7 @@ class RequestGate:
         async with gate.acquire():
             await session.get(...)
 
-    Several :class:`pyirishrail.api.IrishRailClient` instances can share
+    Several :class:`client.IrishRailClient` instances can share
     one gate by passing the same instance to each constructor; the
     limits then apply across the clients as if they were one caller.
 

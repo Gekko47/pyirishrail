@@ -37,6 +37,11 @@ from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from ._runtime import (
+    async_claim_global_provider,
+    get_health_monitor,
+)
+from .client import IrishRailClient
 from .const import (
     DOMAIN,
     GLOBAL_LAST_REBUILD_KEY,
@@ -44,12 +49,7 @@ from .const import (
     GLOBAL_SERVICES_DEVICE_NAME,
     GLOBAL_SERVICES_IDENTIFIER,
 )
-from .health import (
-    async_claim_global_provider,
-    get_health_monitor,
-)
 from .matrix_rebuild import RebuildResult, async_run_matrix_rebuild
-from .pyirishrail import IrishRailClient
 from .types import IrishRailConfigEntry, IrishRailRuntimeData
 
 _LOGGER = logging.getLogger(__name__)

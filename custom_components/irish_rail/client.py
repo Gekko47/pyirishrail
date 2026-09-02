@@ -10,18 +10,17 @@ from xml.etree.ElementTree import Element
 
 import aiohttp
 
-from ._const import (
-    API_BASE_URL,
-    DEFAULT_TIMEOUT,
-    MOVEMENT_CACHE_MAX_ENTRIES,
-    STATION_TYPE_TO_CODE_DICT,
-)
-from ._gate import RequestGate
 from .errors import (
     IrishRailConnectionError,
     IrishRailError,
     IrishRailParseError,
     IrishRailTimeoutError,
+)
+from .lib_const import (
+    API_BASE_URL,
+    DEFAULT_TIMEOUT,
+    MOVEMENT_CACHE_MAX_ENTRIES,
+    STATION_TYPE_TO_CODE_DICT,
 )
 from .models import (
     Station,
@@ -29,64 +28,14 @@ from .models import (
     TrainMovement,
     TrainPosition,
 )
+from .request_gate import RequestGate
 
 _LOGGER = logging.getLogger(__name__)
 
-# XML safety policy. The stdlib ``xml.etree.ElementTree`` parser on
-# Python 3.14.2 / expat 2.7.5 (the Home Assistant 2026.8 floor) does
-# *not* on its own reject every enabling construct for the classic
-# XML attack classes. Internal subset entities are expanded by
-# default (``XML_PARAM_ENTITY_PARSING_ALWAYS`` is the expat default),
-# so a 10×10×10 billion-laughs bomb parses successfully with the
-# full entity chain expanded in the tree. Empirically verified on
-# 2026-08-30: the bomb parses in 0.4 ms with 1000 chars of expanded
-# content. The ``SetParamEntityParsing(NEVER)`` knob only disables
-# *external* parameter-entity (DTD) processing, not internal subset
-# processing, so it does not block the billion-laughs case either.
-#
-# The integration therefore uses a **two-layer** policy:
-#
-# 1. A pre-parse byte-level substring guard on the raw response
-#    body, looking for any of the five XML 1.0 DTD/enabling
-#    keywords (``<!doctype``, ``<!entity``, ``<!element``,
-#    ``<!attlist``, ``<!notation``). This catches the
-#    billion-laughs bomb (which contains ``<!entity`` in the
-#    internal subset) and every other enabling construct in one
-#    scan, *before* the parser is invoked. The lowercased scan is
-#    case-insensitive on the keyword and the ``&lt;`` entity-
-#    escaped form is *not* a hit (no literal ``<!`` in the raw
-#    bytes).
-#
-# 2. The stdlib ``ET.fromstring`` parser for well-formedness. Any
-#    ``ET.ParseError`` is wrapped as ``IrishRailParseError``. This
-#    catches whitespace-obfuscated forms (``<! DOCTYPE`` etc.)
-#    that the byte-level guard misses because the literal
-#    ``<!doctype`` substring is not present.
-#
-# Earlier designs considered a third layer (a post-parse tree-walk
-# over ``elem.text``/``elem.tail``/``elem.attrib`` values). That
-# layer was removed because it backfires on the real RTPI shape:
-# Irish Rail's serialiser emits special characters in plain text
-# fields using ``&lt;`` rather than CDATA, so the parsed tree
-# contains the literal text ``<!doctype`` in element text and
-# the tree-walk rejected a perfectly valid response. A test
-# (``test_escaped_doctype_substring_in_text_parses``) pins that
-# success path: a ``<StationDesc>`` containing the literal
-# ``<!doctype`` after entity decoding must parse cleanly.
-#
-# The byte-level guard has a known false-positive class:
-# ``<![CDATA[...<!doctype ...]]>`` sections in a station field
-# trip the substring check because the inert prose inside CDATA
-# contains the literal text ``<!doctype``. Irish Rail's RTPI
-# responses use the standard entity-escaped form (``&lt;!doctype``)
-# in plain text fields, not CDATA, so this case is not observed on
-# the real API. The CDATA case is pinned by a regression test
-# that asserts the current reject-on-CDATA behaviour, so the
-# documented tradeoff cannot regress silently. If a future
-# revision ever needs to accept CDATA-bearing payloads, it must
-# explicitly remove that test and document the change in the
-# changelog. See ``CHANGELOG.md`` for the v0.3.0 security
-# discussion.
+# XML safety: pre-parse substring guard for DTD/enabling keywords
+# followed by stdlib ``ET.fromstring``. See docs/architecture.md §4
+# for the policy (why both layers, why no third tree-walk layer,
+# and the documented CDATA-rejection tradeoff).
 
 _DTD_KEYWORDS: tuple[str, ...] = (
     "<!doctype",
@@ -246,10 +195,10 @@ class IrishRailClient:
         """Initialize the client.
 
         ``gate`` lets several clients share one admission gate: pass the
-        same :class:`pyirishrail.RequestGate` instance to each client
+        same :class:`RequestGate` instance to each client
         whose requests must draw from the same pacing budget. The
         Home Assistant integration passes one per-``HomeAssistant``
-        gate (see ``custom_components/irish_rail/gate.py``) to every
+        gate (see ``gate.py``) to every
         client it creates, so the coordinator, both config flows, the
         rebuild button and the health probe all share a single rate
         budget against the public ``api.irishrail.ie`` endpoints. When

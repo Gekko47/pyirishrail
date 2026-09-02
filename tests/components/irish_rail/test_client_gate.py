@@ -15,7 +15,7 @@ from itertools import pairwise
 
 import pytest
 
-from custom_components.irish_rail.pyirishrail import RequestGate
+from custom_components.irish_rail.request_gate import RequestGate
 
 
 class ManualClock:

@@ -38,12 +38,10 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
+from .client import IrishRailClient
 from .const import DUBLIN_TZ, REBUILD_DELAY_SECONDS
-from .pyirishrail import (
-    IrishRailClient,
-    IrishRailError,
-    TrainMovement,
-)
+from .errors import IrishRailError
+from .models import TrainMovement
 from .store import (
     ALL_DIRECTIONS_KEY,
     get_stops_store,

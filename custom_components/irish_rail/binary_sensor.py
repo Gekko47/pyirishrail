@@ -29,16 +29,16 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import (
-    GLOBAL_HEALTH_UNIQUE_ID,
-    GLOBAL_SERVICES_DEVICE_NAME,
-    GLOBAL_SERVICES_IDENTIFIER,
-)
-from .health import (
+from ._runtime import (
     IrishRailApiHealthMonitor,
     async_claim_global_provider,
     ensure_health_monitor_started,
     get_health_monitor,
+)
+from .const import (
+    GLOBAL_HEALTH_UNIQUE_ID,
+    GLOBAL_SERVICES_DEVICE_NAME,
+    GLOBAL_SERVICES_IDENTIFIER,
 )
 from .types import IrishRailConfigEntry
 

@@ -1,7 +1,10 @@
-"""Shared Irish Rail RTPI API health monitoring and global-entity wiring.
+"""Runtime registry for the Irish Rail integration's shared singletons.
 
-See docs/architecture.md §11 for probe semantics, ping coalescing, the
-singleton lifecycle, and providership arbitration.
+The per-HA :class:`RuntimeRegistry` is the single writer to the
+integration's shared state (loaded-entry set, shared request gate,
+API-health monitor), so the singleton lifecycles are structural rather
+than by-convention. Module-level functions are thin delegates onto
+``get_runtime(hass)``. See docs/architecture.md §2, §3 and §11.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
+from .client import IrishRailClient
 from .const import (
     DOMAIN,
     GLOBAL_HEALTH_UNIQUE_ID,
@@ -25,13 +29,16 @@ from .const import (
     GLOBAL_REBUILD_UNIQUE_ID,
     GLOBAL_SERVICES_IDENTIFIER,
     HEALTH_CHECK_INTERVAL,
-    HEALTH_MONITOR_INSTANCE,
     HEALTH_PROBE_STATION_CODE,
 )
-from .pyirishrail import IrishRailClient, IrishRailError
+from .errors import IrishRailError
+from .request_gate import RequestGate
 from .types import IrishRailConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
+
+# Key under ``hass.data[DOMAIN]`` holding the per-HA registry singleton.
+_RUNTIME_KEY = "runtime"
 
 # Unique IDs the global entities register under; cleared from the entity
 # registry when providership transfers to a new owner so the new entry's
@@ -39,11 +46,50 @@ _LOGGER = logging.getLogger(__name__)
 _GLOBAL_UNIQUE_IDS = (GLOBAL_HEALTH_UNIQUE_ID, GLOBAL_REBUILD_UNIQUE_ID)
 
 
+class RuntimeRegistry:
+    """Registry holding the integration's shared singletons.
+
+    Owns the loaded-entry set, the shared :class:`RequestGate` and the
+    :class:`IrishRailApiHealthMonitor`; no other code writes to them.
+    """
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        """Initialize the registry with a fresh gate and no monitor."""
+        self.hass = hass
+        self.loaded_entry_ids: set[str] = set()
+        self.request_gate: RequestGate | None = RequestGate()
+        self.health_monitor: IrishRailApiHealthMonitor | None = None
+
+    @callback
+    def ensure_health_monitor(
+        self, client: IrishRailClient
+    ) -> IrishRailApiHealthMonitor:
+        """Return the health monitor, creating it on first call.
+
+        Idempotent: the first-loaded entry's client wins and later
+        entries reuse the same monitor regardless of their own client.
+        The probe is *not* started here.
+        """
+        if self.health_monitor is None:
+            self.health_monitor = IrishRailApiHealthMonitor(self.hass, client)
+        return self.health_monitor
+
+    async def async_release(self) -> None:
+        """Release the shared singletons at zero loaded entries.
+
+        The gate is dropped so the next user gets a fresh rate budget.
+        The monitor is stopped but its object is kept so a reload
+        restarts the same instance and its probe history survives an
+        unload/reload cycle.
+        """
+        self.request_gate = None
+        if self.health_monitor is not None:
+            await self.health_monitor.async_stop()
 class IrishRailApiHealthMonitor:
     """Probe the RTPI API periodically and remember how it responded.
 
-    See docs/architecture.md §11 for the probe contract and ``healthy: bool | None``
-    initial state.
+    See docs/architecture.md §11 for the probe contract and the
+    ``healthy: bool | None`` initial state.
     """
 
     def __init__(self, hass: HomeAssistant, client: IrishRailClient) -> None:
@@ -164,43 +210,91 @@ class IrishRailApiHealthMonitor:
                 self._ping_task is not None and not self._ping_task.done()
             ),
         }
+@callback
+def get_runtime(hass: HomeAssistant) -> RuntimeRegistry | None:
+    """Return the per-HA runtime registry if one exists (read-only)."""
+    registry = hass.data.get(DOMAIN, {}).get(_RUNTIME_KEY)
+    return registry if isinstance(registry, RuntimeRegistry) else None
 
 
-# ── Singleton lifecycle ─────────────────────────────────────────────────────
+@callback
+def _ensure_runtime(hass: HomeAssistant) -> RuntimeRegistry:
+    """Return the per-HA registry, creating it on first call."""
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    registry = domain_data.get(_RUNTIME_KEY)
+    if not isinstance(registry, RuntimeRegistry):
+        registry = RuntimeRegistry(hass)
+        domain_data[_RUNTIME_KEY] = registry
+    return registry
 
-# Single source of truth for shared singleton lifetime (see docs/architecture.md §11).
-LOADED_ENTRY_IDS_KEY = "loaded_entry_ids"
+
+# ── Gate accessors (thin delegates onto the registry) ───────────────────────
+
+
+def get_request_gate(hass: HomeAssistant) -> RequestGate | None:
+    """Return the per-hass shared request gate, if it exists.
+
+    ``None`` is returned when no entry has created one yet (e.g. before
+    the first config entry is loaded, or after the last one has been
+    unloaded and the registry released it).
+    """
+    registry = get_runtime(hass)
+    if registry is None or registry.request_gate is None:
+        return None
+    return registry.request_gate
+
+
+def async_get_request_gate(hass: HomeAssistant) -> RequestGate:
+    """Return the per-hass shared request gate, creating it on first call.
+
+    Idempotent: every ``IrishRailClient`` the integration constructs is
+    wired to the same gate, so the public-API rate budget is shared.
+    """
+    registry = _ensure_runtime(hass)
+    if registry.request_gate is None:
+        registry.request_gate = RequestGate()
+    return registry.request_gate
+
+
+def async_release_request_gate(hass: HomeAssistant) -> None:
+    """Drop the per-hass shared request gate if present.
+
+    A subsequent :func:`async_get_request_gate` creates a fresh gate,
+    which is cheap (the gate's only state is an ``asyncio.Lock`` and
+    two counters initialised on first acquire).
+    """
+    registry = get_runtime(hass)
+    if registry is not None:
+        registry.request_gate = None
+# ── Health-monitor accessors (thin delegates onto the registry) ─────────────
 
 
 def get_health_monitor(hass: HomeAssistant) -> IrishRailApiHealthMonitor | None:
     """Return the per-hass health monitor singleton, if it exists."""
-    monitor = hass.data.setdefault(DOMAIN, {}).get(HEALTH_MONITOR_INSTANCE)
-    if isinstance(monitor, IrishRailApiHealthMonitor):
-        return monitor
-    return None
+    registry = get_runtime(hass)
+    if registry is None or registry.health_monitor is None:
+        return None
+    return registry.health_monitor
 
 
 def ensure_health_monitor_started(
     hass: HomeAssistant, client: IrishRailClient
 ) -> IrishRailApiHealthMonitor:
-    """Return the running monitor singleton, creating it on first call."""
-    monitor = get_health_monitor(hass)
-    if monitor is None:
-        monitor = IrishRailApiHealthMonitor(hass, client)
-        hass.data.setdefault(DOMAIN, {})[HEALTH_MONITOR_INSTANCE] = monitor
-    return monitor
+    """Return the health monitor singleton, creating it on first call."""
+    return _ensure_runtime(hass).ensure_health_monitor(client)
+
+
+# ── Loaded-entry lifecycle (single source of truth, see §11) ────────────────
 
 
 async def async_note_entry_loaded(
     hass: HomeAssistant, entry_id: str, client: IrishRailClient
 ) -> bool:
     """Register a loaded config entry; return True when it is the first."""
-    loaded: set[str] = hass.data.setdefault(DOMAIN, {}).setdefault(
-        LOADED_ENTRY_IDS_KEY, set()
-    )
-    is_first = not loaded
-    loaded.add(entry_id)
-    monitor = ensure_health_monitor_started(hass, client)
+    registry = _ensure_runtime(hass)
+    is_first = not registry.loaded_entry_ids
+    registry.loaded_entry_ids.add(entry_id)
+    monitor = registry.ensure_health_monitor(client)
     await monitor.async_start()
     return is_first
 
@@ -208,15 +302,19 @@ async def async_note_entry_loaded(
 async def async_note_entry_unloaded(
     hass: HomeAssistant, entry_id: str
 ) -> bool:
-    """Deregister a loaded config entry; return True when none remain."""
-    domain_data = hass.data.setdefault(DOMAIN, {})
-    loaded: set[str] = domain_data.get(LOADED_ENTRY_IDS_KEY, set())
-    loaded.discard(entry_id)
-    if not loaded:
-        monitor = get_health_monitor(hass)
-        if monitor is not None:
-            await monitor.async_stop()
-    return not loaded
+    """Deregister a loaded config entry; return True when none remain.
+
+    At zero loaded entries the registry releases its singletons: the
+    shared gate is dropped and the probe is stopped (the monitor object
+    itself survives a reload cycle; see :meth:`RuntimeRegistry.async_release`).
+    """
+    registry = get_runtime(hass)
+    if registry is None:
+        return True
+    registry.loaded_entry_ids.discard(entry_id)
+    if not registry.loaded_entry_ids:
+        await registry.async_release()
+    return not registry.loaded_entry_ids
 
 
 # ── Global-entity providership arbitration ──────────────────────────────────
