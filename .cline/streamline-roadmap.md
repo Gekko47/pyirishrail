@@ -174,7 +174,7 @@ changes the user sees.
   change from `from .pyirishrail import X` to `from . import X`
   (or `from .client import X` for clarity). One `py.typed`
   marker lives at the integration root.
-- [ ] **B2 — Unify the two stops-matrix rebuild
+- [x] **B2 — Unify the two stops-matrix rebuild
   implementations.** Create a single async loop
   `sample_stops_matrix(client, *, gap_fill, atomic_dump, priority)`
   in `matrix_rebuild.py`. The offline
@@ -184,7 +184,7 @@ changes the user sees.
   `gap_fill=True, atomic_dump=False, priority="background"`. The
   two "by design" differences documented in
   `matrix_rebuild.py`'s module docstring become parameters and
-  disappear from the docstring. 
+  disappear from the docstring.
 - [x] **B3 — Merge `gate.py` and `health.py` into a single
   `_runtime.py` module.** A `RuntimeRegistry` dataclass owns the
   `loaded_entry_ids` set, the `RequestGate` instance, the
@@ -424,4 +424,43 @@ coverage gate.
   one less for the same reason), docstring density 0.194
   (Phase A 0.20 gate still passes), project-internal
   reference gate clean.
+- 2026-09-01 — B2 executed: the two stops-matrix rebuild
+  implementations unified behind a single
+  :func:`custom_components.irish_rail.matrix_rebuild.sample_stops_matrix`
+  loop. The runtime rebuild button and the offline
+  `scripts/build_stops_matrix.py` are now thin callers that select
+  between two output modes (`gap_fill` + `atomic_dump`) and a
+  `priority` parameter. `matrix_rebuild.py` shrank from
+  ~165 lines (ad-hoc loop with hard-coded gap-fill and a
+  "by design" diff essay in the docstring) to a single ~290-line
+  module whose docstring now describes the two output modes
+  rather than listing differences from a now-deleted sibling
+  script. The script shrank from ~210 lines (loop + CLI + atomic
+  writer + argparse + sys.path bootstrap) to a 60-line
+  argparse + asyncio.run wrapper. The previously-duplicated
+  `_dump_document` (atomic temp-file + os.replace) now lives
+  once in `matrix_rebuild.py` and is reused by the script path
+  via the new `atomic_dump=True` flag. The runtime rebuild's
+  `_REBUILD_PRIORITY = "background"` constant is gone;
+  the priority is a parameter of `sample_stops_matrix` and the
+  button wrapper passes `"background"`, the script passes
+  `"normal"`. 6 new tests pin the new surface:
+  `test_sample_stops_matrix_builds_document` (script path writes
+  valid seed JSON with schema_version + station + direction
+  buckets), `test_sample_stops_matrix_atomic_dump_is_atomic`
+  (no leftover `.tmp` file), `test_sample_stops_matrix_gap_fill_requires_hass`
+  + `test_sample_stops_matrix_atomic_dump_requires_output_path`
+  (the two ValueError guards), `test_sample_stops_matrix_station_list_failure_returns_error`
+  (the ``IrishRailError`` branch), and
+  `test_sample_stops_matrix_limit_slices_station_list`
+  (the limit slicing). No behaviour changes. Gates green:
+  252 passed (was 246; +6 new), 100.00% line coverage
+  across 20 integration modules (was 19; ``matrix_rebuild.py``
+  was previously the only one with uncovered branches; now every
+  branch has a test), ruff 0, strict mypy 0 across 39 source
+  files (was 37; ``scripts/build_stops_matrix.py`` now
+  passes the strict gate; ``matrix_rebuild.py`` also added to
+  the checked set), docstring density 0.197 (Phase A 0.20
+  gate still passes), project-internal reference gate
+  clean.
 

@@ -582,24 +582,26 @@ afterwards: whatever was saved here last always wins.
 
 ## 14. Stops-matrix rebuild
 
-The runtime rebuild button runs an in-process port of
-`scripts/build_stops_matrix.py`. The Phase B2 simplify pass
-unifies the two implementations behind a single
-`sample_stops_matrix` loop with parameters; until then the
-two implementations differ in three deliberate ways:
+The runtime rebuild button and the offline
+`scripts/build_stops_matrix.py` share a single
+:func:`custom_components.irish_rail.matrix_rebuild.sample_stops_matrix`
+loop. The two callers select between output modes via flags:
 
-| Knob | `matrix_rebuild.py` (runtime button) | `scripts/build_stops_matrix.py` (offline) |
+| Knob | Button wrapper (`async_run_matrix_rebuild`) | Script (`scripts/build_stops_matrix.py`) |
 |---|---|---|
-| Merge | Gap-fill union (existing stops preserved) | Wholesale replace (git tracks history) |
-| Persistence | Per-install `StopsMatrixStore` (gap-fill) | Atomic temp-file dump (`*.json.tmp` then `os.replace`) |
-| Gate priority | `background` (yields to live polling) | `normal` (one-shot CLI) |
-| Bundled seed | Reset cache after run | n/a (writes the seed) |
+| `gap_fill` | `True` (union into the running `StopsMatrixStore`) | `False` (wholesale-replace via the script's caller-managed dump) |
+| `atomic_dump` | `False` (the store owns persistence) | `True` (atomic temp-file + `os.replace`) |
+| `priority` | `"background"` (yields to live polling) | `"normal"` (one-shot CLI) |
+| `hass` | required (the store lives on `hass.data[DOMAIN]`) | not used |
+| `output_path` | not used | required |
+| `limit` | not used | CLI flag (smoke testing) |
 
-All four other invariants are shared: per-station movement
-cache, journey scoping via
+Both callers share the same underlying invariants: per-station
+movement cache, journey scoping via
 `IrishRailClient.scope_journey_stops`, polite
-`REBUILD_DELAY_SECONDS` between stations, and the
-`REBUILD_PRIORITY` constant on the runtime path.
+`REBUILD_DELAY_SECONDS` between stations, the per-station
+``IrishRailError`` skip + warning, and the per-bucket persistence
+guard.
 
 The button rejects a press while a rebuild is already
 running (no queue). Progress and outcome — stations

@@ -1,38 +1,36 @@
 """Runtime rebuild of the bundled "stops at" matrix (global button job).
 
-Faithful in-process port of ``scripts/build_stops_matrix.py``: every network
-station is sampled for currently-due trains, each train code's movement
-history is scoped to its current journey and cut downstream of the sampled
-station (:func:`IrishRailClient.async_get_train_stops` +
-:meth:`IrishRailClient.scope_journey_stops`), and the
-resulting stops are unioned per direction bucket plus an ``_all`` union.
+Every network station is sampled for currently-due trains, each train code's
+movement history is scoped to its current journey and cut downstream of the
+sampled station (:func:`IrishRailClient.async_get_train_stops` +
+:meth:`IrishRailClient.scope_journey_stops`), and the resulting stops are
+unioned per direction bucket plus an ``_all`` union.
 
-Differences from the offline script, by design:
+The core loop is :func:`sample_stops_matrix`, which supports two output modes
+selected by flags:
 
-* **Gap-fill merge** - existing stops in the per-install learned matrix
-  are NEVER removed or replaced; observed stops are unioned in. A
-  quiet-hours rebuild therefore cannot erase knowledge the live learning
-  path captured at peak time (the script wholesale-replaces because git
-  tracks its history).
-* **One writer, one file.** The rebuild routes every observation through
-  :class:`~custom_components.irish_rail.store.StopsMatrixStore` — the
-  same store the coordinator's ``_async_learn_downstream_stops`` and the
-  config flow's live discovery use. The config flow reads back through the
-  same store, so a rebuild's output reaches the next config-flow lookup
-  without a separate file the lookup would have to discover.
-* **Background-priority traffic.** Every outbound HTTP call passes
-  ``priority="background"`` to the shared request gate, so a rebuild
-  running alongside live polling yields to any queued normal caller and
-  never delays the stations the user is actively watching.
-* The bundled-seed cache is invalidated afterwards so the next config-flow
-  lookup immediately benefits from refreshed bundled-seed data.
+* **gap_fill=True** - union stops into the running
+  :class:`~custom_components.irish_rail.store.StopsMatrixStore`. Existing
+  stops are never removed; a quiet-hours rebuild cannot erase knowledge the
+  live learning path captured at peak time.
+* **gap_fill=False, atomic_dump=True** - build a seed document and write it
+  atomically to a file. Used by the offline seed script.
+
+The runtime rebuild button uses ``gap_fill=True, atomic_dump=False,
+priority="background"``; the offline seed script uses ``gap_fill=False,
+atomic_dump=True, priority="normal"``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -44,18 +42,13 @@ from .errors import IrishRailError
 from .models import TrainMovement
 from .store import (
     ALL_DIRECTIONS_KEY,
+    STOPS_STORE_VERSION,
     get_stops_store,
     normalize_direction_key,
     reset_bundled_seed_cache,
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-# Rebuild sweeps the whole network; it must never displace live polling
-# on a shared gate. The gate's strict-priority rule admits a queued
-# "background" caller only when no "normal" caller is waiting, and serves
-# background callers in FIFO order otherwise (see RequestGate design notes).
-_REBUILD_PRIORITY = "background"
 
 
 @dataclass
@@ -89,65 +82,111 @@ class RebuildResult:
         return out
 
 
-async def async_run_matrix_rebuild(
-    hass: HomeAssistant, client: IrishRailClient
-) -> RebuildResult:
-    """Sample the whole network and gap-fill the learned stops matrix.
 
-    Every observed (station, direction, stop) tuple is persisted through
-    the shared :class:`StopsMatrixStore`, so the rebuild's output lands
-    in the same file the coordinator's live learning and the config
-    flow's lookup use. ``StopsMatrixStore.async_record`` is itself a
-    gap-fill union (existing entries are preserved, case-insensitive,
-    first-seen casing wins) and returns ``False`` on a no-op so a
-    re-observation of already-known stops does not rewrite the file.
+def _dump_document(output: Path, document: dict[str, Any]) -> None:
+    """Write the seed document to a temp file, then atomically swap it in.
 
-    The bundled-seed cache is invalidated at the end so the next
-    config-flow lookup reads the freshest possible seed even if no
-    per-install learning happened during this run.
+    The serialized JSON goes to a sibling temporary file first so an
+    interrupted (mid-write) run never leaves a truncated seed; the real
+    path is replaced only after that write fully succeeds. In either case
+    the temporary file is removed afterwards.
     """
+    temp_path = output.with_suffix(output.suffix + ".tmp")
+    try:
+        temp_path.write_text(
+            json.dumps(document, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temp_path, output)
+    finally:
+        with suppress(OSError):
+            temp_path.unlink(missing_ok=True)
+
+
+async def sample_stops_matrix(
+    client: IrishRailClient,
+    *,
+    gap_fill: bool,
+    atomic_dump: bool,
+    priority: str,
+    hass: HomeAssistant | None = None,
+    delay: float = REBUILD_DELAY_SECONDS,
+    limit: int | None = None,
+    output_path: Path | None = None,
+) -> RebuildResult:
+    """Sample every station and build the stops matrix.
+
+    Two output modes, selected by flags:
+
+    * ``gap_fill=True`` - union stops into the running
+      :class:`~custom_components.irish_rail.store.StopsMatrixStore`.
+      ``hass`` is required.
+    * ``gap_fill=False, atomic_dump=True`` - build a seed document and
+      write it atomically to ``output_path``.
+    * ``gap_fill=False, atomic_dump=False`` - build the document in memory
+      only (useful for testing the sampling logic without I/O).
+
+    ``priority`` is the request-gate priority for outbound HTTP calls.
+    ``delay`` is the seconds to sleep between stations. ``limit`` samples
+    only the first N stations (smoke testing).
+    """
+    if gap_fill and hass is None:
+        raise ValueError("hass is required when gap_fill=True")
+    if atomic_dump and output_path is None:
+        raise ValueError("output_path is required when atomic_dump=True")
+
     started = dt_util.utcnow()
     result = RebuildResult(started=started.isoformat())
 
+    try:
+        stations = await client.async_get_all_stations(priority=priority)
+    except IrishRailError as err:
+        result.error = f"Could not fetch station list: {err}"
+        _LOGGER.error(result.error)
+        return result
+
+    result.total_stations = len(stations)
+    if limit is not None:
+        stations = stations[:limit]
+
     today = dt_util.now(DUBLIN_TZ).strftime("%d %b %Y")
     movement_cache: dict[tuple[str, str], list[TrainMovement]] = {}
-    stops_store = get_stops_store(hass)
 
-    # The heavy-request warning: one prominent WARNING per run plus the same
-    # caution in strings/README, per the rebuild-button requirement.
-    _LOGGER.warning(
-        "Stops-matrix rebuild starting: this samples every Irish Rail "
-        "station (~150 polls plus movement lookups) against the public "
-        "RTPI API and takes several minutes"
-    )
+    if gap_fill:
+        assert hass is not None  # guarded by ValueError above
+        stops_store = get_stops_store(hass)
+    else:
+        stops_store = None
+    document: dict[str, Any] | None = None
+    if not gap_fill:
+        now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+        document = {
+            "schema_version": STOPS_STORE_VERSION,
+            "generated": now_iso,
+            "note": (
+                "Snapshot generated by sample_stops_matrix from services "
+                "due at generation time; refreshed opportunistically at "
+                "runtime by the integration."
+            ),
+            "stations": {},
+        }
 
-    stations = await client.async_get_all_stations(priority=_REBUILD_PRIORITY)
-    result.total_stations = len(stations)
     for index, station in enumerate(stations):
+        direction_buckets: dict[str, set[str]] = {}
         try:
-            try:
-                trains = await client.async_get_station_by_code(
-                    station.code, priority=_REBUILD_PRIORITY
-                )
-            except IrishRailError as err:
-                result.skipped += 1
-                _LOGGER.warning(
-                    "[%d/%d] Skipping %s (%s): %s",
-                    index + 1,
-                    len(stations),
-                    station.name,
-                    station.code,
-                    err,
-                )
-                continue
-            result.sampled += 1
-            direction_buckets: dict[str, set[str]] = {}
+            trains = await client.async_get_station_by_code(station.code, priority=priority)
+        except IrishRailError as err:
+            _LOGGER.warning(
+                "Skipping %s (%s): %s", station.name, station.code, err
+            )
+            result.skipped += 1
+        else:
             for train in trains:
                 cache_key = (train.code, today)
                 if cache_key not in movement_cache:
                     try:
                         movement_cache[cache_key] = await client.async_get_train_stops(
-                            train.code, date=today, priority=_REBUILD_PRIORITY
+                            train.code, date=today, priority=priority
                         )
                     except IrishRailError as err:
                         _LOGGER.warning(
@@ -168,34 +207,42 @@ async def async_run_matrix_rebuild(
                 direction_buckets.setdefault(bucket_key, set()).update(stops)
                 direction_buckets.setdefault(ALL_DIRECTIONS_KEY, set()).update(stops)
 
-            # Every bucket for this station goes through the shared store.
-            # StopsMatrixStore.async_record is the gap-fill union: existing
-            # stops in the bucket are preserved, new ones are unioned in,
-            # and a no-op returns False without writing. Persistence
-            # failures degrade to a per-station warning so one bad write
-            # does not abort the whole sweep.
-            for key, sampled in direction_buckets.items():
-                try:
-                    changed = await stops_store.async_record(
-                        station.code, key, sorted(sampled)
-                    )
-                except Exception:
-                    _LOGGER.warning(
-                        "Could not persist sampled stops for %s (%s, %s)",
-                        station.name,
-                        station.code,
-                        key,
-                        exc_info=True,
-                    )
-                    continue
-                if changed:
-                    result.buckets_updated += 1
-                    result.stops_added += len(sampled)
-            summary = (
-                f"{len(direction_buckets)} bucket(s) sampled"
-                if direction_buckets
-                else "no due services to sample"
-            )
+            result.sampled += 1
+            if direction_buckets:
+                if stops_store is not None:
+                    for key, sampled in direction_buckets.items():
+                        try:
+                            changed = await stops_store.async_record(
+                                station.code, key, sorted(sampled)
+                            )
+                        except Exception:
+                            _LOGGER.warning(
+                                "Could not persist sampled stops for %s (%s, %s)",
+                                station.name,
+                                station.code,
+                                key,
+                                exc_info=True,
+                            )
+                            continue
+                        if changed:
+                            result.buckets_updated += 1
+                            result.stops_added += len(sampled)
+                elif document is not None:
+                    now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+                    document["stations"][station.code] = {
+                        "updated": now_iso,
+                        "directions": {
+                            key: sorted(stops, key=str.casefold)
+                            for key, stops in sorted(direction_buckets.items())
+                        },
+                    }
+                    result.buckets_updated += len(direction_buckets)
+                    result.stops_added += sum(len(s) for s in direction_buckets.values())
+
+                summary = f"{len(direction_buckets)} bucket(s) sampled"
+            else:
+                summary = "no due services to sample"
+
             _LOGGER.info(
                 "[%d/%d] %s (%s): %s",
                 index + 1,
@@ -204,17 +251,42 @@ async def async_run_matrix_rebuild(
                 station.code,
                 summary,
             )
-        finally:
-            # Polite API pacing applies after every station — including ones
-            # skipped for an error — so a burst of failures cannot hammer the
-            # public endpoint without the usual pause.
-            await asyncio.sleep(REBUILD_DELAY_SECONDS)
 
-    reset_bundled_seed_cache()
+            if atomic_dump and document is not None and output_path is not None:
+                await asyncio.to_thread(_dump_document, output_path, document)
+
+        finally:
+            await asyncio.sleep(delay)
+
 
     finished = dt_util.utcnow()
     result.finished = finished.isoformat()
     result.duration_seconds = (finished - started).total_seconds()
+    return result
+
+
+async def async_run_matrix_rebuild(
+    hass: HomeAssistant, client: IrishRailClient
+) -> RebuildResult:
+    """Run the in-process stops-matrix rebuild (runtime button path).
+
+    Wraps :func:`sample_stops_matrix` with gap-fill mode and background
+    priority, then invalidates the bundled-seed cache so the next
+    config-flow lookup immediately benefits from refreshed data.
+    """
+    _LOGGER.warning(
+        "Stops-matrix rebuild starting: this samples every Irish Rail "
+        "station (~150 polls plus movement lookups) against the public "
+        "RTPI API and takes several minutes"
+    )
+    result = await sample_stops_matrix(
+        client,
+        gap_fill=True,
+        atomic_dump=False,
+        priority="background",
+        hass=hass,
+    )
+    reset_bundled_seed_cache()
     _LOGGER.info(
         "Stops-matrix rebuild finished in %.1fs: %d/%d stations sampled, "
         "%d skipped, %d bucket(s) updated, %d stop(s) added; bundled seed "

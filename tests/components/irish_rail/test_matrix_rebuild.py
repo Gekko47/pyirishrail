@@ -11,8 +11,10 @@ so live polling can jump the queue.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,8 +24,9 @@ from homeassistant.core import HomeAssistant
 from custom_components.irish_rail.client import IrishRailClient
 from custom_components.irish_rail.errors import IrishRailConnectionError
 from custom_components.irish_rail.matrix_rebuild import (
-    _REBUILD_PRIORITY,
+    _dump_document,
     async_run_matrix_rebuild,
+    sample_stops_matrix,
 )
 from custom_components.irish_rail.models import TrainMovement
 from custom_components.irish_rail.store import (
@@ -339,16 +342,15 @@ async def test_rebuild_uses_background_priority_on_every_call(
     # the gate actually sees.
     all_stations_kwargs = client.async_get_all_stations.await_args
     assert all_stations_kwargs is not None
-    assert all_stations_kwargs.kwargs.get("priority") == _REBUILD_PRIORITY
+    assert all_stations_kwargs.kwargs.get("priority") == "background"
 
     by_code_kwargs = client.async_get_station_by_code.await_args
     assert by_code_kwargs is not None
-    assert by_code_kwargs.kwargs.get("priority") == _REBUILD_PRIORITY
+    assert by_code_kwargs.kwargs.get("priority") == "background"
 
     train_stops_kwargs = client.async_get_train_stops.await_args
     assert train_stops_kwargs is not None
-    assert train_stops_kwargs.kwargs.get("priority") == _REBUILD_PRIORITY
-    assert _REBUILD_PRIORITY == "background"
+    assert train_stops_kwargs.kwargs.get("priority") == "background"
 
 
 async def test_rebuild_with_existing_observations_unions(
@@ -522,3 +524,134 @@ async def test_movement_lookup_failure_skips_train_without_failing(
     assert result.stops_added == 0
     assert result.error is None
     assert "Movement lookup failed" in caplog.text
+
+
+async def test_sample_stops_matrix_builds_document(
+    hass: HomeAssistant,
+    tmp_path: Path,
+) -> None:
+    """sample_stops_matrix with gap_fill=False builds a seed document."""
+    stations = [MagicMock(code="PEARS", name="Dublin Pearse")]
+    client = _client_mock(stations)
+    client.async_get_station_by_code = AsyncMock(
+        return_value=[
+            MagicMock(code="E001", destination="Bray", direction="Northbound"),
+        ]
+    )
+
+    output = tmp_path / "seed.json"
+
+    def fake_scoped(
+        movements: list[TrainMovement],
+        destination: str | None,
+        station_code: str | None,
+        station_name: str | None,
+    ) -> list[TrainMovement]:
+        return [MagicMock(location="Bray")]
+
+    with (
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
+            side_effect=fake_scoped,
+        ),
+    ):
+        result = await sample_stops_matrix(
+            client,
+            gap_fill=False,
+            atomic_dump=True,
+            priority="normal",
+            output_path=output,
+        )
+
+    assert result.error is None
+    assert result.sampled == 1
+    assert result.buckets_updated >= 1
+    assert output.exists()
+
+    document = json.loads(output.read_text())
+    assert "schema_version" in document
+    assert "PEARS" in document["stations"]
+    assert "Bray" in document["stations"]["PEARS"]["directions"]["_all"]
+
+
+async def test_sample_stops_matrix_atomic_dump_is_atomic(
+    hass: HomeAssistant,
+    tmp_path: Path,
+) -> None:
+    """_dump_document writes via temp file and swaps atomically."""
+    output = tmp_path / "seed.json"
+    document = {"schema_version": 1, "stations": {}}
+    _dump_document(output, document)
+    assert output.exists()
+    loaded = json.loads(output.read_text())
+    assert loaded == document
+    # No leftover temp file.
+    assert not output.with_suffix(output.suffix + ".tmp").exists()
+
+
+async def test_sample_stops_matrix_gap_fill_requires_hass() -> None:
+    """gap_fill=True without hass raises ValueError."""
+    client = MagicMock()
+    with pytest.raises(ValueError, match="hass is required"):
+        await sample_stops_matrix(
+            client,
+            gap_fill=True,
+            atomic_dump=False,
+            priority="background",
+        )
+
+
+async def test_sample_stops_matrix_atomic_dump_requires_output_path() -> None:
+    """atomic_dump=True without output_path raises ValueError."""
+    client = MagicMock()
+    with pytest.raises(ValueError, match="output_path is required"):
+        await sample_stops_matrix(
+            client,
+            gap_fill=False,
+            atomic_dump=True,
+            priority="normal",
+        )
+
+
+async def test_sample_stops_matrix_station_list_failure_returns_error() -> None:
+    """When the station list fetch fails, the result carries the error."""
+    client = MagicMock()
+    client.async_get_all_stations = AsyncMock(
+        side_effect=IrishRailConnectionError("network down")
+    )
+
+    result = await sample_stops_matrix(
+        client,
+        gap_fill=False,
+        atomic_dump=False,
+        priority="normal",
+    )
+
+    assert result.error is not None
+    assert "network down" in result.error
+    assert result.total_stations == 0
+
+
+async def test_sample_stops_matrix_limit_slices_station_list() -> None:
+    """limit=N slices the station list to the first N entries."""
+    stations = [
+        MagicMock(code="PEARS", name="Dublin Pearse"),
+        MagicMock(code="KENT", name="Cork Kent"),
+        MagicMock(code="GALW", name="Galway"),
+    ]
+    client = _client_mock(stations)
+    client.async_get_station_by_code = AsyncMock(return_value=[])
+
+    result = await sample_stops_matrix(
+        client,
+        gap_fill=False,
+        atomic_dump=False,
+        priority="normal",
+        limit=2,
+    )
+
+    # total_stations reports the pre-limit count; the loop only samples
+    # the first 2 (PEARS, KENT) so the in-flight `by_code` calls stop at 2.
+    assert result.total_stations == 3
+    assert result.sampled == 2
+    assert client.async_get_station_by_code.await_count == 2
