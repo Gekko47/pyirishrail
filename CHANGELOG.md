@@ -6,6 +6,59 @@ and versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-03
+
+Maintainability release. The integration has no active users, so
+this release makes no migration changes. Phases A–C of the streamline
+roadmap collapsed the per-station sensor surface, dropped the
+`num_trains` option, and renamed three over-clever identifiers. The
+plan, per-phase status, and decisions are recorded in
+[`.cline/streamline-roadmap.md`](.cline/streamline-roadmap.md).
+
+### Highlights
+
+- **Two sensors per station.** The three per-station sensors collapse
+  to two: `next_train_due` (unchanged TIMESTAMP presentation) and
+  `following_train_due` (same presentation for the second train).
+  `next_train_destination` and `next_train_delay` are removed.
+- **Fixed attribute surface.** Each sensor carries a small fixed set
+  of attributes (7 keys on next, 5 on following). The
+  `upcoming_trains` attribute is removed.
+- **No `num_trains` option.** The coordinator retains at most two
+  trains (next + following); there is no user-configurable knob.
+  First-config and re-config behave identically.
+- **`pyirishrail` sub-package folded.** The client modules now live
+  directly in `custom_components/irish_rail/` (`client.py`,
+  `request_gate.py`, `models.py`, `errors.py`, `lib_const.py`).
+- **`quality_scale.yaml` compressed** from 22.7 KB / 438 lines to
+  10.4 KB / 69 lines (–54% size, –84% line count).
+
+### Removed (Phase C)
+
+- `next_train_destination` and `next_train_delay` sensors.
+- The `upcoming_trains` attribute from all per-station sensors.
+- The `num_trains` configuration option (setup + options flow).
+- The `pyirishrail/` sub-package (folded into the integration
+  package).
+
+### Changed (Phase A)
+
+- `pyirishrail/api.py` → `client.py`, `pyirishrail/_const.py` →
+  `lib_const.py`, `pyirishrail/_gate.py` → `request_gate.py`,
+  `pyirishrail/errors.py` → `errors.py`, `pyirishrail/models.py` →
+  `models.py`.
+
+### Renamed (Phase D)
+
+- `IrishRailApiHealthMonitor` → `ConnectivityMonitor`
+- `async_claim_global_provider` → `claim_service_entities`
+- `previous_unique_id()` → `applied_unique_id()`
+
+### Gates
+
+- All gates green: 248 passed, 100.00% coverage, ruff clean,
+  strict mypy clean (37 files).
+
 ## [0.3.0] — 2026-08-30
 
 The v0.3.0 Clean Baseline. The integration has no active users, so
