@@ -104,12 +104,6 @@
     "sensor": {
       "next_train_due": {
         "name": "Next train due"
-      },
-      "next_train_destination": {
-        "name": "Next train destination"
-      },
-      "next_train_delay": {
-        "name": "Next train delay"
       }
     }
   },

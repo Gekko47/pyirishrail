@@ -88,10 +88,8 @@ async def test_unload_and_reload_restores_entities(
     entity_ids_before = sorted(
         state.entity_id for state in hass.states.async_all("sensor")
     )
-    # Three sensor entities per station: arrival timestamp,
-    # destination, and delay. ``next_train_type`` was retired; the
-    # train type now lives on the device's attributes.
-    assert len(entity_ids_before) == 3
+    # One sensor entity per station.
+    assert len(entity_ids_before) == 1
 
     # Unload: platforms unloaded and entities removed from the state machine.
     assert await hass.config_entries.async_unload(mock_config_entry.entry_id)

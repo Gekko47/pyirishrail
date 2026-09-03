@@ -6,7 +6,6 @@ from dataclasses import replace
 from datetime import UTC
 from unittest.mock import MagicMock, patch
 
-import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -145,23 +144,17 @@ async def test_failed_refresh_marks_entity_unavailable(
 async def test_all_entities_unavailable_after_failed_refresh_then_recover(
     hass: HomeAssistant,
 ) -> None:
-    """Silver rule ``entity-unavailable``: every entity, plus recovery.
+    """Silver rule ``entity-unavailable``: the sensor always recovers.
 
     Uses the realistic failure path (the client raises ``IrishRailError``,
-    which the coordinator converts into ``UpdateFailed``): all three sensors
-    must report ``unavailable`` immediately after a failed refresh, then
-    become available with fresh values on the next successful refresh. The
-    previous fourth entity (``next_train_type``) was retired; the train
-    type now lives on the device's attributes.
+    which the coordinator converts into ``UpdateFailed``): the per-station
+    sensor must report ``unavailable`` immediately after a failed refresh,
+    then become available with fresh values on the next successful refresh.
     """
     entry = await _setup_entry(hass, [_mock_train()])
     coordinator = entry.runtime_data.coordinator
 
-    keys = (
-        "next_train_due",
-        "next_train_destination",
-        "next_train_delay",
-    )
+    keys = ("next_train_due",)
 
     with patch(
         "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
@@ -234,63 +227,45 @@ def test_none_data_returns_no_attributes() -> None:
     assert sensor.extra_state_attributes is None
 
 
-@pytest.mark.parametrize("key", ["next_train_due", "next_train_destination"])
 async def test_non_empty_data_keeps_next_train_attributes(
-    hass: HomeAssistant, key: str
+    hass: HomeAssistant,
 ) -> None:
     """Non-empty data retains the existing attribute behaviour."""
     entry = await _setup_entry(hass, [_mock_train()])
 
-    entity_id = _entity_id_for(hass, entry, key)
+    entity_id = _entity_id_for(hass, entry, "next_train_due")
     state = hass.states.get(entity_id)
     assert state is not None
     assert state.attributes["api_reachable"] is True
     assert len(state.attributes["upcoming_trains"]) == 1
-    if key == "next_train_due":
-        # ``next_train_due`` is a TIMESTAMP sensor: the state is an
-        # ISO 8601 datetime derived from the API's signed
-        # ``due_in_mins`` offset (the ``HH:MM`` ``expected_arrival_time``
-        # is the legacy fallback). The mock train's ``due_in_mins`` is
-        # 10 (see ``_mock_train``); the live countdown lives in the
-        # ``time_until_arrival`` attribute, so we assert the shape of
-        # the timestamp rather than the wall-clock time (the test runs
-        # against the real wall clock, which is unrelated to the API's
-        # ``12:10`` literal).
-        import datetime as _dt
-        parsed_state = _dt.datetime.fromisoformat(state.state)
-        assert parsed_state.tzinfo is not None
-        assert state.attributes["train_type"] == "DART"
-        # The expected arrival is mirrored as an ISO 8601 string. With
-        # the offset-based parsing logic the attribute is recomputed on
-        # every read (the state was frozen at the last refresh
-        # instant), so a strict equality check is too brittle — the
-        # two values agree to within a second of jitter.
-        expected_arrival_dt = _dt.datetime.fromisoformat(
-            state.attributes["expected_arrival"]
-        )
-        assert abs((expected_arrival_dt - parsed_state).total_seconds()) < 5
-        # The countdown is approximately 10 minutes (the default
-        # ``due_in_mins`` the mock provides), with a 60-second band
-        # on either side for the gap between the refresh and the
-        # assertion.
-        countdown = state.attributes["time_until_arrival"]
-        assert 10 * 60 - 60 <= countdown <= 10 * 60 + 60
-        # ``next_train_destination`` is plain text and stays as the
-        # API returned it.
-    else:
-        assert state.state == "Bray"
-
-
-def test_unknown_entity_key_returns_none_value() -> None:
-    """An unrecognized entity key falls back to a None native value."""
-    coordinator = MagicMock()
-    coordinator.data = [_mock_train()]
-    coordinator.config_entry.unique_id = "PEARS_northbound"
-    coordinator.station_name = "Dublin Pearse"
-    coordinator.direction = "Northbound"
-
-    sensor = IrishRailDueTrainSensor(coordinator, "not_a_real_key")
-    assert sensor.native_value is None
+    # ``next_train_due`` is a TIMESTAMP sensor: the state is an
+    # ISO 8601 datetime derived from the API's signed
+    # ``due_in_mins`` offset (the ``HH:MM`` ``expected_arrival_time``
+    # is the legacy fallback). The mock train's ``due_in_mins`` is
+    # 10 (see ``_mock_train``); the live countdown lives in the
+    # ``time_until_arrival`` attribute, so we assert the shape of
+    # the timestamp rather than the wall-clock time (the test runs
+    # against the real wall clock, which is unrelated to the API's
+    # ``12:10`` literal).
+    import datetime as _dt
+    parsed_state = _dt.datetime.fromisoformat(state.state)
+    assert parsed_state.tzinfo is not None
+    assert state.attributes["train_type"] == "DART"
+    # The expected arrival is mirrored as an ISO 8601 string. With
+    # the offset-based parsing logic the attribute is recomputed on
+    # every read (the state was frozen at the last refresh
+    # instant), so a strict equality check is too brittle — the
+    # two values agree to within a second of jitter.
+    expected_arrival_dt = _dt.datetime.fromisoformat(
+        state.attributes["expected_arrival"]
+    )
+    assert abs((expected_arrival_dt - parsed_state).total_seconds()) < 5
+    # The countdown is approximately 10 minutes (the default
+    # ``due_in_mins`` the mock provides), with a 60-second band
+    # on either side for the gap between the refresh and the
+    # assertion.
+    countdown = state.attributes["time_until_arrival"]
+    assert 10 * 60 - 60 <= countdown <= 10 * 60 + 60
 
 
 def test_parse_expected_arrival_handles_blank_and_unparseable_inputs() -> None:

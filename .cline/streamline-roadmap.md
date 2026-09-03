@@ -244,7 +244,7 @@ configuration and reconfiguration alike.
 
 **Steps:**
 
-- [ ] **C1 — Drop `next_train_destination` and
+- [x] **C1 — Drop `next_train_destination` and
   `next_train_delay`.** Remove their instantiations and the
   destination/delay branches from `sensor.py`; remove the keys from
   `icons.json` and the `strings.json` / `translations/en.json`
@@ -559,4 +559,22 @@ coverage gate.
   two trains on first configuration and reconfiguration alike.
   Decision S4, the Goals table, and a Non-goals exception note
   updated; C1–C5 re-scoped accordingly.
+- 2026-09-03 — C1 executed: dropped the `next_train_destination` and
+  `next_train_delay` per-station sensors. `sensor.py` now instantiates
+  only `next_train_due` (the destination/delay branches and the
+  `UnitOfTime` DURATION device-class path removed; `native_value`
+  simplified to the TIMESTAMP arrival parse). `icons.json` and both
+  `strings.json` / `translations/en.json` entity sections drop the two
+  keys; `test_icons.py` / `test_translations.py` expected-key sets now
+  pin just `next_train_due`. `test_sensor.py` reworked (recovery test
+  keys narrowed to `next_train_due`, the destination/delay parametrized
+  attribute test simplified, the unknown-key test removed because
+  `native_value` no longer branches by entity key); the entity-count
+  assertions in `test_config_flow.py` / `test_init.py` updated to the
+  one-sensor-per-station shape (owner entry: 1 station sensor + 2
+  shared service entities = 3; plain entry: 1). Destination and delay
+  data are no longer exposed anywhere. Gates green: 250 passed
+  (was 252: −2, the removed parametrized + unknown-key cases),
+  100.00% line coverage, ruff 0, strict mypy 0 across 37 source
+  files, docstring density and project-internal reference gates clean.
 

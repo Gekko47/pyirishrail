@@ -13,12 +13,6 @@
     "sensor": {
       "next_train_due": {
         "default": "mdi:train"
-      },
-      "next_train_destination": {
-        "default": "mdi:map-marker"
-      },
-      "next_train_delay": {
-        "default": "mdi:clock-alert-outline"
       }
     }
   }

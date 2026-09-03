@@ -10,7 +10,6 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
 )
-from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
@@ -109,16 +108,12 @@ async def async_setup_entry(
     data: IrishRailRuntimeData = entry.runtime_data
     coordinator = data.coordinator
 
-    # Three sensors per station: arrival timestamp, destination, and
-    # delay. The previous ``next_train_type`` dedicated entity is gone
-    # — its value now lives on the device's attributes (see
-    # ``IrishRailDueTrainSensor.extra_state_attributes`` and the device
-    # card), which is the canonical HA shape for a value that does not
-    # warrant its own card-level state.
+    # One sensor per station: the next due train's expected arrival as a
+    # TIMESTAMP (HA renders the live minutes-and-seconds countdown). The
+    # previous ``next_train_destination`` / ``next_train_delay`` entities
+    # are gone; the following train joins in C2 via the same sensor class.
     sensors = [
         IrishRailDueTrainSensor(coordinator, "next_train_due"),
-        IrishRailDueTrainSensor(coordinator, "next_train_destination"),
-        IrishRailDueTrainSensor(coordinator, "next_train_delay"),
     ]
 
     async_add_entities(sensors)
@@ -134,53 +129,31 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
         super().__init__(coordinator, entity_key)
         self._attr_translation_key = entity_key
 
-        if entity_key == "next_train_due":
-            # The state is a datetime of the API's expected arrival time,
-            # combined with today's date (or left in the past for an
-            # overdue / earlier-day service — see
-            # ``_parse_expected_arrival``). The TIMESTAMP device class
-            # tells HA to render the value with the relative-time chip
-            # in the default "Time" card, so a user reading the
-            # dashboard sees both the wall-clock arrival and the live
-            # "in 5 min" / "5 min ago" subtitle in a single place. No
-            # ``native_unit_of_measurement`` is set because timestamp
-            # sensors carry no unit.
-            self._attr_device_class = SensorDeviceClass.TIMESTAMP
-        elif entity_key == "next_train_delay":
-            # "Late by X minutes" is a duration, not a clock time; keep
-            # the DURATION + minutes shape. HA's DURATION renderer
-            # formats the value live as "X min" (or "H h M min" over an
-            # hour) in the UI and in template results.
-            self._attr_device_class = SensorDeviceClass.DURATION
-            self._attr_native_unit_of_measurement = UnitOfTime.MINUTES
+        # Every per-station sensor is a TIMESTAMP: the state is a datetime
+        # of the API's expected arrival time, resolved via the signed
+        # ``due_in_mins`` offset (see ``_parse_expected_arrival``). The
+        # TIMESTAMP device class tells HA to render the value with the
+        # relative-time chip in the default "Time" card, so a user reading
+        # the dashboard sees both the wall-clock arrival and the live
+        # "in 5 min" / "5 min ago" subtitle in a single place. No
+        # ``native_unit_of_measurement`` is set because timestamp sensors
+        # carry no unit.
+        self._attr_device_class = SensorDeviceClass.TIMESTAMP
 
     @property
-    def native_value(self) -> str | int | datetime | None:
-        """Return the state of the sensor.
+    def native_value(self) -> datetime | None:
+        """Return the expected arrival as a timezone-aware datetime.
 
-        The TIMESTAMP sensor (``next_train_due``) returns a ``datetime``
-        of the expected arrival. The DURATION sensor
-        (``next_train_delay``) returns a whole-minute ``int``; HA's
-        DURATION device class formats the value live as "X min" in the
-        UI. Textual sensors return the raw API value.
+        The TIMESTAMP sensor returns a ``datetime`` of the expected
+        arrival; HA's "Time" card renders it as a live minutes-and-seconds
+        countdown ("in 5 min") or "5 min ago" for an overdue service.
         """
         if not self.coordinator.data:
             return None
 
-        # Next train is the first item in the response
+        # Next train is the first item in the response.
         next_train: TrainDueTime = self.coordinator.data[0]
-
-        if self.entity_key == "next_train_due":
-            return _parse_expected_arrival(
-                next_train,
-                dt_util.utcnow(),
-            )
-        if self.entity_key == "next_train_destination":
-            return next_train.destination
-        if self.entity_key == "next_train_delay":
-            return next_train.late_mins
-
-        return None
+        return _parse_expected_arrival(next_train, dt_util.utcnow())
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
