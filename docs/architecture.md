@@ -571,12 +571,11 @@ the look-ahead window.
 ### Options flow
 
 The `init` step offers `scan_interval` (30s–10min, default
-60s), `num_trains` (1–5, default 3), and `stops_at`. The
-`"All"` sentinel and blank values are normalized to `None`
-when storing, so the `stops_at` key explicitly means "no
-filter" rather than "absent option". A value seeded into
-`entry.data` by the initial config flow cannot resurface
-afterwards: whatever was saved here last always wins.
+60s) and `stops_at`. The `"All"` sentinel and blank values are
+normalized to `None` when storing, so the `stops_at` key explicitly
+means "no filter" rather than "absent option". A value seeded into
+`entry.data` by the initial config flow cannot resurface afterwards:
+whatever was saved here last always wins.
 
 ---
 

@@ -8,8 +8,8 @@
 A Home Assistant integration that monitors live Irish Rail train
 departures from the public, unauthenticated RTPI feed
 (`api.irishrail.ie`). Each configured station/direction becomes a
-device with three sensors and an `upcoming_trains` attribute; one
-integration-level device ("Irish Rail Services") exposes an API
+device with two sensors showing the next and following train due in;
+one integration-level device ("Irish Rail Services") exposes an API
 connectivity binary sensor and a stops-matrix rebuild button.
 
 | | |
@@ -72,9 +72,7 @@ station list is fetched live.
    - **Stops at**: only stations the selected services actually call
      at *after* yours are offered. Falls back to the cached matrix,
      then the bundled seed, then the full station list.
-3. **Upcoming trains** (1–5, default 3): how many trains populate
-   the `upcoming_trains` attribute.
-4. **Submit**. Adding the same station with the same direction is
+3. **Submit**. Adding the same station with the same direction is
    rejected (duplicate protection); the same station with a different
    direction creates an additional, independent entry.
 
@@ -83,42 +81,49 @@ station list is fetched live.
 | Setting | Menu action | Behaviour |
 |---|---|---|
 | Scan interval (30 s – 10 min, default 60 s) | **Configure** | Applies immediately, no reload |
-| Number of upcoming trains (1–5, default 3) | **Configure** | Applies immediately |
 | Stops-at filter | **Configure** | Applies immediately; `All` disables it |
 | Direction filter | **Reconfigure** | Rewrites the entry identity; one reload |
 
 Reconfiguring the direction changes the entry's identity: combinations
 another entry already monitors are rejected, the previous direction's
-three sensors and device are removed from the registries, and the
+two sensors and device are removed from the registries, and the
 original entity IDs return (with names and areas kept) if you switch
 back.
 
 ## Sensors
 
 Each station/direction config entry creates a device named after the
-station (and direction filter) with three sensors:
+station (and direction filter) with two sensors:
 
 | Entity | Type | Notes |
 |---|---|---|
-| `next_train_due` | `SensorDeviceClass.TIMESTAMP` (datetime) | The API's expected arrival; HA's Time card shows "in 5 min" / "5 min ago" automatically |
-| `next_train_destination` | free text | Destination of the next due service |
-| `next_train_delay` | `SensorDeviceClass.DURATION` (minutes, `MEASUREMENT`) | Lateness in minutes |
+| `next_train_due` | `SensorDeviceClass.TIMESTAMP` (datetime) | The API's expected arrival of the next train; HA's Time card shows "in 5 min" / "5 min ago" automatically |
+| `following_train_due` | `SensorDeviceClass.TIMESTAMP` (datetime) | The API's expected arrival of the following train; `unknown` when fewer than two trains are scheduled |
 
 Train type (DART, Suburban, Intercity, etc.) lives on the device's
 `extra_state_attributes` — no separate dedicated entity.
 
-Every sensor carries these attributes (in addition to the device's
-own attributes):
+### `next_train_due` attributes
 
 | Attribute | Description |
 |---|---|
-| `upcoming_trains` | The next N trains (1–5, configurable in setup/options, default 3). Each entry: `due_in_mins`, `destination`, `late_mins`, `type`, `train_code`, `origin_time`, `destination_time`. Shorter than requested if fewer trains are scheduled. |
+| `expected_arrival_time` | Real-time expected arrival at the monitored station (`HH:MM`). |
+| `scheduled_arrival_time` | Timetabled arrival at the monitored station (`HH:MM`). |
+| `direction` | Travel direction of the next train. |
+| `train_code` | Irish Rail identifier of the next train. |
 | `api_reachable` | `True` when readable. See [Behaviour](#behaviour) for how this separates "no trains scheduled" from "API unreachable". |
-| `origin`, `direction`, `train_code` | Origin station, travel direction, and Irish Rail identifier of the next train. |
-| `origin_time`, `destination_time` | Scheduled departure/arrival times for the next train's full journey. |
-| `expected_arrival_time`, `expected_departure_time` | Real-time expected times at the monitored station. |
 | `expected_arrival` | ISO 8601 string mirroring the `next_train_due` state. |
 | `time_until_arrival` | Whole-second countdown to `next_train_due`; recomputed on every read. |
+
+### `following_train_due` attributes
+
+| Attribute | Description |
+|---|---|
+| `expected_arrival_time` | Real-time expected arrival of the following train at the monitored station (`HH:MM`). |
+| `scheduled_arrival_time` | Timetabled arrival of the following train at the monitored station (`HH:MM`). |
+| `direction` | Travel direction of the following train. |
+| `train_code` | Irish Rail identifier of the following train. |
+| `api_reachable` | `True` when readable. |
 
 Icons are defined in `icons.json` at the integration root and
 overridable per entity from the UI.
@@ -168,30 +173,28 @@ Notify when the next train is due within 10 minutes on weekdays:
           tag: irish-rail-departure
 ```
 
-### Delay notification
+### Following train alert
 
-Notify when the monitored service is more than 5 minutes late:
+Notify when the following train is due within 15 minutes:
 
 ```yaml
-- alias: "Irish Rail - delay warning"
+- alias: "Irish Rail - following train approaching"
   mode: single
   triggers:
     - trigger: numeric_state
-      entity_id: sensor.dublin_pearse_southbound_next_train_delay
-      above: 5
+      entity_id: sensor.dublin_pearse_northbound_following_train_due
+      below: 15
   actions:
     - action: notify.mobile_app_phone
       data:
-        title: "Train delayed"
+        title: "Following train soon"
         message: >-
-          Service {{ state_attr('sensor.dublin_pearse_southbound_next_train_delay',
-          'train_code') }} towards
-          {{ state_attr('sensor.dublin_pearse_southbound_next_train_delay',
-          'direction') }} is running
-          {{ states('sensor.dublin_pearse_southbound_next_train_delay') }}
-          minutes late.
+          The following {{ state_attr('sensor.dublin_pearse_northbound_following_train_due',
+          'direction') }} service arrives in about
+          {{ states('sensor.dublin_pearse_northbound_following_train_due') }}
+          minutes.
         data:
-          tag: irish-rail-delay
+          tag: irish-rail-following
 ```
 
 Replace the entity IDs with those of your own station/direction entries.
