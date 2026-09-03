@@ -108,7 +108,7 @@ async def _async_update_listener(
     if coordinator.requires_reload():
         # Drop the previous identity's entities/device before reloading so
         # post-reload setup registers only the new direction's entities.
-        previous_uid = coordinator.previous_unique_id()
+        previous_uid = coordinator.applied_unique_id()
         if previous_uid is not None:
             _async_drop_stale_identity_registries(hass, entry, previous_uid)
         hass.config_entries.async_schedule_reload(entry.entry_id)

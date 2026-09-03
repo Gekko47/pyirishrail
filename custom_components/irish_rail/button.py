@@ -38,7 +38,7 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from ._runtime import (
-    async_claim_global_provider,
+    claim_service_entities,
     get_health_monitor,
 )
 from .client import IrishRailClient
@@ -242,7 +242,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the global rebuild button exactly once per session."""
-    if not async_claim_global_provider(hass, entry):
+    if not claim_service_entities(hass, entry):
         _LOGGER.debug(
             "%s does not own the global Irish Rail entities; skipping",
             entry.title,

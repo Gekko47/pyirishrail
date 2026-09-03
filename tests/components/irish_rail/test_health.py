@@ -25,7 +25,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.irish_rail._runtime import IrishRailApiHealthMonitor
+from custom_components.irish_rail._runtime import ConnectivityMonitor
 from custom_components.irish_rail.const import (
     DOMAIN,
     GLOBAL_HEALTH_UNIQUE_ID,
@@ -49,7 +49,7 @@ def _client(error: Exception | None = None) -> MagicMock:
 
 async def test_ping_success_records_health(hass: HomeAssistant) -> None:
     """A successful probe flips every health indicator to green."""
-    monitor = IrishRailApiHealthMonitor(hass, _client())
+    monitor = ConnectivityMonitor(hass, _client())
     fired: list[bool] = []
     monitor.listeners.add(lambda: fired.append(True))
 
@@ -74,14 +74,14 @@ async def test_not_yet_probed_reports_unconservative_true_only_on_evidence(
     hass: HomeAssistant,
 ) -> None:
     """Until a probe succeeds, reachability stays conservatively negative."""
-    monitor = IrishRailApiHealthMonitor(hass, _client())
+    monitor = ConnectivityMonitor(hass, _client())
     assert monitor.healthy is None
     assert monitor.recently_confirmed_healthy is False
 
 
 async def test_ping_failure_then_recovery(hass: HomeAssistant) -> None:
     """Failures accumulate consecutively and reset cleanly on success."""
-    monitor = IrishRailApiHealthMonitor(
+    monitor = ConnectivityMonitor(
         hass, _client(error=IrishRailConnectionError("api down"))
     )
 
@@ -105,7 +105,7 @@ async def test_ping_failure_then_recovery(hass: HomeAssistant) -> None:
 
 async def test_ping_catches_unexpected_exceptions(hass: HomeAssistant) -> None:
     """Any non-IrishRail exception still lands as an unhealthy probe."""
-    monitor = IrishRailApiHealthMonitor(
+    monitor = ConnectivityMonitor(
         hass, _client(error=RuntimeError("socket exploded"))
     )
 
@@ -125,7 +125,7 @@ async def test_as_dict_reports_monitor_lifecycle_flags() -> None:
     whether one is in flight; both pieces of state are surfaced in
     ``as_dict()`` as ``timer_active`` and ``probe_in_flight``.
     """
-    monitor = IrishRailApiHealthMonitor(MagicMock(), _client())
+    monitor = ConnectivityMonitor(MagicMock(), _client())
     snapshot = monitor.as_dict()
     assert snapshot["timer_active"] is False
     assert snapshot["probe_in_flight"] is False
@@ -149,7 +149,7 @@ async def test_async_start_is_idempotent_and_probes_immediately(
 ) -> None:
     """Repeated starts subscribe once; the initial probe fires right away."""
     client = _client()
-    monitor = IrishRailApiHealthMonitor(hass, client)
+    monitor = ConnectivityMonitor(hass, client)
 
     intervals: list[timedelta] = []
     unsub_calls: list[bool] = []
@@ -200,7 +200,7 @@ async def test_claim_purges_orphan_global_entity_rows(
 ) -> None:
     """A dead owner's leftover entity rows are wiped before the new claim is granted.
 
-    The common path through ``async_claim_global_provider`` (the live
+    The common path through ``claim_service_entities`` (the live
     entry still installed) takes the "owner is here" branch and never
     touches ``_purge_orphan_global_entities``. That fallback only runs
     when a *previous* owner is gone but its entity-registry rows
@@ -214,7 +214,7 @@ async def test_claim_purges_orphan_global_entity_rows(
     Instead the test patches ``entity_registry.async_get`` and
     ``device_registry.async_get`` to MagicMocks that simulate the
     post-orphan shape and asserts both the call from
-    ``async_claim_global_provider`` and the underlying
+    ``claim_service_entities`` and the underlying
     ``_purge_orphan_global_entities`` behaviour in one combined pass.
     The fake device registry exposes a single dead-owned device
     row pinned to the expected owner so the new device-purge branch
@@ -340,7 +340,7 @@ async def test_purge_skips_rows_pinned_to_a_live_owner(
     Defence in depth: even if a stale ``expected_owner`` slot somehow
     points at an entry that *is* still installed, the purger must
     leave rows owned by other live entries alone (the early branch in
-    ``async_claim_global_provider`` would normally short-circuit
+    ``claim_service_entities`` would normally short-circuit
     before we get here, but the function must still be safe to call
     directly with a stale key).
     """
@@ -455,7 +455,7 @@ def test_purge_skips_device_rows_with_unrelated_identifier_or_other_owner(
 async def test_async_tick_runs_one_probe_directly(hass: HomeAssistant) -> None:
     """The interval callback entry point performs exactly one probe."""
     client = _client()
-    monitor = IrishRailApiHealthMonitor(hass, client)
+    monitor = ConnectivityMonitor(hass, client)
     await monitor._async_tick(dt_util.now())
     assert client.async_get_station_by_code.await_count == 1
     assert monitor.recently_confirmed_healthy is True
@@ -465,7 +465,7 @@ async def test_schedule_ping_coalesces_while_a_probe_is_pending(
     hass: HomeAssistant,
 ) -> None:
     """A second schedule call never stacks a second in-flight probe."""
-    monitor = IrishRailApiHealthMonitor(hass, _client())
+    monitor = ConnectivityMonitor(hass, _client())
     release = asyncio.Event()
     started = asyncio.Event()
     calls = {"count": 0}

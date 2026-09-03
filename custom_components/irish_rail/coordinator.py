@@ -185,7 +185,7 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
         """
         return self._applied_entry_data != dict(self.config_entry.data)
 
-    def previous_unique_id(self) -> str | None:
+    def applied_unique_id(self) -> str | None:
         """Return the entry unique ID this coordinator was loaded for.
 
         Derived from the entry-data snapshot at construction time, so

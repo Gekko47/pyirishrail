@@ -30,8 +30,8 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from ._runtime import (
-    IrishRailApiHealthMonitor,
-    async_claim_global_provider,
+    ConnectivityMonitor,
+    claim_service_entities,
     ensure_health_monitor_started,
     get_health_monitor,
 )
@@ -79,7 +79,7 @@ class IrishRailApiConnectivitySensor(BinarySensorEntity):
         configuration_url="https://api.irishrail.ie",
     )
 
-    def __init__(self, hass: HomeAssistant, monitor: IrishRailApiHealthMonitor) -> None:
+    def __init__(self, hass: HomeAssistant, monitor: ConnectivityMonitor) -> None:
         """Initialize the global connectivity sensor."""
         self.hass = hass
         self._monitor = monitor
@@ -134,7 +134,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the global connectivity sensor exactly once per session."""
-    if not async_claim_global_provider(hass, entry):
+    if not claim_service_entities(hass, entry):
         _LOGGER.debug(
             "%s does not own the global Irish Rail entities; skipping",
             entry.title,

@@ -216,7 +216,7 @@ async def test_global_provider_purges_orphan_entities_when_owner_removed(
     # ``ConfigEntries.async_remove`` calls ``ent_reg.async_clear_config_entry``,
     # which sweeps every entity-registry row pinned to the removed
     # ``first.entry_id`` -- so the two global-entity rows are gone before
-    # the next entry's ``async_claim_global_provider`` even runs. The
+    # the next entry's ``claim_service_entities`` even runs. The
     # ``_purge_orphan_global_entities`` path in ``health.py`` is the
     # fallback that handles the *uncommon* case where a row is left
     # pinned to a dead owner through some other channel (e.g. a manual
@@ -266,12 +266,12 @@ async def test_connectivity_sensor_is_unavailable_before_first_probe(
     which HA renders as the grey "unavailable" state with a question-
     mark tooltip, the correct semantic for "I haven't checked yet".
     """
-    from custom_components.irish_rail._runtime import IrishRailApiHealthMonitor
+    from custom_components.irish_rail._runtime import ConnectivityMonitor
     from custom_components.irish_rail.binary_sensor import (
         IrishRailApiConnectivitySensor,
     )
 
-    monitor = IrishRailApiHealthMonitor(hass, MagicMock())
+    monitor = ConnectivityMonitor(hass, MagicMock())
     sensor = IrishRailApiConnectivitySensor(hass, monitor)
 
     # No probe has landed yet.

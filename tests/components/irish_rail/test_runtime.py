@@ -3,7 +3,7 @@
 The :class:`custom_components.irish_rail._runtime.RuntimeRegistry` is
 the single writer to ``hass.data[DOMAIN]`` for the integration's shared
 state: the loaded-entry set, the :class:`RequestGate` instance, the
-:class:`IrishRailApiHealthMonitor`, and the global-entity provider
+:class:`ConnectivityMonitor`, and the global-entity provider
 key. These tests verify the lifecycle end-to-end:
 
 * the gate singleton survives an unload/reload cycle (the only
@@ -19,7 +19,7 @@ key. These tests verify the lifecycle end-to-end:
   unload, and the orphan-purge on reclaim leaves live-owned rows
   alone.
 
-The :class:`IrishRailApiHealthMonitor` *probe* semantics (failure
+The :class:`ConnectivityMonitor` *probe* semantics (failure
 tracking, ``as_dict`` snapshot, ``recently_confirmed_healthy``) live
 in ``test_health.py``; the per-bucket persistence guard for the
 stops-matrix rebuild lives in ``test_matrix_rebuild.py``.
@@ -34,12 +34,12 @@ from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irish_rail._runtime import (
-    IrishRailApiHealthMonitor,
-    async_claim_global_provider,
+    ConnectivityMonitor,
     async_get_request_gate,
     async_note_entry_loaded,
     async_note_entry_unloaded,
     async_release_request_gate,
+    claim_service_entities,
     get_health_monitor,
     get_request_gate,
     get_runtime,
@@ -331,7 +331,7 @@ async def test_monitor_lifecycle_tracks_loaded_entries(
     # The first loaded entry returns True and starts the probe.
     assert await async_note_entry_loaded(hass, "E1", client) is True
     first = get_health_monitor(hass)
-    assert isinstance(first, IrishRailApiHealthMonitor)
+    assert isinstance(first, ConnectivityMonitor)
 
     # A second entry reuses the same singleton without restarting anything.
     assert await async_note_entry_loaded(hass, "E2", client) is False
@@ -386,10 +386,10 @@ async def test_first_setup_claims_global_provider(
     entry_one = _entry(hass)
     entry_two = _entry(hass, unique_id="KENT_all")
 
-    assert async_claim_global_provider(hass, entry_one) is True
-    assert async_claim_global_provider(hass, entry_two) is False
+    assert claim_service_entities(hass, entry_one) is True
+    assert claim_service_entities(hass, entry_two) is False
     # Owner re-claiming stays True.
-    assert async_claim_global_provider(hass, entry_one) is True
+    assert claim_service_entities(hass, entry_one) is True
 
 
 async def test_claim_is_freed_when_owner_is_removed(
@@ -399,13 +399,13 @@ async def test_claim_is_freed_when_owner_is_removed(
     entry_one = _entry(hass)
     entry_two = _entry(hass, unique_id="KENT_all")
 
-    assert async_claim_global_provider(hass, entry_one) is True
+    assert claim_service_entities(hass, entry_one) is True
 
     # Unload must NOT transfer ownership mid-session.
     assert await hass.config_entries.async_unload(entry_one.entry_id)
-    assert async_claim_global_provider(hass, entry_two) is False
+    assert claim_service_entities(hass, entry_two) is False
 
     # Full removal frees the claim for the next setup.
     await hass.config_entries.async_remove(entry_one.entry_id)
-    assert async_claim_global_provider(hass, entry_two) is True
+    assert claim_service_entities(hass, entry_two) is True
 

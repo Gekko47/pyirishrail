@@ -50,7 +50,7 @@ class RuntimeRegistry:
     """Registry holding the integration's shared singletons.
 
     Owns the loaded-entry set, the shared :class:`RequestGate` and the
-    :class:`IrishRailApiHealthMonitor`; no other code writes to them.
+    :class:`ConnectivityMonitor`; no other code writes to them.
     """
 
     def __init__(self, hass: HomeAssistant) -> None:
@@ -58,12 +58,12 @@ class RuntimeRegistry:
         self.hass = hass
         self.loaded_entry_ids: set[str] = set()
         self.request_gate: RequestGate | None = RequestGate()
-        self.health_monitor: IrishRailApiHealthMonitor | None = None
+        self.health_monitor: ConnectivityMonitor | None = None
 
     @callback
     def ensure_health_monitor(
         self, client: IrishRailClient
-    ) -> IrishRailApiHealthMonitor:
+    ) -> ConnectivityMonitor:
         """Return the health monitor, creating it on first call.
 
         Idempotent: the first-loaded entry's client wins and later
@@ -71,7 +71,7 @@ class RuntimeRegistry:
         The probe is *not* started here.
         """
         if self.health_monitor is None:
-            self.health_monitor = IrishRailApiHealthMonitor(self.hass, client)
+            self.health_monitor = ConnectivityMonitor(self.hass, client)
         return self.health_monitor
 
     async def async_release(self) -> None:
@@ -85,7 +85,7 @@ class RuntimeRegistry:
         self.request_gate = None
         if self.health_monitor is not None:
             await self.health_monitor.async_stop()
-class IrishRailApiHealthMonitor:
+class ConnectivityMonitor:
     """Probe the RTPI API periodically and remember how it responded.
 
     See docs/architecture.md §11 for the probe contract and the
@@ -269,7 +269,7 @@ def async_release_request_gate(hass: HomeAssistant) -> None:
 # ── Health-monitor accessors (thin delegates onto the registry) ─────────────
 
 
-def get_health_monitor(hass: HomeAssistant) -> IrishRailApiHealthMonitor | None:
+def get_health_monitor(hass: HomeAssistant) -> ConnectivityMonitor | None:
     """Return the per-hass health monitor singleton, if it exists."""
     registry = get_runtime(hass)
     if registry is None or registry.health_monitor is None:
@@ -279,7 +279,7 @@ def get_health_monitor(hass: HomeAssistant) -> IrishRailApiHealthMonitor | None:
 
 def ensure_health_monitor_started(
     hass: HomeAssistant, client: IrishRailClient
-) -> IrishRailApiHealthMonitor:
+) -> ConnectivityMonitor:
     """Return the health monitor singleton, creating it on first call."""
     return _ensure_runtime(hass).ensure_health_monitor(client)
 
@@ -321,7 +321,7 @@ async def async_note_entry_unloaded(
 
 
 @callback
-def async_claim_global_provider(
+def claim_service_entities(
     hass: HomeAssistant, entry: IrishRailConfigEntry
 ) -> bool:
     """Claim providership of the global entities (see docs/architecture.md §11)."""
