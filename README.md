@@ -20,12 +20,6 @@ connectivity binary sensor and a stops-matrix rebuild button.
 | Minimum HA version | 2026.8.2 |
 | Runtime dependencies | none (`manifest.json` `requirements: []`) |
 
-| | |
-|---|---|
-| Domain | `irish_rail` |
-| Type · IoT class | Service · cloud polling |
-| Quality scale | **Platinum** — every Bronze/Silver/Gold/Platinum rule done or exempt; evidence in [quality_scale.yaml](custom_components/irish_rail/quality_scale.yaml) |
-| Minimum HA version | 2026.8.2 |
 
 ## Install
 
@@ -366,67 +360,6 @@ per-phase status and rationale are in
 ## License
 
 Apache License 2.0 — see [LICENSE.txt](LICENSE.txt).
-
-## Integration-level service entities: health sensor and matrix rebuild button
-
-Two integration-wide entities exist exactly once no matter how many station
-config entries you install. They share a single **Irish Rail Services**
-device card (separate from the per-station devices) on the integration
-page, so they appear together as one service unit rather than as detached
-rows in the Entities tab:
-
-- The connectivity binary sensor is tagged `EntityCategory.DIAGNOSTIC`.
-- The rebuild button is tagged `EntityCategory.CONFIG`.
-
-The first config entry to set up claims providership and registers both
-entities plus the `irish_rail.rebuild_stops_matrix` service. They vanish
-when that entry is removed and return when the next entry claims first;
-a reloaded existing entry picks them back up.
-
-### API connectivity sensor (`binary_sensor.irish_rail_api_connectivity`)
-A lightweight probe (`getAllStationsXML`) pings the RTPI API every 5 minutes
-(plus once at startup). While the probe confirms the API is reachable, an
-empty board at your station is treated as *no scheduled services inside the
-RTPI look-ahead window* instead of a fault:
-
-- no persistent `empty_data_during_service_hours` repair issue is raised,
-- any issue raised before the API was confirmed healthy is cleared
-  automatically.
-
-If the health probe itself starts failing, the original warning behaviour
-returns so genuine outages are still surfaced.
-
-### Rebuild stops-at matrix button (`button.irish_rail_rebuild_stops_matrix`)
-Pressing this runs the equivalent of `scripts/build_stops_matrix.py`
-in-process, without a Home Assistant restart:
-
-> Warning: one press polls ~150 stations plus per-train movement lookups
-> against the public Irish Rail RTPI API and can take several minutes. The
-> same caution is logged at WARNING level for every run.
-
-Results are gap-fill merged: existing stops in `stops_matrix.json` are never
-removed; newly observed station-direction-stops knowledge is unioned in,
-timestamps refreshed, and the bundled-seed cache invalidated so the config
-flow immediately benefits. A press while a rebuild is already running is
-rejected rather than queued. Progress and outcome (stations sampled, stops
-added, duration, errors) appear in the button's state attributes. The same
-action is available as the service `irish_rail.rebuild_stops_matrix` for
-automations.
-
-Notes:
-- The per-install learning cache is `irish_rail.stops_matrix.json` in HA
-  storage. It receives writes from the coordinator's live learning path,
-  the config flow's live discovery, AND the rebuild button's network-wide
-  sweep — all routed through the same `StopsMatrixStore` so the two
-  paths reconcile by construction. HACS updates never touch it, so a
-  runtime rebuild is preserved across upgrades. The bundled seed is
-  `stops_matrix.seed.json` inside the integration folder; that file *is*
-  overwritten on each HACS update by design.
-
-## License
-This project is licensed under the **Apache License 2.0** — the same license used by
-[Home Assistant core](https://www.home-assistant.io/developers/license/). See
-[LICENSE.txt](LICENSE.txt) for the full text.
 
 ## AI Disclosure
 Parts of this project were drafted with AI/LLM assistance. All code was reviewed,
