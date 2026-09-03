@@ -13,6 +13,9 @@
     "sensor": {
       "next_train_due": {
         "default": "mdi:train"
+      },
+      "following_train_due": {
+        "default": "mdi:train"
       }
     }
   }

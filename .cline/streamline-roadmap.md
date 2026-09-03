@@ -252,7 +252,7 @@ configuration and reconfiguration alike.
   `test_translations.py` (whose source-regex check pins the
   remaining instantiations) to assert the two keys are gone.
   Destination and delay data are no longer exposed anywhere.
-- [ ] **C2 — Add `following_train_due`; retain only two trains.**
+- [x] **C2 — Add `following_train_due`; retain only two trains.**
   Instantiate `following_train_due` from the same sensor class:
   `TIMESTAMP` device class, state =
   `_parse_expected_arrival(data[1], now)`, `None` (→ unknown) when
@@ -577,4 +577,25 @@ coverage gate.
   (was 252: −2, the removed parametrized + unknown-key cases),
   100.00% line coverage, ruff 0, strict mypy 0 across 37 source
   files, docstring density and project-internal reference gates clean.
+- 2026-09-03 — C2 executed: added the `following_train_due` sensor
+  and the two-train retention. `const.py` gains
+  `MAX_RETAINED_TRAINS = 2`; `coordinator._async_update_data` slices
+  the API's look-ahead result to the next two trains before the
+  empty-data check and stops-at learning (neither cares about the
+  tail). `sensor.py` registers `following_train_due` from the same
+  class: TIMESTAMP state resolving from `data[1]`, falling back to
+  `None` (→ unknown) when only one service is scheduled; `native_value`
+  regains key-specific branching for the following slot. `icons.json`,
+  `strings.json` / `translations/en.json`, `test_icons.py`, and
+  `test_translations.py` add the new key ("Following train due"). New
+  tests pin the second train's state (due later than the next), the
+  unknown fallback when only one train exists, both sensors'
+  unavailable+recovery round-trip, and the coordinator's two-train
+  slice. Entity-count assertions in `test_config_flow.py` /
+  `test_init.py` updated to the two-sensor-per-station shape (owner
+  entry: 2 station sensors + 2 shared service entities = 4; plain
+  entry: 2; 2 deleted per identity change). Gates green: 253 passed
+  (was 250; +3 new tests), 100.00% line coverage, ruff 0,
+  strict mypy 0 across 37 source files; docstring density and
+  project-internal reference gates clean.
 

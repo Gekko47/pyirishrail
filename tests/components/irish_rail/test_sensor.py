@@ -106,15 +106,17 @@ async def test_empty_train_list_reports_api_reachable(
     """A successful refresh with zero trains still populates attributes."""
     entry = await _setup_entry(hass, [])
 
-    entity_id = _entity_id_for(hass, entry, "next_train_due")
-    state = hass.states.get(entity_id)
-    assert state is not None
-    # The API responded, so the attributes must be present even though
-    # there are no trains.
-    assert state.attributes["api_reachable"] is True
-    assert state.attributes["upcoming_trains"] == []
-    # No next-train details exist without trains; the state is unknown.
-    assert state.state == "unknown"
+    next_id = _entity_id_for(hass, entry, "next_train_due")
+    following_id = _entity_id_for(hass, entry, "following_train_due")
+    for entity_id in (next_id, following_id):
+        state = hass.states.get(entity_id)
+        assert state is not None
+        # The API responded, so the attributes must be present even though
+        # there are no trains.
+        assert state.attributes["api_reachable"] is True
+        assert state.attributes["upcoming_trains"] == []
+        # No train details exist without trains; the state is unknown.
+        assert state.state == "unknown"
 
 
 async def test_failed_refresh_marks_entity_unavailable(
@@ -133,28 +135,32 @@ async def test_failed_refresh_marks_entity_unavailable(
 
     # The coordinator keeps its last successful data ([]), but marks the
     # refresh unsuccessful so the entity becomes unavailable.
-    entity_id = _entity_id_for(hass, entry, "next_train_due")
-    state = hass.states.get(entity_id)
-    assert state is not None
-    assert state.state == "unavailable"
-    assert "api_reachable" not in state.attributes
-    assert "upcoming_trains" not in state.attributes
+    entity_ids = {
+        key: _entity_id_for(hass, entry, key)
+        for key in ("next_train_due", "following_train_due")
+    }
+    for entity_id in entity_ids.values():
+        state = hass.states.get(entity_id)
+        assert state is not None
+        assert state.state == "unavailable"
+        assert "api_reachable" not in state.attributes
+        assert "upcoming_trains" not in state.attributes
 
 
 async def test_all_entities_unavailable_after_failed_refresh_then_recover(
     hass: HomeAssistant,
 ) -> None:
-    """Silver rule ``entity-unavailable``: the sensor always recovers.
+    """Silver rule ``entity-unavailable``: all sensors recover.
 
     Uses the realistic failure path (the client raises ``IrishRailError``,
     which the coordinator converts into ``UpdateFailed``): the per-station
-    sensor must report ``unavailable`` immediately after a failed refresh,
+    sensors must report ``unavailable`` immediately after a failed refresh,
     then become available with fresh values on the next successful refresh.
     """
     entry = await _setup_entry(hass, [_mock_train()])
     coordinator = entry.runtime_data.coordinator
 
-    keys = ("next_train_due",)
+    keys = ("next_train_due", "following_train_due")
 
     with patch(
         "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
@@ -217,6 +223,48 @@ async def test_all_entities_unavailable_after_failed_refresh_then_recover(
         state = hass.states.get(entity_ids[key])
         assert state is not None
         assert state.state != "unavailable"
+
+
+async def test_following_train_due_uses_second_train(
+    hass: HomeAssistant,
+) -> None:
+    """Following train state resolves from the second item in the list.
+
+    With two services scheduled, ``next_train_due`` points at the first
+    and ``following_train_due`` at the second, which is due later.
+    """
+    entry = await _setup_entry(
+        hass, [_mock_train(due_in=10), _mock_train(due_in=20)]
+    )
+
+    next_id = _entity_id_for(hass, entry, "next_train_due")
+    following_id = _entity_id_for(hass, entry, "following_train_due")
+
+    next_state = hass.states.get(next_id)
+    following_state = hass.states.get(following_id)
+    assert next_state is not None
+    assert following_state is not None
+
+    import datetime as _dt
+    next_dt = _dt.datetime.fromisoformat(next_state.state)
+    following_dt = _dt.datetime.fromisoformat(following_state.state)
+    assert following_dt.tzinfo is not None
+    # The second service is due ~10 minutes after the first (the mocks
+    # pass due_in_mins=10 and 20), with a small jitter band.
+    gap = (following_dt - next_dt).total_seconds()
+    assert 10 * 60 - 30 <= gap <= 10 * 60 + 30
+
+
+async def test_following_train_due_unknown_when_single_train(
+    hass: HomeAssistant,
+) -> None:
+    """Following train falls back to unknown when only one service exists."""
+    entry = await _setup_entry(hass, [_mock_train()])
+
+    following_id = _entity_id_for(hass, entry, "following_train_due")
+    state = hass.states.get(following_id)
+    assert state is not None
+    assert state.state == "unknown"
 
 
 def test_none_data_returns_no_attributes() -> None:

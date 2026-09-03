@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -75,6 +76,31 @@ async def test_coordinator_update_success(
     mock_fetch.assert_awaited_once_with(
         "PEARS", direction="Northbound", stops_at=None
     )
+
+
+async def test_coordinator_update_retains_only_two_trains(
+    hass: HomeAssistant, mock_api_client: MagicMock, mock_config_entry: Any,
+) -> None:
+    """Only the next two trains from the API's look-ahead window are retained."""
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, mock_config_entry
+    )
+
+    first = _make_train()
+    three = [
+        first,
+        replace(first, code="E124"),
+        replace(first, code="E125"),
+    ]
+    with patch.object(
+        mock_api_client,
+        "async_get_station_by_code",
+        new=AsyncMock(return_value=three),
+    ):
+        data = await coordinator._async_update_data()
+
+    assert len(data) == 2
+    assert [train.code for train in data] == ["E123", "E124"]
 
 
 async def test_coordinator_update_failed(

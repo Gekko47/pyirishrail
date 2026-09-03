@@ -108,12 +108,13 @@ async def async_setup_entry(
     data: IrishRailRuntimeData = entry.runtime_data
     coordinator = data.coordinator
 
-    # One sensor per station: the next due train's expected arrival as a
-    # TIMESTAMP (HA renders the live minutes-and-seconds countdown). The
-    # previous ``next_train_destination`` / ``next_train_delay`` entities
-    # are gone; the following train joins in C2 via the same sensor class.
+    # Two sensors per station: next and following train due, both
+    # TIMESTAMP countdown states. The previous ``next_train_destination`` /
+    # ``next_train_delay`` entities are gone; both trains share the same
+    # sensor class.
     sensors = [
         IrishRailDueTrainSensor(coordinator, "next_train_due"),
+        IrishRailDueTrainSensor(coordinator, "following_train_due"),
     ]
 
     async_add_entities(sensors)
@@ -150,6 +151,15 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
         """
         if not self.coordinator.data:
             return None
+
+        if self.entity_key == "following_train_due":
+            # The following train is the second item in the response; when
+            # only one service is scheduled the state falls back to ``None``
+            # (→ unknown), never crashing.
+            if len(self.coordinator.data) < 2:
+                return None
+            following_train: TrainDueTime = self.coordinator.data[1]
+            return _parse_expected_arrival(following_train, dt_util.utcnow())
 
         # Next train is the first item in the response.
         next_train: TrainDueTime = self.coordinator.data[0]

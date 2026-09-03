@@ -1287,10 +1287,10 @@ async def test_reconfigure_direction_change_drops_old_entities_and_device(
             ent_reg, entry.entry_id
         )
     ]
-    # One station sensor plus the two shared service entities (health
+    # Two station sensors plus the two shared service entities (health
     # sensor + rebuild button) registered with this entry via the
     # binary_sensor / button platforms.
-    assert len(old_entity_ids) == 3
+    assert len(old_entity_ids) == 4
     old_device_id = device_registry.async_get_device_id_by_identifier(
         hass, (DOMAIN, "PEARS_northbound"), config_entry_id=entry.entry_id
     )
@@ -1341,9 +1341,9 @@ async def test_reconfigure_direction_change_drops_old_entities_and_device(
         if deleted_entry.config_entry_id == entry.entry_id
         and str(deleted_entry.unique_id).startswith("PEARS_northbound")
     ]
-    assert len(deleted) == 1
+    assert len(deleted) == 2
 
-    # The new station-sensor entity carries the new identity; the two
+    # The two new station-sensor entities carry the new identity; the two
     # shared service entities keep their fixed unique IDs on the same entry.
     live = entity_registry.async_entries_for_config_entry(ent_reg, entry.entry_id)
     southbound_sensors = [
@@ -1351,7 +1351,7 @@ async def test_reconfigure_direction_change_drops_old_entities_and_device(
         for registry_entry in live
         if str(registry_entry.unique_id).startswith("PEARS_southbound")
     ]
-    assert len(southbound_sensors) == 1
+    assert len(southbound_sensors) == 2
     assert all(
         str(registry_entry.unique_id).startswith("PEARS_southbound")
         for registry_entry in southbound_sensors
@@ -1487,8 +1487,8 @@ async def test_reconfigure_leaves_sibling_direction_entries_untouched(
             ent_reg, all_entry.entry_id
         )
     )
-    # One station sensor per entry.
-    assert len(all_entity_ids) == 1
+    # Two station sensors per entry.
+    assert len(all_entity_ids) == 2
 
     northbound_entity_ids = sorted(
         registry_entry.entity_id
@@ -1496,8 +1496,8 @@ async def test_reconfigure_leaves_sibling_direction_entries_untouched(
             ent_reg, northbound.entry_id
         )
     )
-    # Owner of the two shared globals plus its own station sensor.
-    assert len(northbound_entity_ids) == 3
+    # Owner of the two shared globals plus its own two station sensors.
+    assert len(northbound_entity_ids) == 4
 
     # Reconfigure the Northbound entry to Southbound (identity change).
     with (
@@ -1531,7 +1531,7 @@ async def test_reconfigure_leaves_sibling_direction_entries_untouched(
     assert northbound.unique_id == "PEARS_southbound"
 
     # The reconfigured side behaved as usual: its previous identity's sensor
-    # entity was removed (restorable trash) and a fresh southbound one
+    # entities were removed (restorable trash) and two fresh southbound ones
     # registered; the two shared service entities registered with this entry
     # simply persist across the change.
     southbound_live = entity_registry.async_entries_for_config_entry(
@@ -1547,8 +1547,8 @@ async def test_reconfigure_leaves_sibling_direction_entries_untouched(
         for registry_entry in southbound_live
         if str(registry_entry.unique_id).startswith("PEARS_southbound")
     ]
-    # One station sensor per entry.
-    assert len(southbound_sensors) == 1
+    # Two station sensors per entry.
+    assert len(southbound_sensors) == 2
     assert all(
         str(registry_entry.unique_id).startswith("PEARS_southbound")
         for registry_entry in southbound_sensors

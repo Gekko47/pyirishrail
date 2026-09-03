@@ -28,6 +28,7 @@ INTEGRATION_DIR = Path(__file__).parents[3] / "custom_components" / "irish_rail"
 
 ENTITY_SENSOR_KEYS = {
     "next_train_due",
+    "following_train_due",
 }
 
 

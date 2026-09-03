@@ -33,6 +33,12 @@ DEFAULT_NUM_TRAINS = 3
 MIN_NUM_TRAINS = 1
 MAX_NUM_TRAINS = 5
 
+# The coordinator retains at most this many trains from the API's
+# look-ahead window: the two per-station sensors (`next_train_due`,
+# `following_train_due`) draw from ``coordinator.data[0]`` / ``[1]``.
+# See docs/architecture.md §6 for the sensor contract.
+MAX_RETAINED_TRAINS = 2
+
 # Service hours for the persistent-empty-data repair issue. Irish Rail
 # services run until around midnight, so the gate below stays open
 # through every evening hour; empty responses between 00:00 and 06:00

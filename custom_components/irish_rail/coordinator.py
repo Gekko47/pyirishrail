@@ -31,6 +31,7 @@ from .const import (
     EMPTY_DATA_ISSUE_THRESHOLD,
     MAX_BACKOFF_INTERVAL,
     MAX_NUM_TRAINS,
+    MAX_RETAINED_TRAINS,
     MAX_SCAN_INTERVAL_SECONDS,
     MIN_NUM_TRAINS,
     MIN_SCAN_INTERVAL_SECONDS,
@@ -363,6 +364,11 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
                 self._configured_interval,
             )
             self._failure_streak = 0
+
+        # Keep only the next two trains: the devices show the next train due
+        # and the following train due. The API's look-ahead window can return
+        # many services; only the retained slice is exposed via the coordinator.
+        trains = trains[:MAX_RETAINED_TRAINS]
 
         self._async_update_empty_data_issue(trains)
         await self._async_learn_downstream_stops()

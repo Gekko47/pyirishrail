@@ -104,6 +104,9 @@
     "sensor": {
       "next_train_due": {
         "name": "Next train due"
+      },
+      "following_train_due": {
+        "name": "Following train due"
       }
     }
   },
