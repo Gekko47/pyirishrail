@@ -14,7 +14,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
-from .coordinator import IrishRailDataUpdateCoordinator, resolve_num_trains
+from .coordinator import IrishRailDataUpdateCoordinator
 from .entity import IrishRailEntity
 from .models import TrainDueTime
 from .types import IrishRailConfigEntry, IrishRailRuntimeData
@@ -167,17 +167,16 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        """Return extra state attributes if any train data exists.
+        """Return the fixed per-train attribute surface.
 
-        The ``next_train_due`` sensor carries the **live** countdown
-        (``time_until_arrival``) so any consumer that wants the "X min"
-        view can compute it once per read without polling. The
-        ``expected_arrival`` attribute mirrors the sensor's primary
-        state as an ISO 8601 string so dashboard widgets that prefer
-        string attributes over timestamp states still have something to
-        render. Both are present on the **device** as well as on the
-        sensor, so the per-station device card surfaces them next to
-        the destination and delay.
+        Every per-station sensor exposes the four per-train keys below
+        plus ``api_reachable`` (``True`` means "the API answered"; absence
+        means the coordinator marked the sensor unavailable). The
+        ``next_train_due`` sensor additionally carries the live countdown:
+        ``expected_arrival`` (ISO 8601 mirror of its state) and
+        ``time_until_arrival`` (whole seconds until arrival, recomputed on
+        every read) so a "5 min" countdown chip works without a custom
+        template.
         """
         data = self.coordinator.data
         if data is None:
@@ -188,26 +187,32 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
             # Successful refresh with zero trains scheduled. The API is
             # reachable, so report that explicitly instead of exiting
             # before the attributes are populated.
-            return {"api_reachable": True, "upcoming_trains": []}
+            return {"api_reachable": True}
 
-        next_train: TrainDueTime = data[0]
+        if self.entity_key == "following_train_due":
+            if len(data) < 2:
+                return {"api_reachable": True}
+            following_train = data[1]
+            return {
+                "expected_arrival_time": following_train.expected_arrival_time,
+                "scheduled_arrival_time": following_train.scheduled_arrival_time,
+                "direction": following_train.direction,
+                "train_code": following_train.code,
+                "api_reachable": True,
+            }
+
+        next_train = data[0]
         now = dt_util.utcnow()
-        expected_arrival = _parse_expected_arrival(
-            next_train, now
-        )
+        expected_arrival = _parse_expected_arrival(next_train, now)
         time_until_arrival: timedelta | None = (
             expected_arrival - now if expected_arrival is not None else None
         )
         attrs: dict[str, Any] = {
-            "origin": next_train.origin,
-            "origin_time": next_train.origin_time,
-            "destination_time": next_train.destination_time,
             "expected_arrival_time": next_train.expected_arrival_time,
-            "expected_departure_time": next_train.expected_departure_time,
             "scheduled_arrival_time": next_train.scheduled_arrival_time,
-            "scheduled_departure_time": next_train.scheduled_departure_time,
             "direction": next_train.direction,
             "train_code": next_train.code,
+            "api_reachable": True,
         }
 
         # The full datetime of expected arrival (the sensor's primary
@@ -224,42 +229,5 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
                 # chip or a trigger condition ``< 1 min`` both work
                 # without a custom template.
                 attrs["time_until_arrival"] = int(time_until_arrival.total_seconds())
-
-        # The previous dedicated ``next_train_type`` entity now lives
-        # as a device-level attribute. The per-station device card
-        # surfaces the train type alongside the other arrival metadata.
-        attrs["train_type"] = next_train.type
-
-        # Expose the raw minute counts as attributes so automations and
-        # templates that need an integer (e.g.
-        # ``{{ state_attr(..., "due_in_mins") }}``) keep working even
-        # though the primary state is now a ``datetime`` rendered by
-        # HA's TIMESTAMP device class.
-        attrs["due_in_mins"] = next_train.due_in_mins
-        attrs["late_mins"] = next_train.late_mins
-
-        # Explicitly distinguish "API reachable, zero trains scheduled"
-        # (this attribute is present and True) from an API failure. On
-        # a failed refresh the coordinator marks the entity
-        # unavailable, so this attribute can only be read when the API
-        # responded.
-        attrs["api_reachable"] = True
-
-        # Upcoming trains: the next N trains as configured for the
-        # entry (default 3). Read defensively — the list may hold fewer
-        # trains than requested; it simply comes back shorter.
-        num_trains = resolve_num_trains(self.coordinator.config_entry)
-        attrs["upcoming_trains"] = [
-            {
-                "due_in_mins": train.due_in_mins,
-                "destination": train.destination,
-                "late_mins": train.late_mins,
-                "type": train.type,
-                "train_code": train.code,
-                "origin_time": train.origin_time,
-                "destination_time": train.destination_time,
-            }
-            for train in data[:num_trains]
-        ]
 
         return attrs

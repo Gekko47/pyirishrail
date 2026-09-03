@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import UTC
 from unittest.mock import MagicMock, patch
 
+from homeassistant.const import EntityStateAttribute
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -75,7 +76,6 @@ async def _setup_entry(
             "station": "Dublin Pearse",
             "station_code": "PEARS",
             "direction": "Northbound",
-            "num_trains": 3,
         },
         unique_id="PEARS_Northbound",
     )
@@ -114,7 +114,8 @@ async def test_empty_train_list_reports_api_reachable(
         # The API responded, so the attributes must be present even though
         # there are no trains.
         assert state.attributes["api_reachable"] is True
-        assert state.attributes["upcoming_trains"] == []
+        custom = {k: v for k, v in state.attributes.items() if not isinstance(k, EntityStateAttribute)}
+        assert custom == {"api_reachable": True}
         # No train details exist without trains; the state is unknown.
         assert state.state == "unknown"
 
@@ -144,7 +145,6 @@ async def test_failed_refresh_marks_entity_unavailable(
         assert state is not None
         assert state.state == "unavailable"
         assert "api_reachable" not in state.attributes
-        assert "upcoming_trains" not in state.attributes
 
 
 async def test_all_entities_unavailable_after_failed_refresh_then_recover(
@@ -199,7 +199,11 @@ async def test_all_entities_unavailable_after_failed_refresh_then_recover(
     # timezone the integration runs in.
     assert parsed_state.tzinfo is not None
     assert due_state.attributes["api_reachable"] is True
-    assert due_state.attributes["due_in_mins"] == 15
+    custom_keys = {k for k in due_state.attributes if not isinstance(k, EntityStateAttribute)}
+    assert custom_keys == {
+        "expected_arrival_time", "scheduled_arrival_time", "direction",
+        "train_code", "api_reachable", "expected_arrival", "time_until_arrival",
+    }
     # ``time_until_arrival`` is the integer seconds from now to the
     # expected arrival. The mock train's ``due_in_mins`` is 15, so the
     # countdown is approximately 900 s. A few seconds of jitter
@@ -208,7 +212,7 @@ async def test_all_entities_unavailable_after_failed_refresh_then_recover(
     # 60-second band on either side of the declared offset.
     countdown = due_state.attributes["time_until_arrival"]
     assert 15 * 60 - 60 <= countdown <= 15 * 60 + 60
-    # The new device attributes: full ISO 8601 arrival + train type.
+    # The device attributes: expected_arrival ISO 8601 mirror + live countdown.
     # The ``expected_arrival`` attribute is the ISO 8601 mirror of the
     # sensor's state, but with the offset-based parsing logic the
     # attribute is recomputed on every read (the state was frozen at
@@ -218,7 +222,6 @@ async def test_all_entities_unavailable_after_failed_refresh_then_recover(
         due_state.attributes["expected_arrival"]
     )
     assert abs((expected_arrival_dt - parsed_state).total_seconds()) < 5
-    assert due_state.attributes["train_type"] == "DART"
     for key in keys:
         state = hass.states.get(entity_ids[key])
         assert state is not None
@@ -245,6 +248,19 @@ async def test_following_train_due_uses_second_train(
     assert next_state is not None
     assert following_state is not None
 
+    # ``next_train_due`` carries the 7-key surface (with the countdown
+    # pair); ``following_train_due`` the 5-key surface (no countdown).
+    custom_keys = {k for k in next_state.attributes if not isinstance(k, EntityStateAttribute)}
+    assert custom_keys == {
+        "expected_arrival_time", "scheduled_arrival_time", "direction",
+        "train_code", "api_reachable", "expected_arrival", "time_until_arrival",
+    }
+    custom_keys = {k for k in following_state.attributes if not isinstance(k, EntityStateAttribute)}
+    assert custom_keys == {
+        "expected_arrival_time", "scheduled_arrival_time", "direction",
+        "train_code", "api_reachable",
+    }
+
     import datetime as _dt
     next_dt = _dt.datetime.fromisoformat(next_state.state)
     following_dt = _dt.datetime.fromisoformat(following_state.state)
@@ -265,6 +281,8 @@ async def test_following_train_due_unknown_when_single_train(
     state = hass.states.get(following_id)
     assert state is not None
     assert state.state == "unknown"
+    custom = {k: v for k, v in state.attributes.items() if not isinstance(k, EntityStateAttribute)}
+    assert custom == {"api_reachable": True}
 
 
 def test_none_data_returns_no_attributes() -> None:
@@ -285,7 +303,11 @@ async def test_non_empty_data_keeps_next_train_attributes(
     state = hass.states.get(entity_id)
     assert state is not None
     assert state.attributes["api_reachable"] is True
-    assert len(state.attributes["upcoming_trains"]) == 1
+    custom_keys = {k for k in state.attributes if not isinstance(k, EntityStateAttribute)}
+    assert custom_keys == {
+        "expected_arrival_time", "scheduled_arrival_time", "direction",
+        "train_code", "api_reachable", "expected_arrival", "time_until_arrival",
+    }
     # ``next_train_due`` is a TIMESTAMP sensor: the state is an
     # ISO 8601 datetime derived from the API's signed
     # ``due_in_mins`` offset (the ``HH:MM`` ``expected_arrival_time``
@@ -298,7 +320,6 @@ async def test_non_empty_data_keeps_next_train_attributes(
     import datetime as _dt
     parsed_state = _dt.datetime.fromisoformat(state.state)
     assert parsed_state.tzinfo is not None
-    assert state.attributes["train_type"] == "DART"
     # The expected arrival is mirrored as an ISO 8601 string. With
     # the offset-based parsing logic the attribute is recomputed on
     # every read (the state was frozen at the last refresh
