@@ -79,9 +79,9 @@ def test_strings_and_translations_are_structurally_aligned() -> None:
 def test_flow_error_keys_referenced_by_config_flow_resolve(file_name: str) -> None:
     """Every error base used in config_flow.py exists in the strings files."""
     source = (INTEGRATION_DIR / "config_flow.py").read_text(encoding="utf-8")
-    referenced = set(
-        re.findall(r'errors\["base"\]\s*=\s*"([^"]+)"', source)
-    ) | set(re.findall(r'errors\.setdefault\("base",\s*"([^"]+)"\)', source))
+    referenced = set(re.findall(r'errors\["base"\]\s*=\s*"([^"]+)"', source)) | set(
+        re.findall(r'errors\.setdefault\("base",\s*"([^"]+)"\)', source)
+    )
     assert referenced, "expected config_flow.py to reference flow error keys"
 
     defined = set(_load_json(file_name)["config"]["error"])

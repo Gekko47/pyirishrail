@@ -65,9 +65,7 @@ async def test_ping_success_records_health(hass: HomeAssistant) -> None:
     assert snapshot["healthy"] is True
     assert snapshot["last_success"] is not None
     assert snapshot["last_error"] is None
-    assert snapshot["interval_minutes"] == (
-        HEALTH_CHECK_INTERVAL.total_seconds() / 60
-    )
+    assert snapshot["interval_minutes"] == (HEALTH_CHECK_INTERVAL.total_seconds() / 60)
 
 
 async def test_notify_listeners_isolates_a_raising_listener(
@@ -131,9 +129,7 @@ async def test_ping_failure_then_recovery(hass: HomeAssistant) -> None:
 
 async def test_ping_catches_unexpected_exceptions(hass: HomeAssistant) -> None:
     """Any non-IrishRail exception still lands as an unhealthy probe."""
-    monitor = ConnectivityMonitor(
-        hass, _client(error=RuntimeError("socket exploded"))
-    )
+    monitor = ConnectivityMonitor(hass, _client(error=RuntimeError("socket exploded")))
 
     await monitor.async_ping()
 
@@ -207,9 +203,7 @@ async def test_async_start_is_idempotent_and_probes_immediately(
 # ── Shared helper for the providership-purge tests ──────────────────────────
 
 
-def _entry(
-    hass: HomeAssistant, unique_id: str = "PEARS_Northbound"
-) -> MockConfigEntry:
+def _entry(hass: HomeAssistant, unique_id: str = "PEARS_Northbound") -> MockConfigEntry:
     """Register one minimal Irish Rail config entry on hass."""
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -294,8 +288,8 @@ async def test_claim_purges_orphan_global_entity_rows(
     # ``entities.get(...)`` then returns ``None`` for (covers the
     # ``registry_entry is None`` short-circuit, the rare TOCTOU
     # window between ``async_get_entity_id`` and ``entities.get``).
-    fake_registry.async_get_entity_id.side_effect = (
-        lambda domain, platform, unique_id: {
+    fake_registry.async_get_entity_id.side_effect = lambda domain, platform, unique_id: (
+        {
             GLOBAL_HEALTH_UNIQUE_ID: (
                 "irish_rail.irish_rail_irish_rail_api_connectivity"
             ),
@@ -321,9 +315,9 @@ async def test_claim_purges_orphan_global_entity_rows(
     ):
         _purge_orphan_global_entities(hass, expected_owner=dead_owner)
 
-    assert (
-        fake_registry.async_get_entity_id.call_count == 2
-    ), "purger should consult the registry for each global unique id"
+    assert fake_registry.async_get_entity_id.call_count == 2, (
+        "purger should consult the registry for each global unique id"
+    )
     # Only the connectivity row is dead-owned and present in
     # ``entities``; the rebuild row's entity_id is the stale one
     # (``registry_entry is None`` short-circuit) and the
@@ -332,9 +326,9 @@ async def test_claim_purges_orphan_global_entity_rows(
         "irish_rail.irish_rail_irish_rail_api_connectivity",
     ]
     assert "irish_rail.irish_rail_already_belongs_to_live" in fake_rows
-    assert fake_registry.entities.get(
-        "irish_rail.irish_rail_rebuild_stops_matrix"
-    ) is None
+    assert (
+        fake_registry.entities.get("irish_rail.irish_rail_rebuild_stops_matrix") is None
+    )
     # The device row is removed alongside the entity rows: the purger
     # looked up the device by identifier, matched the strict-equality
     # branch on ``config_entry_id``, and called ``async_remove_device``

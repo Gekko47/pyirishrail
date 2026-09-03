@@ -47,20 +47,20 @@ _DTD_KEYWORDS: tuple[str, ...] = (
 
 
 __all__ = [
-    'API_BASE_URL',
-    'DEFAULT_TIMEOUT',
-    'MOVEMENT_CACHE_MAX_ENTRIES',
-    'STATION_TYPE_TO_CODE_DICT',
-    'IrishRailClient',
-    'IrishRailConnectionError',
-    'IrishRailError',
-    'IrishRailParseError',
-    'IrishRailTimeoutError',
-    'Station',
-    'TrainDueTime',
-    'TrainMovement',
-    'TrainPosition',
-    'parse_station_data',
+    "API_BASE_URL",
+    "DEFAULT_TIMEOUT",
+    "MOVEMENT_CACHE_MAX_ENTRIES",
+    "STATION_TYPE_TO_CODE_DICT",
+    "IrishRailClient",
+    "IrishRailConnectionError",
+    "IrishRailError",
+    "IrishRailParseError",
+    "IrishRailTimeoutError",
+    "Station",
+    "TrainDueTime",
+    "TrainMovement",
+    "TrainPosition",
+    "parse_station_data",
 ]
 
 
@@ -179,8 +179,7 @@ def _scoped_journey_stops(
     # stops of later same-day journeys that happen to share the destination.
     run_end = cut_index + 1
     while (
-        run_end < len(rows)
-        and row_positions[run_end] == row_positions[run_end - 1] + 1
+        run_end < len(rows) and row_positions[run_end] == row_positions[run_end - 1] + 1
     ):
         run_end += 1
     return rows[cut_index + 1 : run_end]
@@ -232,9 +231,12 @@ class IrishRailClient:
         """
         url = f"{API_BASE_URL}{endpoint}"
         try:
-            async with self._gate.acquire(priority), self._session.get(
-                url, params=params, timeout=DEFAULT_TIMEOUT
-            ) as response:
+            async with (
+                self._gate.acquire(priority),
+                self._session.get(
+                    url, params=params, timeout=DEFAULT_TIMEOUT
+                ) as response,
+            ):
                 if response.status != 200:
                     raise IrishRailConnectionError(
                         f"Unsuccessful status code from Irish Rail API: "
@@ -479,9 +481,7 @@ class IrishRailClient:
         trivially contains it), and remaining stop names are deduplicated
         case-insensitively (first casing wins) and sorted case-insensitively.
         """
-        trains = await self.async_get_station_by_code(
-            station_code, direction=direction
-        )
+        trains = await self.async_get_station_by_code(station_code, direction=direction)
 
         async def _route_stops(train_code: str) -> list[TrainMovement]:
             try:
@@ -517,9 +517,7 @@ class IrishRailClient:
             )
             for stop in journey:
                 name = stop.location
-                if not name or (
-                    exclude_lower and name.lower() == exclude_lower
-                ):
+                if not name or (exclude_lower and name.lower() == exclude_lower):
                     continue
                 seen.setdefault(name.lower(), name)
         return sorted(seen.values(), key=str.lower)
@@ -752,9 +750,7 @@ class IrishRailClient:
             matches[code] = any(
                 stop.location.lower() == candidates[code][0] for stop in outcome
             )
-            observed.update(
-                stop.location for stop in outcome if stop.location
-            )
+            observed.update(stop.location for stop in outcome if stop.location)
 
         if observed:
             self.last_downstream_stop_names = frozenset(observed)
@@ -800,8 +796,7 @@ def parse_station_data(root: Element) -> list[TrainDueTime]:
                 # is exactly the kind of silent failure users hit when
                 # the upstream API changes a field's format.
                 _LOGGER.warning(
-                    "Non-numeric 'Duein' value from Irish Rail API, "
-                    "coerced to 0: %r",
+                    "Non-numeric 'Duein' value from Irish Rail API, coerced to 0: %r",
                     due_str,
                 )
                 due_in_mins = 0
@@ -810,8 +805,7 @@ def parse_station_data(root: Element) -> list[TrainDueTime]:
                 late_mins = int(late_str)
             except ValueError:
                 _LOGGER.warning(
-                    "Non-numeric 'Late' value from Irish Rail API, "
-                    "coerced to 0: %r",
+                    "Non-numeric 'Late' value from Irish Rail API, coerced to 0: %r",
                     late_str,
                 )
                 late_mins = 0

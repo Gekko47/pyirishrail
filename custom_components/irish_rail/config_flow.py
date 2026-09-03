@@ -167,6 +167,7 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_DIRECTION, default=default): vol.In(options),
             }
         )
+
     def _build_schema(self) -> vol.Schema:
         """Build the first-step schema (station filter text only)."""
         return vol.Schema(
@@ -357,9 +358,7 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
             for stop in stops:
                 options[stop] = stop
             field = {
-                vol.Optional(CONF_STOPS_AT, default=NO_FILTER_SENTINEL): vol.In(
-                    options
-                )
+                vol.Optional(CONF_STOPS_AT, default=NO_FILTER_SENTINEL): vol.In(options)
             }
         else:
             field = build_stops_at_schema_field(self._stations, NO_FILTER_SENTINEL)
@@ -388,9 +387,7 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         station_name = selected_station.name if selected_station else station_code
 
-        await self.async_set_unique_id(
-            build_unique_id(station_code, self._direction)
-        )
+        await self.async_set_unique_id(build_unique_id(station_code, self._direction))
         self._abort_if_unique_id_configured()
 
         title = station_name

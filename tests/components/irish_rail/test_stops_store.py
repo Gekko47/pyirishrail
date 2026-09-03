@@ -199,7 +199,8 @@ async def test_bundled_seed_concurrent_loads_share_one_disk_read(
     # Hermetic reset: a prior test in the session may have populated
     # the cache and instantiated the lock.
     monkeypatch.setattr(store_module, "_SEED_CACHE", None)
-    monkeypatch.setattr(store_module, "_SEED_CACHE_LOCK", None)
+    # Don't reset _SEED_CACHE_LOCK - it's now a module-level constant lock
+    # that should not be modified between tests
 
     n_callers = 10
     started = 0
@@ -246,9 +247,7 @@ def test_lookup_tolerates_broken_direction_layers_and_blank_buckets() -> None:
     assert lookup_in_matrix(blank_bucket, "TARA", "Northbound") is None
 
     mixed_bucket = {
-        "stations": {
-            "KENT": {"directions": {"northbound": [123, None, "", "Cobh"]}}
-        }
+        "stations": {"KENT": {"directions": {"northbound": [123, None, "", "Cobh"]}}}
     }
     assert lookup_in_matrix(mixed_bucket, "KENT", "Northbound") == ["Cobh"]
 
@@ -281,3 +280,47 @@ async def test_bundled_seed_with_nondict_json_degrades_to_empty(
     with patch.object(json_module, "loads", return_value=["not", "a", "dict"]):
         assert await async_load_bundled_stops_matrix() == {}
     assert "Could not load bundled stops matrix" in caplog.text
+
+
+async def test_bundled_seed_invalid_json_degrades_to_empty(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A seed file containing syntactically invalid JSON degrades safely.
+
+    A HACS update can momentarily leave the bundled seed truncated or
+    half-written; ``json.loads`` then raises ``JSONDecodeError``. The
+    loader must log the parse failure explicitly and degrade to an empty
+    matrix (integration keeps working) instead of crashing setup.
+    """
+    import json as json_module
+
+    with (
+        patch.object(
+            json_module,
+            "loads",
+            side_effect=json_module.JSONDecodeError("Expecting value", "{", 0),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        assert await async_load_bundled_stops_matrix() == {}
+
+    # The decode error is logged distinctly from the generic load warning
+    # so a corrupted bundle is diagnosable from the log alone.
+    assert "Invalid JSON in bundled stops matrix" in caplog.text
+    assert "Could not load bundled stops matrix" in caplog.text
+    # The degraded-empty result is cached like any successful load.
+    assert await async_load_bundled_stops_matrix() == {}
+
+
+def test_seed_cache_lock_is_a_stable_module_level_singleton() -> None:
+    """The seed-cache guard is one module-level lock, never lazily rebuilt.
+
+    The previous lazily-initialised lock had a check-then-set race: two
+    coroutines arriving while ``_SEED_CACHE_LOCK`` was ``None`` each built
+    their own lock and both read the seed file. The lock is now created
+    once at import time; ``_get_seed_cache_lock`` must hand back that
+    exact instance on every call.
+    """
+    assert isinstance(ir_store._SEED_CACHE_LOCK, asyncio.Lock)
+    assert ir_store._get_seed_cache_lock() is ir_store._SEED_CACHE_LOCK
+    assert ir_store._get_seed_cache_lock() is ir_store._get_seed_cache_lock()

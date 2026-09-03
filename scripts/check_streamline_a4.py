@@ -6,6 +6,7 @@ Exits non-zero when any are present.
 
 Run: python scripts/check_streamline_a4.py
 """
+
 from __future__ import annotations
 
 import re

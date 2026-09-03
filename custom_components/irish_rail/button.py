@@ -45,6 +45,7 @@ from .client import IrishRailClient
 from .const import (
     DOMAIN,
     GLOBAL_LAST_REBUILD_KEY,
+    GLOBAL_REBUILD_ENTITY_KEY,
     GLOBAL_REBUILD_UNIQUE_ID,
     GLOBAL_SERVICES_DEVICE_NAME,
     GLOBAL_SERVICES_IDENTIFIER,
@@ -62,9 +63,6 @@ SERVICE_REBUILD = "rebuild_stops_matrix"
 # running updates the same notification rather than piling up a stack of
 # "rebuild started" toasts.
 REBUILD_NOTIFICATION_ID = "irish_rail_stops_matrix_rebuild"
-
-# The on-disk key the service handler reaches the live button through.
-GLOBAL_REBUILD_ENTITY_KEY = "global_rebuild_entity"
 
 _UNSET_ATTRIBUTES: dict[str, Any] = {"status": "never run since startup"}
 
@@ -121,6 +119,7 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
         self._lock = asyncio.Lock()
         self.running = False
         self.last_result: RebuildResult | None = None
+        self._rebuild_task: asyncio.Task[None] | None = None
 
     @property
     def available(self) -> bool:
@@ -134,21 +133,36 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
         return not self.running
 
     async def async_press(self) -> None:
-        """Handle a press: run one guarded rebuild to completion."""
+        """Handle a press: schedule one guarded rebuild as a background task.
+
+        The rebuild runs as a background task so the button returns immediately
+        and Home Assistant remains responsive during the several-minute job.
+        """
         if self.running or self._lock.locked():
             _LOGGER.warning(
                 "Stops-matrix rebuild is already running; ignoring this press"
             )
-            raise RuntimeError(
-                "The Irish Rail stops-matrix rebuild is already running"
-            )
+            raise RuntimeError("The Irish Rail stops-matrix rebuild is already running")
+
+        # Start the rebuild as a background task
+        self._rebuild_task = self.hass.async_create_background_task(
+            self._async_run_rebuild(),
+            name="irish_rail_matrix_rebuild",
+        )
+
+    async def _async_run_rebuild(self) -> None:
+        """Run the rebuild to completion in the background.
+
+        This method runs as a background task and handles all the rebuild
+        logic including notifications and state updates.
+        """
         async with self._lock:
             self.running = True
             _create_notification(
                 self.hass,
                 (
                     "Sampling every Irish Rail station in the background to "
-                    "refresh the bundled \"stops at\" matrix. The job takes "
+                    'refresh the bundled "stops at" matrix. The job takes '
                     "a few minutes; this notification will update when it "
                     "finishes. Live progress is in the button's state "
                     "attributes."
@@ -172,7 +186,6 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
                     ),
                     title="Irish Rail · stops-matrix rebuild failed",
                 )
-                raise
             else:
                 result = self.last_result
                 # ``async_run_matrix_rebuild`` always returns a real
@@ -195,9 +208,9 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
                 )
             finally:
                 self.running = False
-                self.hass.data.setdefault(DOMAIN, {})[
-                    GLOBAL_LAST_REBUILD_KEY
-                ] = self.last_result
+                self.hass.data.setdefault(DOMAIN, {})[GLOBAL_LAST_REBUILD_KEY] = (
+                    self.last_result
+                )
                 self._write_state_if_added()
 
     @callback
@@ -271,6 +284,15 @@ async def async_setup_entry(
     # always starts from a clean slate and the user never sees a stale
     # "rebuild finished" toast for an integration that is no longer loaded.
     async def _async_cleanup() -> None:
+        # Cancel any running rebuild task
+        if entity._rebuild_task is not None:
+            entity._rebuild_task.cancel()
+            try:
+                await entity._rebuild_task
+            except asyncio.CancelledError:
+                pass
+            entity._rebuild_task = None
+
         if domain_data.get(GLOBAL_REBUILD_ENTITY_KEY) is entity:
             domain_data.pop(GLOBAL_REBUILD_ENTITY_KEY, None)
         if hass.services.has_service(DOMAIN, SERVICE_REBUILD):
@@ -284,8 +306,7 @@ async def async_setup_entry(
         button: Any | None = domain_data.get(GLOBAL_REBUILD_ENTITY_KEY)
         if button is None:
             _LOGGER.warning(
-                "No Irish Rail rebuild button is currently loaded; "
-                "service call ignored"
+                "No Irish Rail rebuild button is currently loaded; service call ignored"
             )
             return
         await button.async_press()

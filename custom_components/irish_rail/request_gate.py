@@ -126,18 +126,20 @@ class RequestGate:
                 f"priority must be 'normal' or 'background', got {priority!r}"
             )
         waiter = _Waiter(priority)
-        slot_owned = False
+        admitted = False
         try:
             async with self._lock:
                 self._waiters.append(waiter)
                 self._admit_eligible_waiters_locked()
-            # Exactly one wait on exactly one Event. If the sweep above
-            # admitted us the event is already set and this returns
-            # immediately; otherwise a future release's sweep sets it.
-            await waiter.event.wait()
-            # No await point between the wait returning and the flag,
-            # so cancellation cannot split them.
-            slot_owned = True
+                # Check if we were admitted by the sweep
+                if waiter.event.is_set():
+                    admitted = True
+
+            if not admitted:
+                # Wait for admission (event set by a release sweep)
+                await waiter.event.wait()
+                admitted = True
+
             # Sleep (outside the lock) until OUR reserved exit time.
             delta = waiter.exit_at - self._clock()
             if delta > 0:
@@ -156,23 +158,26 @@ class RequestGate:
                 if self._next_exit is None or floor > self._next_exit:
                     self._next_exit = floor
         except BaseException:
-            if slot_owned or waiter.event.is_set():
+            if admitted:
                 # We own a slot: either we got past the wait, or
                 # cancellation was delivered at the wait() await point
-                # after the sweep had already admitted us (the event
-                # being set is exactly the marker that _in_flight was
-                # incremented on our behalf).
+                # after the sweep had already admitted us.
                 await self._release_slot()
             else:
                 # Still queued (or never admitted): take ourselves out.
-                # The removal cannot raise ValueError: the gate lock is
-                # never held across an await, so no admission sweep can
-                # run between the event check above and this removal. If
-                # a refactor ever breaks that invariant this line fails
-                # loudly in tests instead of silently leaking an admitted
-                # slot.
+                release_needed = False
                 async with self._lock:
-                    self._waiters.remove(waiter)
+                    try:
+                        self._waiters.remove(waiter)
+                    except ValueError:
+                        # Already removed by admission sweep between our
+                        # check and now - we were admitted but did not
+                        # know it yet. The slot must be released below,
+                        # OUTSIDE the lock (_release_slot re-acquires it
+                        # and asyncio.Lock is not reentrant).
+                        release_needed = True
+                if release_needed:
+                    await self._release_slot()
             raise
         try:
             yield

@@ -187,12 +187,12 @@ async def test_api_parse_error(aresponses: ResponsesMockServer) -> None:
         # the byte-level guard: the policy is "no DTD declarations in
         # API responses", independent of whether an entity reference
         # is actually present.
-        b'<!DOCTYPE a [<!ELEMENT a EMPTY>]><a/>',
+        b"<!DOCTYPE a [<!ELEMENT a EMPTY>]><a/>",
         # Uppercase ``<!DOCTYPE`` keyword. The guard's pre-lowering
         # pass makes the keyword match case-insensitive; the XML 1.0
         # spec permits either case in practice, and Irish Rail's
         # serialiser is case-stable.
-        b'<!DOCTYPE a [<!ELEMENT a EMPTY>]><a/>'.upper(),
+        b"<!DOCTYPE a [<!ELEMENT a EMPTY>]><a/>".upper(),
         # Real billion-laughs bomb: 10×10×10 nested entity
         # expansion. Empirically verified (2026-08-30) that the stdlib
         # ``xml.etree.ElementTree`` parser on Python 3.14.2's bundled
@@ -257,11 +257,11 @@ async def test_dtd_or_entity_payload_is_rejected(
         b'<! DOCTYPE b [<!ENTITY a "boom">]><b/>',
         # Whitespace only between ``<`` and the keyword with no DTD
         # content at all.
-        b'<! DOCTYPE b><b/>',
+        b"<! DOCTYPE b><b/>",
         # Tab between ``<`` and the keyword.
-        b'<\t!DOCTYPE b><b/>',
+        b"<\t!DOCTYPE b><b/>",
         # Newline between ``<`` and the keyword.
-        b'<\n!DOCTYPE b><b/>',
+        b"<\n!DOCTYPE b><b/>",
         # Whitespace between ``<`` and ``ENTITY`` (a bare declaration
         # with no DTD; the parser still rejects it because the
         # ``<!`` token is malformed).
@@ -319,9 +319,9 @@ async def test_cdata_section_with_doctype_substring_is_rejected(
     change in the changelog (the security policy would change).
     """
     body = (
-        '<ArrayOfObjStation>'
-        '<objStation>'
-        '<StationDesc><![CDATA[See our <!doctype policy page for '
+        "<ArrayOfObjStation>"
+        "<objStation>"
+        "<StationDesc><![CDATA[See our <!doctype policy page for "
         "details on data sources]]></StationDesc>"
         "<StationCode>PEARS</StationCode>"
         "</objStation>"
@@ -358,8 +358,8 @@ async def test_escaped_doctype_substring_in_text_parses(
     tradeoff).
     """
     body = (
-        '<ArrayOfObjStation>'
-        '<objStation>'
+        "<ArrayOfObjStation>"
+        "<objStation>"
         "<StationDesc>See &lt;!doctype policy page</StationDesc>"
         "<StationCode>PEARS</StationCode>"
         "</objStation>"
@@ -395,7 +395,7 @@ async def test_external_dtd_only_doc_is_rejected_by_guard(
     the change in the changelog.
     """
     q = chr(34)
-    body = f'<!DOCTYPE a SYSTEM {q}http://example.invalid/a.dtd{q}><a/>'
+    body = f"<!DOCTYPE a SYSTEM {q}http://example.invalid/a.dtd{q}><a/>"
     aresponses.add(
         "api.irishrail.ie",
         "/realtime/realtime.asmx/getAllStationsXML",
@@ -810,6 +810,7 @@ async def test_api_timeout_error() -> None:
 
 # ── stops_at pruning hardening & movement cache (roadmap Phase 4.6) ──────────
 
+
 def _station_data_xml(codes: list[str]) -> str:
     """Return a station-data document with one Bray-bound train per code."""
     records = "\n".join(
@@ -924,7 +925,6 @@ async def test_station_by_code_stops_at_multiple_candidates_concurrently(
         used to enforce and what the gate now enforces instead.
         """
         from xml.etree.ElementTree import fromstring
-
 
         async with self._gate.acquire(priority):
             # Inside the gate's critical section, so the sample is
@@ -1338,6 +1338,7 @@ async def test_station_stops_at_options_isolate_unexpected_lookup_errors() -> No
 
 # ── journey-scoped routes & stops-matrix learning (roadmap 4.8) ─────────────
 
+
 def _journey_movement(
     location: str,
     location_code: str,
@@ -1401,18 +1402,14 @@ def test_scope_journey_stops_method_delegates_to_helper() -> None:
     ]
 
     client = IrishRailClient(MagicMock())
-    scoped = client.scope_journey_stops(
-        movements, "Greystones", station_code="PEARS"
-    )
+    scoped = client.scope_journey_stops(movements, "Greystones", station_code="PEARS")
 
     assert [stop.location for stop in scoped] == ["Bray", "Greystones"]
     # Same answer the helper produces, by construction.
     expected = ir_client._scoped_journey_stops(
         movements, "Greystones", station_code="PEARS"
     )
-    assert [stop.location for stop in scoped] == [
-        stop.location for stop in expected
-    ]
+    assert [stop.location for stop in scoped] == [stop.location for stop in expected]
 
 
 def test_scoped_journey_stops_cuts_by_station_name_fallback() -> None:
@@ -1439,9 +1436,7 @@ def test_scoped_journey_stops_blank_destination_keeps_all_rows() -> None:
         _journey_movement("Bray", "BRAY", destination=""),
     ]
 
-    scoped = ir_client._scoped_journey_stops(
-        movements, "", station_code="PEARS"
-    )
+    scoped = ir_client._scoped_journey_stops(movements, "", station_code="PEARS")
 
     assert [stop.location for stop in scoped] == ["Bray"]
 

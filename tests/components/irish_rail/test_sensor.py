@@ -95,8 +95,7 @@ def _entity_id_for(hass: HomeAssistant, entry: MockConfigEntry, key: str) -> str
     return next(
         e.entity_id
         for e in registry.entities.values()
-        if e.config_entry_id == entry.entry_id
-        and e.unique_id.endswith(f"_{key}")
+        if e.config_entry_id == entry.entry_id and e.unique_id.endswith(f"_{key}")
     )
 
 
@@ -114,7 +113,11 @@ async def test_empty_train_list_reports_api_reachable(
         # The API responded, so the attributes must be present even though
         # there are no trains.
         assert state.attributes["api_reachable"] is True
-        custom = {k: v for k, v in state.attributes.items() if not isinstance(k, EntityStateAttribute)}
+        custom = {
+            k: v
+            for k, v in state.attributes.items()
+            if not isinstance(k, EntityStateAttribute)
+        }
         assert custom == {"api_reachable": True}
         # No train details exist without trains; the state is unknown.
         assert state.state == "unknown"
@@ -194,15 +197,23 @@ async def test_all_entities_unavailable_after_failed_refresh_then_recover(
     # the wall-clock time (the test runs against the real wall clock,
     # which is unrelated to the API's ``12:10`` literal).
     import datetime as _dt
+
     parsed_state = _dt.datetime.fromisoformat(due_state.state)
     # The timestamp is tz-aware and resolves the offset to the same
     # timezone the integration runs in.
     assert parsed_state.tzinfo is not None
     assert due_state.attributes["api_reachable"] is True
-    custom_keys = {k for k in due_state.attributes if not isinstance(k, EntityStateAttribute)}
+    custom_keys = {
+        k for k in due_state.attributes if not isinstance(k, EntityStateAttribute)
+    }
     assert custom_keys == {
-        "expected_arrival_time", "scheduled_arrival_time", "direction",
-        "train_code", "api_reachable", "expected_arrival", "time_until_arrival",
+        "expected_arrival_time",
+        "scheduled_arrival_time",
+        "direction",
+        "train_code",
+        "api_reachable",
+        "expected_arrival",
+        "time_until_arrival",
     }
     # ``time_until_arrival`` is the integer seconds from now to the
     # expected arrival. The mock train's ``due_in_mins`` is 15, so the
@@ -236,9 +247,7 @@ async def test_following_train_due_uses_second_train(
     With two services scheduled, ``next_train_due`` points at the first
     and ``following_train_due`` at the second, which is due later.
     """
-    entry = await _setup_entry(
-        hass, [_mock_train(due_in=10), _mock_train(due_in=20)]
-    )
+    entry = await _setup_entry(hass, [_mock_train(due_in=10), _mock_train(due_in=20)])
 
     next_id = _entity_id_for(hass, entry, "next_train_due")
     following_id = _entity_id_for(hass, entry, "following_train_due")
@@ -250,18 +259,31 @@ async def test_following_train_due_uses_second_train(
 
     # ``next_train_due`` carries the 7-key surface (with the countdown
     # pair); ``following_train_due`` the 5-key surface (no countdown).
-    custom_keys = {k for k in next_state.attributes if not isinstance(k, EntityStateAttribute)}
-    assert custom_keys == {
-        "expected_arrival_time", "scheduled_arrival_time", "direction",
-        "train_code", "api_reachable", "expected_arrival", "time_until_arrival",
+    custom_keys = {
+        k for k in next_state.attributes if not isinstance(k, EntityStateAttribute)
     }
-    custom_keys = {k for k in following_state.attributes if not isinstance(k, EntityStateAttribute)}
     assert custom_keys == {
-        "expected_arrival_time", "scheduled_arrival_time", "direction",
-        "train_code", "api_reachable",
+        "expected_arrival_time",
+        "scheduled_arrival_time",
+        "direction",
+        "train_code",
+        "api_reachable",
+        "expected_arrival",
+        "time_until_arrival",
+    }
+    custom_keys = {
+        k for k in following_state.attributes if not isinstance(k, EntityStateAttribute)
+    }
+    assert custom_keys == {
+        "expected_arrival_time",
+        "scheduled_arrival_time",
+        "direction",
+        "train_code",
+        "api_reachable",
     }
 
     import datetime as _dt
+
     next_dt = _dt.datetime.fromisoformat(next_state.state)
     following_dt = _dt.datetime.fromisoformat(following_state.state)
     assert following_dt.tzinfo is not None
@@ -281,7 +303,11 @@ async def test_following_train_due_unknown_when_single_train(
     state = hass.states.get(following_id)
     assert state is not None
     assert state.state == "unknown"
-    custom = {k: v for k, v in state.attributes.items() if not isinstance(k, EntityStateAttribute)}
+    custom = {
+        k: v
+        for k, v in state.attributes.items()
+        if not isinstance(k, EntityStateAttribute)
+    }
     assert custom == {"api_reachable": True}
 
 
@@ -303,10 +329,17 @@ async def test_non_empty_data_keeps_next_train_attributes(
     state = hass.states.get(entity_id)
     assert state is not None
     assert state.attributes["api_reachable"] is True
-    custom_keys = {k for k in state.attributes if not isinstance(k, EntityStateAttribute)}
+    custom_keys = {
+        k for k in state.attributes if not isinstance(k, EntityStateAttribute)
+    }
     assert custom_keys == {
-        "expected_arrival_time", "scheduled_arrival_time", "direction",
-        "train_code", "api_reachable", "expected_arrival", "time_until_arrival",
+        "expected_arrival_time",
+        "scheduled_arrival_time",
+        "direction",
+        "train_code",
+        "api_reachable",
+        "expected_arrival",
+        "time_until_arrival",
     }
     # ``next_train_due`` is a TIMESTAMP sensor: the state is an
     # ISO 8601 datetime derived from the API's signed
@@ -318,6 +351,7 @@ async def test_non_empty_data_keeps_next_train_attributes(
     # against the real wall clock, which is unrelated to the API's
     # ``12:10`` literal).
     import datetime as _dt
+
     parsed_state = _dt.datetime.fromisoformat(state.state)
     assert parsed_state.tzinfo is not None
     # The expected arrival is mirrored as an ISO 8601 string. With
@@ -359,24 +393,36 @@ def test_parse_expected_arrival_handles_blank_and_unparseable_inputs() -> None:
     base = _mock_train(due_in=10)
 
     # Blank / empty: return None rather than today's midnight.
-    assert _parse_expected_arrival(
-        _train_without_offset(base, expected_arrival_time=""),
-        now,
-    ) is None
+    assert (
+        _parse_expected_arrival(
+            _train_without_offset(base, expected_arrival_time=""),
+            now,
+        )
+        is None
+    )
     # Malformed hour: return None.
-    assert _parse_expected_arrival(
-        _train_without_offset(base, expected_arrival_time="not a time"),
-        now,
-    ) is None
+    assert (
+        _parse_expected_arrival(
+            _train_without_offset(base, expected_arrival_time="not a time"),
+            now,
+        )
+        is None
+    )
     # Malformed minute: return None.
-    assert _parse_expected_arrival(
-        _train_without_offset(base, expected_arrival_time="12"),
-        now,
-    ) is None
-    assert _parse_expected_arrival(
-        _train_without_offset(base, expected_arrival_time="12:xx"),
-        now,
-    ) is None
+    assert (
+        _parse_expected_arrival(
+            _train_without_offset(base, expected_arrival_time="12"),
+            now,
+        )
+        is None
+    )
+    assert (
+        _parse_expected_arrival(
+            _train_without_offset(base, expected_arrival_time="12:xx"),
+            now,
+        )
+        is None
+    )
     # Well-formed: the signed offset drives the absolute timestamp.
     # ``now=10:00`` and ``due_in_mins=225`` (3h45m) lands at 13:45
     # today, which matches the ``HH:MM`` carried alongside.

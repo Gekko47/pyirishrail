@@ -309,9 +309,7 @@ async def test_user_step_offers_only_discovered_directions(
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {}
-        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "filter_options"
 
@@ -362,9 +360,7 @@ async def test_directions_step_falls_back_to_free_text_on_discovery_error(
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {}
-        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "filter_options"
 
@@ -485,9 +481,7 @@ async def test_directions_step_defaults_to_all_when_no_trains_due(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
         # Blank filter: the sole candidate auto-advances to directions.
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {}
-        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "filter_options"
 
@@ -499,9 +493,7 @@ async def test_directions_step_defaults_to_all_when_no_trains_due(
         assert result["step_id"] == "directions"
 
         # Submitting the form default ("All") stores no filter at all.
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {}
-        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
 
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert result["title"] == "Dublin Pearse"
@@ -538,9 +530,7 @@ async def test_stops_at_step_lists_discovered_relevant_stops(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
         # Blank filter matches both stations: a pick screen appears.
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {}
-        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
         assert result["step_id"] == "station_pick"
 
         result = await hass.config_entries.flow.async_configure(
@@ -599,16 +589,12 @@ async def test_filter_options_both_off_creates_unfiltered_entry(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
         # Blank filter: the sole candidate auto-advances to filter options.
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {}
-        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "filter_options"
 
         # Both boxes unticked: monitor everything, no extra steps.
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {}
-        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
 
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert result["title"] == "Dublin Pearse"
@@ -1503,12 +1489,15 @@ async def test_reconfigure_leaves_sibling_direction_entries_untouched(
     # The sibling All entry is completely untouched: same live entity IDs,
     # still loaded, own device intact.
     assert all_entry.state is config_entries.ConfigEntryState.LOADED
-    assert sorted(
-        registry_entry.entity_id
-        for registry_entry in entity_registry.async_entries_for_config_entry(
-            ent_reg, all_entry.entry_id
+    assert (
+        sorted(
+            registry_entry.entity_id
+            for registry_entry in entity_registry.async_entries_for_config_entry(
+                ent_reg, all_entry.entry_id
+            )
         )
-    ) == all_entity_ids
+        == all_entity_ids
+    )
     assert (
         device_registry.async_get_device_id_by_identifier(
             hass, (DOMAIN, "PEARS_all"), config_entry_id=all_entry.entry_id
@@ -1549,9 +1538,7 @@ async def test_blank_filter_shows_pick_screen_listing_all(
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {}
-        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
         assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "station_pick"
 
@@ -1642,9 +1629,7 @@ async def test_stops_at_step_falls_back_to_full_list(
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {}
-        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
         assert result["step_id"] == "filter_options"
 
         result = await hass.config_entries.flow.async_configure(
@@ -1716,9 +1701,7 @@ async def test_filter_options_both_on_chains_direction_then_stops(
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {}
-        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
         assert result["step_id"] == "filter_options"
 
         result = await hass.config_entries.flow.async_configure(
@@ -2023,6 +2006,7 @@ async def test_stops_at_step_uses_bundled_seed_before_full_list(
     hass: HomeAssistant,
 ) -> None:
     """The bundled seed matrix is consulted before degrading to all stations."""
+
     async def _pearse_seed() -> dict[str, Any]:
         return {
             "schema_version": 1,

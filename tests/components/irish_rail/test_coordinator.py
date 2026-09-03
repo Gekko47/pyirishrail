@@ -22,6 +22,7 @@ from custom_components.irish_rail.const import (
     CONF_STOPS_AT,
     DOMAIN,
     EMPTY_DATA_ISSUE_THRESHOLD,
+    LEARN_DEBOUNCE_SECONDS,
 )
 from custom_components.irish_rail.coordinator import (
     IrishRailDataUpdateCoordinator,
@@ -72,13 +73,13 @@ async def test_coordinator_update_success(
         data = await coordinator._async_update_data()
 
     assert data == expected
-    mock_fetch.assert_awaited_once_with(
-        "PEARS", direction="Northbound", stops_at=None
-    )
+    mock_fetch.assert_awaited_once_with("PEARS", direction="Northbound", stops_at=None)
 
 
 async def test_coordinator_update_retains_only_two_trains(
-    hass: HomeAssistant, mock_api_client: MagicMock, mock_config_entry: Any,
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    mock_config_entry: Any,
 ) -> None:
     """Only the next two trains from the API's look-ahead window are retained."""
     coordinator = IrishRailDataUpdateCoordinator(
@@ -415,8 +416,8 @@ def test_resolve_scan_interval_clamps_to_bounds(hass: HomeAssistant) -> None:
         _entry_with(options={"scan_interval": "bad"})
     ) == timedelta(seconds=60)
 
-def test_resolve_stops_at_precedence(hass: HomeAssistant) -> None:
 
+def test_resolve_stops_at_precedence(hass: HomeAssistant) -> None:
     """Test stops_at resolution: options > data > no filter."""
     # No configuration at all: no filter.
     assert resolve_stops_at(_entry_with()) is None
@@ -484,8 +485,7 @@ async def test_transition_logging_once_per_direction(
         errors = [
             record
             for record in caplog.records
-            if record.name == coordinator_logger
-            and record.levelno >= logging.ERROR
+            if record.name == coordinator_logger and record.levelno >= logging.ERROR
         ]
         assert len(errors) == 1
 
@@ -496,8 +496,7 @@ async def test_transition_logging_once_per_direction(
         errors = [
             record
             for record in caplog.records
-            if record.name == coordinator_logger
-            and record.levelno >= logging.ERROR
+            if record.name == coordinator_logger and record.levelno >= logging.ERROR
         ]
         assert len(errors) == 0
         assert coordinator.last_update_success is False
@@ -647,8 +646,7 @@ async def test_persistent_empty_data_creates_issue_once_during_service_hours(
     # warning. The exact URL is exposed for stable pinning — if it ever
     # drifts, a maintainer can update both sides together.
     assert issue.learn_more_url == (
-        "https://github.com/Gekko47/pyirishrail/blob/master/"
-        "README.md#known-limitations"
+        "https://github.com/Gekko47/pyirishrail/blob/master/README.md#known-limitations"
     )
     assert create_spy.call_count == 1
     assert len(caplog.records) == 1
@@ -915,3 +913,172 @@ async def test_learn_downstream_stops_logs_matrix_updates(
     assert call_args[0] == "PEARS"
     assert call_args[2] == ["Bray", "Greystones"]
     assert "Stops matrix updated" in caplog.text
+    changing_store.async_record.assert_awaited_once()
+    call_args = changing_store.async_record.await_args.args
+    assert call_args[0] == "PEARS"
+    assert call_args[2] == ["Bray", "Greystones"]
+    assert "Stops matrix updated" in caplog.text
+
+
+# ── Downstream-stop learning debounce (storage-I/O reduction) ────────────────
+
+
+async def test_learn_debounce_accumulates_within_window(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+) -> None:
+    """Polls inside the debounce window accumulate without touching storage.
+
+    The learning path used to hit the Store on every successful poll; the
+    debounce batches observations so slow storage (SD cards, NFS) cannot
+    bottleneck the coordinator's 30-60 s polling loop.
+    """
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, _stops_at_entry(hass)
+    )
+    # Simulate a write that just happened: the next poll is inside the
+    # LEARN_DEBOUNCE_SECONDS window.
+    coordinator._last_learn_time = datetime.now(UTC)
+
+    store = MagicMock()
+    store.async_record = AsyncMock(return_value=False)
+
+    mock_api_client.last_downstream_stop_names = {"Greystones"}
+    with patch(
+        "custom_components.irish_rail.coordinator.get_stops_store",
+        return_value=store,
+    ):
+        await coordinator._async_learn_downstream_stops()
+    mock_api_client.last_downstream_stop_names = {"Bray"}
+    with patch(
+        "custom_components.irish_rail.coordinator.get_stops_store",
+        return_value=store,
+    ):
+        await coordinator._async_learn_downstream_stops()
+
+    # No storage write inside the window, and both observations queued.
+    store.async_record.assert_not_awaited()
+    assert coordinator._pending_stops == {"Greystones", "Bray"}
+
+
+async def test_learn_debounce_flushes_after_window(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+) -> None:
+    """After the debounce window the accumulated batch is written once.
+
+    A batch carries every stop observed since the previous flush; polls
+    that arrive after the flush (but inside the next window) stay queued
+    for the following one.
+    """
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, _stops_at_entry(hass)
+    )
+    coordinator._last_learn_time = datetime.now(UTC) - timedelta(
+        seconds=LEARN_DEBOUNCE_SECONDS + 1
+    )
+
+    store = MagicMock()
+    store.async_record = AsyncMock(return_value=True)
+
+    mock_api_client.last_downstream_stop_names = {"Greystones"}
+    with patch(
+        "custom_components.irish_rail.coordinator.get_stops_store",
+        return_value=store,
+    ):
+        await coordinator._async_learn_downstream_stops()
+
+    # The expired window flushed the first observation immediately.
+    store.async_record.assert_awaited_once()
+    call_args = store.async_record.await_args.args
+    assert call_args[0] == "PEARS"
+    assert call_args[1] == coordinator.direction
+    assert call_args[2] == ["Greystones"]
+    # The queue drained and the debounce clock restarted.
+    assert coordinator._pending_stops == set()
+    assert coordinator._last_learn_time is not None
+
+    # The next poll is inside the fresh window: it queues only.
+    mock_api_client.last_downstream_stop_names = {"Bray"}
+    await coordinator._async_learn_downstream_stops()
+    store.async_record.assert_awaited_once()
+    assert coordinator._pending_stops == {"Bray"}
+
+
+async def test_learn_debounce_batches_multiple_polls_into_one_write(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+) -> None:
+    """Observations from several in-window polls land in a single write.
+
+    Polls 1 and 2 queue their observations inside the active window;
+    poll 3 (after the window expires) flushes the union in one write.
+    """
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, _stops_at_entry(hass)
+    )
+    # Window freshly started: polls queue instead of writing.
+    coordinator._last_learn_time = datetime.now(UTC)
+
+    store = MagicMock()
+    store.async_record = AsyncMock(return_value=True)
+
+    for stops in ({"Greystones"}, {"Bray", "Greystones"}):
+        mock_api_client.last_downstream_stop_names = stops
+        with patch(
+            "custom_components.irish_rail.coordinator.get_stops_store",
+            return_value=store,
+        ):
+            await coordinator._async_learn_downstream_stops()
+    store.async_record.assert_not_awaited()
+    assert coordinator._pending_stops == {"Bray", "Greystones"}
+
+    # The window expires; the next poll flushes the whole batch at once.
+    coordinator._last_learn_time = datetime.now(UTC) - timedelta(
+        seconds=LEARN_DEBOUNCE_SECONDS + 1
+    )
+    mock_api_client.last_downstream_stop_names = {"Bray"}
+    with patch(
+        "custom_components.irish_rail.coordinator.get_stops_store",
+        return_value=store,
+    ):
+        await coordinator._async_learn_downstream_stops()
+
+    store.async_record.assert_awaited_once()
+    call_args = store.async_record.await_args.args
+    assert call_args[2] == ["Bray", "Greystones"]
+    assert coordinator._pending_stops == set()
+
+
+async def test_learn_debounce_restores_pending_on_storage_failure(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+) -> None:
+    """A failed batched write re-queues the stops for the next flush.
+
+    Before the debounce, a failed write lost that poll's observations
+    forever; with batching, the batch must survive so the next window
+    flush retries it.
+    """
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, _stops_at_entry(hass)
+    )
+    stale_flush_time = datetime.now(UTC) - timedelta(seconds=LEARN_DEBOUNCE_SECONDS + 1)
+    coordinator._last_learn_time = stale_flush_time
+
+    failing_store = MagicMock()
+    failing_store.async_record = AsyncMock(side_effect=OSError("disk full"))
+
+    mock_api_client.last_downstream_stop_names = {"Greystones", "Bray"}
+    with patch(
+        "custom_components.irish_rail.coordinator.get_stops_store",
+        return_value=failing_store,
+    ):
+        await coordinator._async_learn_downstream_stops()
+
+    failing_store.async_record.assert_awaited_once()
+    # The batch was restored for the next flush attempt.
+    assert coordinator._pending_stops == {"Greystones", "Bray"}
+    # A failed write must not advance the debounce clock, so the very
+    # next poll retries instead of silently waiting another window.
+    assert coordinator._last_learn_time is stale_flush_time

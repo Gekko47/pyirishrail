@@ -30,9 +30,7 @@ _LOGGER = logging.getLogger(__name__)
 PARALLEL_UPDATES = 0
 
 
-def _parse_expected_arrival(
-    train: TrainDueTime, now: datetime
-) -> datetime | None:
+def _parse_expected_arrival(train: TrainDueTime, now: datetime) -> datetime | None:
     """Convert an API train record into a real ``datetime`` of expected arrival.
 
     The Irish Rail API exposes the wall-clock ``expected_arrival_time``

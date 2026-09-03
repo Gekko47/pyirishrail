@@ -25,6 +25,7 @@ from custom_components.irish_rail.client import IrishRailClient
 from custom_components.irish_rail.const import (
     DOMAIN,
     GLOBAL_HEALTH_UNIQUE_ID,
+    GLOBAL_REBUILD_ENTITY_KEY,
     GLOBAL_REBUILD_UNIQUE_ID,
 )
 from custom_components.irish_rail.models import TrainMovement
@@ -93,6 +94,20 @@ def _successful_rebuild_patches() -> dict[str, Any]:
     }
 
 
+async def _await_rebuild(hass: HomeAssistant) -> None:
+    """Await the live button's background rebuild task to completion.
+
+    ``async_press`` schedules the rebuild as a HA background task and
+    returns immediately (so the event loop stays responsive during the
+    several-minute job). Tests must therefore await the task explicitly
+    to observe its outcome.
+    """
+    button = hass.data[DOMAIN][GLOBAL_REBUILD_ENTITY_KEY]
+    assert button._rebuild_task is not None, "press did not schedule a rebuild"
+    await button._rebuild_task
+    await hass.async_block_till_done()
+
+
 async def test_press_runs_rebuild_and_reports_attributes(
     hass: HomeAssistant,
     tmp_path: Path,
@@ -139,7 +154,7 @@ async def test_press_runs_rebuild_and_reports_attributes(
             {"entity_id": entity_id},
             blocking=True,
         )
-        await hass.async_block_till_done()
+        await _await_rebuild(hass)
 
     # The matching automation service exists alongside the button.
     assert hass.services.has_service(DOMAIN, SERVICE_REBUILD)
@@ -179,9 +194,7 @@ async def test_press_runs_rebuild_and_reports_attributes(
             connectivity_entity_id = candidate.entity_id
             break
     assert connectivity_entity_id is not None
-    connectivity_device_id = (
-        registry.entities[connectivity_entity_id].device_id
-    )
+    connectivity_device_id = registry.entities[connectivity_entity_id].device_id
     assert connectivity_device_id == button_device_id
     assert hass.data[DOMAIN]["global_last_result"].total_stations == 1
 
@@ -211,6 +224,86 @@ def test_button_is_unavailable_while_running() -> None:
     assert "Sampling every station" in running_attrs["note"]
     button.running = False
     assert button.available is True
+
+
+async def test_press_schedules_background_task_and_returns_promptly(
+    hass: HomeAssistant,
+) -> None:
+    """A press returns before the rebuild finishes; HA stays responsive.
+
+    The rebuild used to be awaited inside ``async_press``, so the presser
+    (and the service-call pipeline) blocked for the several-minute sweep.
+    The press now schedules a HA background task and returns immediately;
+    the job's completion is observable on the button's attributes.
+    """
+    button = IrishRailRebuildStopsMatrixButton(hass, MagicMock())
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_rebuild(_hass: object, _client: object) -> None:
+        started.set()
+        await release.wait()
+
+    with patch(
+        "custom_components.irish_rail.button.async_run_matrix_rebuild",
+        side_effect=slow_rebuild,
+    ):
+        await button.async_press()
+        # The press returned without awaiting the rebuild.
+        assert button._rebuild_task is not None
+
+        # Give the background task a few turns to start.
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert started.is_set(), "background rebuild never started"
+        assert button.running is True
+        assert button.available is False
+
+        release.set()
+        await button._rebuild_task
+        await hass.async_block_till_done()
+
+    assert button.running is False
+    assert button.available is True
+
+
+async def test_unload_cancels_an_in_flight_rebuild(
+    hass: HomeAssistant,
+) -> None:
+    """Unloading the owning entry cancels a running background rebuild.
+
+    Before the background-task change, the rebuild was awaited inside
+    ``async_press`` so it could never outlive its caller; now the unload
+    cleanup must cancel and reap the task, otherwise a cancelled entry
+    keeps hammering the public API for minutes.
+    """
+    entry = await _setup_entry(hass)
+    button = hass.data[DOMAIN][GLOBAL_REBUILD_ENTITY_KEY]
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_rebuild(_hass: object, _client: object) -> None:
+        started.set()
+        await release.wait()
+
+    with patch(
+        "custom_components.irish_rail.button.async_run_matrix_rebuild",
+        side_effect=slow_rebuild,
+    ):
+        await button.async_press()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert started.is_set()
+        assert button.running is True
+
+        # Unload while the rebuild is mid-flight.
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert button.running is False
+    # The cleanup reaped the task handle.
+    assert button._rebuild_task is None
 
 
 async def test_press_serializes_concurrent_invocations(
@@ -258,7 +351,12 @@ async def test_press_serializes_concurrent_invocations(
 
 
 async def test_press_failure_records_error_attributes(hass: HomeAssistant) -> None:
-    """A crashing rebuild surfaces an error payload, not a lost press."""
+    """A crashing rebuild surfaces an error payload, not a lost press.
+
+    The rebuild runs as a background task, so the crash is contained
+    inside ``_async_run_rebuild`` and recorded on the button's
+    attributes rather than propagating to the presser.
+    """
     button = IrishRailRebuildStopsMatrixButton(hass, MagicMock())
     domain_data = hass.data.setdefault(DOMAIN, {})
     domain_data["global_rebuild_entity"] = button
@@ -266,8 +364,11 @@ async def test_press_failure_records_error_attributes(hass: HomeAssistant) -> No
     with patch(
         "custom_components.irish_rail.button.async_run_matrix_rebuild",
         new=AsyncMock(side_effect=ValueError("network exploded")),
-    ), pytest.raises(ValueError, match="network exploded"):
+    ):
         await button.async_press()
+        assert button._rebuild_task is not None
+        await button._rebuild_task
+        await hass.async_block_till_done()
 
     assert button.running is False
     attributes: dict[str, Any] = button.extra_state_attributes or {}
@@ -335,7 +436,7 @@ async def test_service_call_drives_the_loaded_button(
         ),
     ):
         await hass.services.async_call(DOMAIN, SERVICE_REBUILD, {}, blocking=True)
-        await hass.async_block_till_done()
+        await _await_rebuild(hass)
 
     result = hass.data[DOMAIN]["global_last_result"]
     assert result.total_stations == 1

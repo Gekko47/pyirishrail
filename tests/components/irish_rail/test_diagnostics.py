@@ -50,9 +50,7 @@ async def test_config_entry_diagnostics(hass: HomeAssistant) -> None:
     # Station identifiers are partially masked (so the maintainer can
     # still tell which station the user is configuring) rather than
     # fully redacted.
-    assert result["entry"]["data"]["station"] == _mask_identifier(
-        "Dublin Pearse"
-    )
+    assert result["entry"]["data"]["station"] == _mask_identifier("Dublin Pearse")
     assert result["entry"]["data"]["station_code"] == _mask_identifier("PEARS")
     # Non-sensitive configuration choices pass through unchanged.
     assert result["entry"]["data"]["direction"] == "Northbound"
@@ -137,9 +135,7 @@ async def test_diagnostics_redacts_sensitive_options(hass: HomeAssistant) -> Non
     # Sensitive option keys are partially masked; non-sensitive ones
     # pass through unchanged so the maintainer can see the user's
     # actual scan interval.
-    assert result["entry"]["options"]["station"] == _mask_identifier(
-        "Dublin Pearse"
-    )
+    assert result["entry"]["options"]["station"] == _mask_identifier("Dublin Pearse")
     assert result["entry"]["options"]["station_code"] == _mask_identifier("PEARS")
     assert result["entry"]["options"]["scan_interval"] == 120
     assert result["coordinator"]["last_update_success"] is True

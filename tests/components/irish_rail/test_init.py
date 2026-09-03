@@ -163,6 +163,7 @@ async def test_unload_removes_pending_empty_data_repair_issue(
     await hass.async_block_till_done()
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
 
+
 async def test_global_provider_purges_orphan_entities_when_owner_removed(
     hass: HomeAssistant,
 ) -> None:
@@ -184,9 +185,7 @@ async def test_global_provider_purges_orphan_entities_when_owner_removed(
         GLOBAL_REBUILD_UNIQUE_ID,
     )
 
-    def _find_by_unique_id(
-        reg: er.EntityRegistry, unique_id: str
-    ) -> str | None:
+    def _find_by_unique_id(reg: er.EntityRegistry, unique_id: str) -> str | None:
         for entry in reg.entities.values():
             if entry.unique_id == unique_id:
                 return entry.entity_id
@@ -253,6 +252,8 @@ async def test_global_provider_purges_orphan_entities_when_owner_removed(
 
     assert await hass.config_entries.async_unload(second.entry_id)
     await hass.async_block_till_done()
+
+
 async def test_connectivity_sensor_is_unavailable_before_first_probe(
     hass: HomeAssistant,
 ) -> None:
@@ -287,5 +288,3 @@ async def test_connectivity_sensor_is_unavailable_before_first_probe(
     monitor.healthy = False
     assert sensor.available is True
     assert sensor.is_on is False
-
-

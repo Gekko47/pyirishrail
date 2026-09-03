@@ -130,11 +130,20 @@ HEALTH_PROBE_STATION_CODE = "PEARS"
 # scripts/build_stops_matrix.py's polite pacing against the public API.
 REBUILD_DELAY_SECONDS = 0.3
 
+# Debounce interval for the coordinator's downstream-stops learning path.
+# Stops observed during polling are accumulated and written in batches no
+# more than every LEARN_DEBOUNCE_SECONDS to reduce storage I/O on slow
+# storage (SD cards, NFS). 5 minutes is a good balance between freshness
+# and write amplification.
+LEARN_DEBOUNCE_SECONDS = 300
+
 # Keys under ``hass.data[DOMAIN]`` for the shared-global runtime objects.
 GLOBAL_PROVIDER_KEY = "global_provider_entry_id"
 # Stores the most recent RebuildResult dict (from button.py) so diagnostics
 # can report the last stops-matrix rebuild outcome without importing it.
 GLOBAL_LAST_REBUILD_KEY = "global_last_result"
+# The on-disk key the service handler reaches the live button through.
+GLOBAL_REBUILD_ENTITY_KEY = "global_rebuild_entity"
 
 # Irish civil-time zone shared by service-hours gating and rebuild dating;
 # host-installed Home Assistant instances abroad must still follow Dublin.

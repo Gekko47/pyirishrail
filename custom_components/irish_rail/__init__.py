@@ -43,9 +43,7 @@ PLATFORMS: list[Platform] = [
 ]
 
 
-async def async_setup_entry(
-    hass: HomeAssistant, entry: IrishRailConfigEntry
-) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: IrishRailConfigEntry) -> bool:
     """Set up Irish Rail from a config entry."""
     session = async_get_clientsession(hass)
     # Pass the per-HA shared request gate so every client the
@@ -116,9 +114,7 @@ async def _async_update_listener(
     coordinator.update_interval = resolve_scan_interval(entry)
 
 
-async def async_unload_entry(
-    hass: HomeAssistant, entry: IrishRailConfigEntry
-) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: IrishRailConfigEntry) -> bool:
     """Unload a config entry."""
     ir.async_delete_issue(hass, DOMAIN, empty_data_issue_id(entry))
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

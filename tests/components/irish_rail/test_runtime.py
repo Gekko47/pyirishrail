@@ -53,8 +53,15 @@ from custom_components.irish_rail.const import (
     CONF_STATION,
     CONF_STATION_CODE,
     DOMAIN,
+    GLOBAL_LAST_REBUILD_KEY,
+    GLOBAL_PROVIDER_KEY,
+    GLOBAL_REBUILD_ENTITY_KEY,
 )
 from custom_components.irish_rail.request_gate import RequestGate
+from custom_components.irish_rail.store import (
+    STOPS_STORE_INSTANCE,
+    get_stops_store,
+)
 from custom_components.irish_rail.types import IrishRailConfigEntry
 
 
@@ -296,9 +303,7 @@ async def test_async_get_request_gate_is_idempotent(
 # ── Loaded-entry lifecycle (RuntimeRegistry.ensure_health_monitor) ────────
 
 
-def _entry(
-    hass: HomeAssistant, unique_id: str = "PEARS_Northbound"
-) -> MockConfigEntry:
+def _entry(hass: HomeAssistant, unique_id: str = "PEARS_Northbound") -> MockConfigEntry:
     """Register one minimal Irish Rail config entry on hass."""
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -409,3 +414,155 @@ async def test_claim_is_freed_when_owner_is_removed(
     await hass.config_entries.async_remove(entry_one.entry_id)
     assert claim_service_entities(hass, entry_two) is True
 
+
+async def test_claim_is_idempotent_for_the_owner(
+    hass: HomeAssistant,
+) -> None:
+    """Repeated claims by the same entry succeed without side effects.
+
+    The claim is checked-then-acted on shared ``hass.data`` state; the
+    idempotent fast path (current owner == caller) must never purge
+    entity rows or transfer ownership, no matter how often setup retries
+    re-invoke it.
+    """
+    entry_one = _entry(hass)
+    assert claim_service_entities(hass, entry_one) is True
+    for _ in range(5):
+        assert claim_service_entities(hass, entry_one) is True
+    assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_one.entry_id
+
+    # An installed sibling can never steal the claim, however often it
+    # retries - only removal of the owner frees it.
+    entry_two = _entry(hass, unique_id="KENT_all")
+    for _ in range(3):
+        assert claim_service_entities(hass, entry_two) is False
+    assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_one.entry_id
+
+
+# ── Listener lifecycle on the connectivity monitor ──────────────────────────
+
+
+async def test_monitor_stop_clears_listeners_and_resets_state(
+    hass: HomeAssistant,
+) -> None:
+    """``async_stop`` drops every listener so entities cannot leak.
+
+    Entities register themselves on the monitor's listener set; if
+    ``async_stop`` left the set populated, entity objects (and through
+    them the whole entity platform) would stay pinned after an unload,
+    leaking memory on every reload cycle.
+    """
+    monitor = ConnectivityMonitor(hass, _client())
+    assert await async_note_entry_loaded(hass, "E1", MagicMock()) is True
+    registry_monitor = get_health_monitor(hass)
+    assert registry_monitor is not None
+    await async_note_entry_unloaded(hass, "E1")
+
+    # Rebuild a clean monitor for the direct assertions below.
+    monitor = ConnectivityMonitor(hass, _client())
+    calls: list[str] = []
+
+    def listener_a() -> None:
+        calls.append("a")
+
+    def listener_b() -> None:
+        calls.append("b")
+
+    remove_a = monitor.add_listener(listener_a)
+    monitor.add_listener(listener_b)
+    assert monitor.listeners == {listener_a, listener_b}
+
+    # The removal callback drops exactly its own listener.
+    remove_a()
+    assert monitor.listeners == {listener_b}
+
+    # And a double remove is a no-op, not an error.
+    remove_a()
+    assert monitor.listeners == {listener_b}
+
+    monitor.listeners.add(listener_a)
+
+    async def _noop_probe() -> None:
+        """Never called: the interval is stopped before it can fire."""
+        raise AssertionError("probe must not fire after async_stop")
+
+    monitor.async_ping = _noop_probe  # type: ignore[method-assign]
+    await monitor.async_stop()
+
+    assert monitor.listeners == set()
+    # State is reset so a restart starts from a clean unknown slate.
+    assert monitor.healthy is None
+    assert monitor.consecutive_failures == 0
+
+
+async def test_monitor_add_listener_callback_removes_only_itself(
+    hass: HomeAssistant,
+) -> None:
+    """The removal callback returned by ``add_listener`` is self-scoped."""
+    monitor = ConnectivityMonitor(hass, _client())
+    first: list[str] = []
+    second: list[str] = []
+
+    remove_first = monitor.add_listener(lambda: first.append("x"))
+    remove_second = monitor.add_listener(lambda: second.append("y"))
+    assert len(monitor.listeners) == 2
+
+    remove_first()
+    assert len(monitor.listeners) == 1
+
+    # The second listener is untouched and its own callback still works.
+    remove_second()
+    assert monitor.listeners == set()
+
+
+# ── hass.data[DOMAIN] cleanup at zero loaded entries ────────────────────────
+
+
+async def test_last_unload_drops_session_scoped_keys(
+    hass: HomeAssistant,
+) -> None:
+    """Unloading the final entry drops entity/result/store references.
+
+    ``GLOBAL_REBUILD_ENTITY_KEY`` pins the live button entity and
+    ``GLOBAL_LAST_REBUILD_KEY`` pins its last result: if they survived
+    the last unload, the entity object (and its client) would leak for
+    the rest of the session. Every dropped key is recreated lazily, and
+    the stops matrix itself is persisted on disk, so the cleanup is
+    lossless.
+    """
+    entry = _add_entry(hass)
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
+        new=AsyncMock(return_value=[]),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    domain_data = hass.data[DOMAIN]
+    # The global handle exists while the entry is loaded (the button
+    # registered it) and the store singleton is materialized lazily.
+    domain_data.setdefault(GLOBAL_LAST_REBUILD_KEY, None)
+    get_stops_store(hass)
+    assert STOPS_STORE_INSTANCE in domain_data
+    assert GLOBAL_PROVIDER_KEY in domain_data
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert GLOBAL_PROVIDER_KEY not in domain_data
+    assert GLOBAL_LAST_REBUILD_KEY not in domain_data
+    assert GLOBAL_REBUILD_ENTITY_KEY not in domain_data
+    assert STOPS_STORE_INSTANCE not in domain_data
+    # The registry itself survives so the monitor object (and its probe
+    # history) can be reused by the next load cycle.
+    assert get_runtime(hass) is not None
+    # A subsequent load recreates the store singleton on demand.
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
+        new=AsyncMock(return_value=[]),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert STOPS_STORE_INSTANCE not in hass.data[DOMAIN]
+    get_stops_store(hass)
+    assert STOPS_STORE_INSTANCE in hass.data[DOMAIN]

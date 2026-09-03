@@ -25,7 +25,9 @@ from .client import IrishRailClient
 from .const import (
     DOMAIN,
     GLOBAL_HEALTH_UNIQUE_ID,
+    GLOBAL_LAST_REBUILD_KEY,
     GLOBAL_PROVIDER_KEY,
+    GLOBAL_REBUILD_ENTITY_KEY,
     GLOBAL_REBUILD_UNIQUE_ID,
     GLOBAL_SERVICES_IDENTIFIER,
     HEALTH_CHECK_INTERVAL,
@@ -33,6 +35,7 @@ from .const import (
 )
 from .errors import IrishRailError
 from .request_gate import RequestGate
+from .store import STOPS_STORE_INSTANCE
 from .types import IrishRailConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,9 +64,7 @@ class RuntimeRegistry:
         self.health_monitor: ConnectivityMonitor | None = None
 
     @callback
-    def ensure_health_monitor(
-        self, client: IrishRailClient
-    ) -> ConnectivityMonitor:
+    def ensure_health_monitor(self, client: IrishRailClient) -> ConnectivityMonitor:
         """Return the health monitor, creating it on first call.
 
         Idempotent: the first-loaded entry's client wins and later
@@ -85,6 +86,9 @@ class RuntimeRegistry:
         self.request_gate = None
         if self.health_monitor is not None:
             await self.health_monitor.async_stop()
+        self.loaded_entry_ids.clear()
+
+
 class ConnectivityMonitor:
     """Probe the RTPI API periodically and remember how it responded.
 
@@ -115,7 +119,7 @@ class ConnectivityMonitor:
         self.schedule_ping()
 
     async def async_stop(self) -> None:
-        """Stop probing and cancel any in-flight initial ping."""
+        """Stop probing, cancel any in-flight ping, and clear listeners."""
         if self._unsub_interval is not None:
             self._unsub_interval()
             self._unsub_interval = None
@@ -124,6 +128,30 @@ class ConnectivityMonitor:
             with suppress(asyncio.CancelledError):
                 await self._ping_task
             self._ping_task = None
+
+        # Clear all listeners to prevent memory leaks from entities
+        # that hold references to this monitor
+        self.listeners.clear()
+
+        # Reset state for clean restart
+        self.healthy = None
+        self.consecutive_failures = 0
+
+    def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Add a listener and return a removal callback.
+
+        Args:
+            listener: Callback to invoke on state changes.
+
+        Returns:
+            A callable that removes the listener when called.
+        """
+        self.listeners.add(listener)
+
+        def remove_listener() -> None:
+            self.listeners.discard(listener)
+
+        return remove_listener
 
     @callback
     def schedule_ping(self) -> None:
@@ -159,8 +187,7 @@ class ConnectivityMonitor:
             self.last_failure = dt_util.utcnow()
             self.last_error = f"{type(err).__name__}: {err}"
             _LOGGER.warning(
-                "Irish Rail API health check failed unexpectedly "
-                "(%d consecutive): %s",
+                "Irish Rail API health check failed unexpectedly (%d consecutive): %s",
                 self.consecutive_failures,
                 self.last_error,
             )
@@ -222,6 +249,8 @@ class ConnectivityMonitor:
                 self._ping_task is not None and not self._ping_task.done()
             ),
         }
+
+
 @callback
 def get_runtime(hass: HomeAssistant) -> RuntimeRegistry | None:
     """Return the per-HA runtime registry if one exists (read-only)."""
@@ -278,6 +307,8 @@ def async_release_request_gate(hass: HomeAssistant) -> None:
     registry = get_runtime(hass)
     if registry is not None:
         registry.request_gate = None
+
+
 # ── Health-monitor accessors (thin delegates onto the registry) ─────────────
 
 
@@ -311,21 +342,40 @@ async def async_note_entry_loaded(
     return is_first
 
 
-async def async_note_entry_unloaded(
-    hass: HomeAssistant, entry_id: str
-) -> bool:
+async def async_note_entry_unloaded(hass: HomeAssistant, entry_id: str) -> bool:
     """Deregister a loaded config entry; return True when none remain.
 
     At zero loaded entries the registry releases its singletons: the
     shared gate is dropped and the probe is stopped (the monitor object
-    itself survives a reload cycle; see :meth:`RuntimeRegistry.async_release`).
+    itself survives a reload cycle so its probe history is retained; see
+    :meth:`RuntimeRegistry.async_release`). The session-scoped keys under
+    ``hass.data[DOMAIN]`` (global-entity handle, last rebuild result,
+    stops-matrix store singleton) are also dropped to avoid holding
+    references after the last entry is gone; each is recreated lazily on
+    demand.
     """
     registry = get_runtime(hass)
     if registry is None:
         return True
     registry.loaded_entry_ids.discard(entry_id)
     if not registry.loaded_entry_ids:
+        # Release the shared gate and stop the probe. The registry itself
+        # (and the monitor object) stay alive so a reload cycle reuses the
+        # same monitor instance - pinned by test_runtime.py.
         await registry.async_release()
+
+        # Drop the session-scoped hass.data[DOMAIN] keys so nothing keeps
+        # referencing entity objects, results, or cached matrices after
+        # the last entry is gone. Every one of these is recreated lazily
+        # on the next use, and the stops matrix itself is persisted on
+        # disk, so dropping is lossless.
+        domain_data = hass.data.get(DOMAIN)
+        if domain_data is not None:
+            domain_data.pop(GLOBAL_PROVIDER_KEY, None)
+            domain_data.pop(GLOBAL_LAST_REBUILD_KEY, None)
+            domain_data.pop(GLOBAL_REBUILD_ENTITY_KEY, None)
+            domain_data.pop(STOPS_STORE_INSTANCE, None)
+
     return not registry.loaded_entry_ids
 
 
@@ -333,14 +383,25 @@ async def async_note_entry_unloaded(
 
 
 @callback
-def claim_service_entities(
-    hass: HomeAssistant, entry: IrishRailConfigEntry
-) -> bool:
-    """Claim providership of the global entities (see docs/architecture.md §11)."""
+def claim_service_entities(hass: HomeAssistant, entry: IrishRailConfigEntry) -> bool:
+    """Claim providership of the global entities (see docs/architecture.md §11).
+
+    This function is idempotent and safe to call from multiple config
+    entries. The first entry to claim ownership wins; subsequent calls
+    from other entries return False until the owner is unloaded.
+
+    Returns:
+        True if this entry now owns the global entities, False if another
+        entry owns them.
+    """
     domain_data = hass.data.setdefault(DOMAIN, {})
+
+    # Fast path: already the owner
     current_owner = domain_data.get(GLOBAL_PROVIDER_KEY)
     if current_owner == entry.entry_id:
         return True
+
+    # Check if current owner is still installed
     if isinstance(current_owner, str):
         owner_still_installed = any(
             candidate.entry_id == current_owner
@@ -348,16 +409,18 @@ def claim_service_entities(
         )
         if owner_still_installed:
             return False
+
+    # Claim ownership and purge any orphan entities from previous owner
+    if isinstance(current_owner, str):
         # Wipe orphan entity rows from previous dead owner before re-claiming.
         _purge_orphan_global_entities(hass, expected_owner=current_owner)
+
     domain_data[GLOBAL_PROVIDER_KEY] = entry.entry_id
     return True
 
 
 @callback
-def _purge_orphan_global_entities(
-    hass: HomeAssistant, *, expected_owner: str
-) -> None:
+def _purge_orphan_global_entities(hass: HomeAssistant, *, expected_owner: str) -> None:
     """Remove global entity rows and device still pinned to a removed config entry."""
     entity_registry = er.async_get(hass)
     for unique_id in _GLOBAL_UNIQUE_IDS:

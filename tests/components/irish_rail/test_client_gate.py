@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import random
+from collections import deque
 from itertools import pairwise
 
 import pytest
 
-from custom_components.irish_rail.request_gate import RequestGate
+from custom_components.irish_rail.request_gate import RequestGate, _Waiter
 
 
 class ManualClock:
@@ -399,9 +400,7 @@ async def test_gate_delayed_sleep_preserves_pacing_for_next_caller() -> None:
     next caller start back-to-back with it."""
     overrun = 0.2
     clock = ManualClock()
-    selective_sleep = SelectiveLateSleep(
-        clock, late_call_index=1, overrun=overrun
-    )
+    selective_sleep = SelectiveLateSleep(clock, late_call_index=1, overrun=overrun)
     gate = RequestGate(
         max_concurrent=2,
         min_interval_seconds=0.25,
@@ -528,8 +527,7 @@ async def test_gate_stress_random_cancellations() -> None:
         batch = cap + rng.randint(1, 4)
         yield_counts = [rng.randint(0, 5) for _ in range(batch)]
         tasks = [
-            asyncio.create_task(one_caller(yield_count))
-            for yield_count in yield_counts
+            asyncio.create_task(one_caller(yield_count)) for yield_count in yield_counts
         ]
         # Let the first wave reach the gate.
         for _ in range(batch):
@@ -553,3 +551,134 @@ async def test_gate_stress_random_cancellations() -> None:
         # Every task is done by here (gather returned).
         for task in tasks:
             assert task.done(), f"iter {iteration}: task leaked"
+
+
+class _RemoveSpyDeque(deque[_Waiter]):
+    """Deque whose ``remove`` can be armed to raise ``ValueError``.
+
+    Used to pin the gate's lost-admission-race cleanup: when a caller is
+    cancelled after the admission sweep already dequeued it, the
+    cleanup's ``self._waiters.remove(waiter)`` raises ``ValueError``.
+    Arming the spy reproduces that state deterministically.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.remove_calls: list[_Waiter] = []
+        self.fail_remove = False
+
+    def remove(self, item: _Waiter) -> None:
+        self.remove_calls.append(item)
+        if self.fail_remove:
+            raise ValueError("simulated lost admission race")
+        super().remove(item)
+
+
+async def test_gate_cancellation_that_loses_the_admission_race_releases_slot() -> None:
+    """A caller cancelled after being swept-admitted must release its slot.
+
+    Deterministic reproduction of the race: the caller parks on its
+    admission Event, the sweep admits it (dequeuing it and incrementing
+    ``_in_flight``) but its wake-up has not run yet, and *then* the
+    cancellation is delivered at the ``Event.wait`` await point. The
+    cleanup handler sees ``admitted is False`` while the waiter is no
+    longer queued; it must take the release path instead of leaking the
+    slot, and must do so without deadlocking on the non-reentrant gate
+    lock.
+    """
+    gate, _clock, _sleep = _make_gate(max_concurrent=1, min_interval_seconds=0)
+    # Route the gate's queue through the spy so the cleanup's dequeue
+    # attempt can be observed and made to fail like the real race does.
+    spy = _RemoveSpyDeque()
+    gate._waiters = spy
+
+    holder_started = asyncio.Event()
+    release_holder = asyncio.Event()
+
+    async def holder() -> None:
+        async with gate.acquire():
+            holder_started.set()
+            await release_holder.wait()
+
+    holder_task = asyncio.create_task(holder())
+    await holder_started.wait()
+    assert gate._in_flight == 1
+
+    async def victim() -> None:
+        async with gate.acquire():
+            pass
+
+    victim_task = asyncio.create_task(victim())
+    # Park the victim on its admission Event (the gate is full).
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert len(spy) == 1
+    assert not spy[0].event.is_set()
+    assert gate._in_flight == 1
+
+    # Free the slot: one loop turn runs the holder's release and the
+    # sweep's admission of the victim (its own wake-up is queued behind
+    # this test's continuation, so it has not run yet).
+    release_holder.set()
+    await asyncio.sleep(0)
+    assert gate._in_flight == 1, "victim was not admitted by the sweep"
+    assert not spy, "victim was not dequeued by the sweep"
+
+    # Arm the spy so the cleanup's dequeue attempt raises ValueError,
+    # exactly as it does when the sweep won the race, then deliver the
+    # cancellation. The cleanup must release the slot OUTSIDE the gate
+    # lock (the non-reentrant-lock deadlock regression).
+    spy.fail_remove = True
+    victim_task.cancel()
+    await asyncio.sleep(0)
+    await asyncio.gather(holder_task, victim_task, return_exceptions=True)
+
+    assert len(spy.remove_calls) == 1, (
+        "cleanup did not hit the lost-admission-race dequeue path"
+    )
+    assert gate._in_flight == 0, "slot leaked after the lost admission race"
+    assert not spy, "queue residue after the lost admission race"
+
+
+async def test_gate_cancellation_while_still_queued_dequeues_without_release() -> None:
+    """A queued caller cancelled before admission leaves no trace.
+
+    Companion to the lost-race test: the dequeue path must NOT release a
+    slot the caller never owned, or the in-flight counter underflows and
+    the cap silently widens.
+    """
+    gate, _clock, _sleep = _make_gate(max_concurrent=1, min_interval_seconds=0)
+    spy = _RemoveSpyDeque()
+    gate._waiters = spy
+
+    holder_started = asyncio.Event()
+    release_holder = asyncio.Event()
+
+    async def holder() -> None:
+        async with gate.acquire():
+            holder_started.set()
+            await release_holder.wait()
+
+    holder_task = asyncio.create_task(holder())
+    await holder_started.wait()
+
+    victim_task = asyncio.create_task(victim_gate_body(gate))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert len(spy) == 1
+    assert gate._in_flight == 1
+
+    # Cancel while the victim is still parked and un-admitted.
+    victim_task.cancel()
+    release_holder.set()
+    await asyncio.gather(holder_task, victim_task, return_exceptions=True)
+
+    assert len(spy.remove_calls) == 1
+    assert gate._in_flight == 0, "holder slot was not returned"
+    assert not spy
+
+
+async def victim_gate_body(gate: RequestGate) -> None:
+    """Acquire the gate and do nothing (helper for cancellation tests)."""
+    async with gate.acquire():
+        pass

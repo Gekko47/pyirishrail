@@ -320,9 +320,7 @@ async def test_rebuild_uses_background_priority_on_every_call(
             MagicMock(code="E001", destination="Bray", direction="Northbound")
         ]
     )
-    client.async_get_train_stops = AsyncMock(
-        return_value=[MagicMock(location="Bray")]
-    )
+    client.async_get_train_stops = AsyncMock(return_value=[MagicMock(location="Bray")])
 
     with (
         patch(
@@ -373,9 +371,7 @@ async def test_rebuild_with_existing_observations_unions(
 
     recording = _RecordingStore()
     # Pre-seed: Cherrywood is already known for PEARS Northbound.
-    assert await recording.async_record(
-        "PEARS", "Northbound", ["Cherrywood"]
-    ) is True
+    assert await recording.async_record("PEARS", "Northbound", ["Cherrywood"]) is True
 
     with (
         patch(

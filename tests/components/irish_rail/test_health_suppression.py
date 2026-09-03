@@ -93,6 +93,7 @@ async def _refresh_empty(
             await coordinator.async_refresh()
     await hass.async_block_till_done()
 
+
 async def test_healthy_api_suppresses_issue_clears_stale_one(
     hass: HomeAssistant,
     caplog: pytest.LogCaptureFixture,
@@ -140,8 +141,7 @@ async def test_healthy_api_suppresses_issue_clears_stale_one(
         record
         for record in caplog.records
         if record.levelno == logging.INFO
-        and "no scheduled services in the look-ahead window"
-        in record.getMessage()
+        and "no scheduled services in the look-ahead window" in record.getMessage()
     ]
     assert len(info_cleared) == 1
 

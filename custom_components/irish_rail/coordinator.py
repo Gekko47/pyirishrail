@@ -7,7 +7,7 @@ repair issue, and downstream-stops learning.
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
@@ -27,6 +27,7 @@ from .const import (
     DOMAIN,
     DUBLIN_TZ,
     EMPTY_DATA_ISSUE_THRESHOLD,
+    LEARN_DEBOUNCE_SECONDS,
     MAX_BACKOFF_INTERVAL,
     MAX_RETAINED_TRAINS,
     MAX_SCAN_INTERVAL_SECONDS,
@@ -61,9 +62,7 @@ def resolve_scan_interval(config_entry: IrishRailConfigEntry) -> timedelta:
         seconds = int(raw)
     except (TypeError, ValueError):
         seconds = int(DEFAULT_SCAN_INTERVAL.total_seconds())
-    seconds = max(
-        MIN_SCAN_INTERVAL_SECONDS, min(MAX_SCAN_INTERVAL_SECONDS, seconds)
-    )
+    seconds = max(MIN_SCAN_INTERVAL_SECONDS, min(MAX_SCAN_INTERVAL_SECONDS, seconds))
     return timedelta(seconds=seconds)
 
 
@@ -122,6 +121,12 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
         # Persistent-empty-data repair-issue tracking.
         self._empty_streak = 0
         self._empty_issue_reported = False
+
+        # Debouncing state for downstream-stops learning to reduce storage I/O.
+        # Stops are accumulated in _pending_stops and written in batches no more
+        # than every LEARN_DEBOUNCE_SECONDS.
+        self._last_learn_time: datetime | None = None
+        self._pending_stops: set[str] = set()
 
     @property
     def update_interval(self) -> timedelta:
@@ -231,8 +236,7 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
             # raised the issue, leaving ``_empty_issue_reported`` False while
             # the issue is still registered.
             had_issue = self._empty_issue_reported or (
-                ir.async_get(self.hass).async_get_issue(DOMAIN, issue_id)
-                is not None
+                ir.async_get(self.hass).async_get_issue(DOMAIN, issue_id) is not None
             )
             if had_issue:
                 ir.async_delete_issue(self.hass, DOMAIN, issue_id)
@@ -252,10 +256,7 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
             self._empty_streak = 0
             self._empty_issue_reported = False
             issue_id = empty_data_issue_id(self.config_entry)
-            if (
-                ir.async_get(self.hass).async_get_issue(DOMAIN, issue_id)
-                is not None
-            ):
+            if ir.async_get(self.hass).async_get_issue(DOMAIN, issue_id) is not None:
                 ir.async_delete_issue(self.hass, DOMAIN, issue_id)
                 _LOGGER.info(
                     "Station %s (%s) has no trains because the Irish Rail "
@@ -356,6 +357,10 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
     async def _async_learn_downstream_stops(self) -> None:
         """Merge stops observed this poll into the persistent stops matrix.
 
+        Uses debouncing to reduce storage I/O - stops are accumulated in
+        _pending_stops and written in batches no more than every
+        LEARN_DEBOUNCE_SECONDS.
+
         See docs/architecture.md §9 (downstream-stops learning) and §10
         (stops-matrix store).
         """
@@ -371,13 +376,34 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
                 self.station_code,
             )
             return
+
+        # Accumulate stops for batching
+        self._pending_stops.update(downstream)
+
+        # Check if enough time has passed since last write
+        now = dt_util.utcnow()
+        if self._last_learn_time is not None:
+            elapsed = (now - self._last_learn_time).total_seconds()
+            if elapsed < LEARN_DEBOUNCE_SECONDS:
+                return
+
+        if not self._pending_stops:
+            return
+
+        # Write accumulated stops
+        stops_to_write = sorted(self._pending_stops)
+        self._pending_stops.clear()
+
         try:
             changed = await get_stops_store(self.hass).async_record(
                 self.station_code,
                 self.direction,
-                sorted(downstream),
+                stops_to_write,
             )
+            self._last_learn_time = now
         except Exception:
+            # Restore pending stops on failure for retry next time
+            self._pending_stops.update(stops_to_write)
             # Deliberate broad guard: any storage failure must degrade to
             # "matrix not updated", never to a failed coordinator refresh.
             _LOGGER.warning(

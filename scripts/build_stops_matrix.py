@@ -6,6 +6,7 @@ Thin CLI wrapper around
     python scripts/build_stops_matrix.py            # full rebuild
     python scripts/build_stops_matrix.py --limit 5  # smoke test
 """
+
 from __future__ import annotations
 
 import argparse
@@ -56,6 +57,7 @@ def main() -> None:
                 _LOGGER.info("Wrote %d stations to %s", result.sampled, args.output)
 
     asyncio.run(_run())
+
 
 if __name__ == "__main__":
     main()

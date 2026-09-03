@@ -151,21 +151,37 @@ def get_stops_store(hass: HomeAssistant) -> StopsMatrixStore:
 
 
 _SEED_CACHE: StopsMatrix | None = None
-_SEED_CACHE_LOCK: asyncio.Lock | None = None
+# Module-level lock created at import time - eliminates TOCTOU race
+# where multiple coroutines could see _SEED_CACHE_LOCK is None simultaneously
+_SEED_CACHE_LOCK = asyncio.Lock()
 
 
 def _get_seed_cache_lock() -> asyncio.Lock:
     """Return the per-process lock guarding the seed cache."""
-    global _SEED_CACHE_LOCK
-    if _SEED_CACHE_LOCK is None:
-        _SEED_CACHE_LOCK = asyncio.Lock()
     return _SEED_CACHE_LOCK
 
 
 def _read_bundled_matrix() -> StopsMatrix:
-    """Read and validate the bundled seed matrix."""
+    """Read and validate the bundled seed matrix.
+
+    Returns:
+        The parsed seed matrix dictionary.
+
+    Raises:
+        OSError: If the file cannot be read.
+        json.JSONDecodeError: If the file contains invalid JSON.
+        TypeError: If the file does not contain a JSON object.
+    """
     path = Path(__file__).parent / STOPS_MATRIX_SEED_FILENAME
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as err:
+        _LOGGER.error(
+            "Invalid JSON in bundled stops matrix %s: %s",
+            path.name,
+            err,
+        )
+        raise
     if not isinstance(raw, dict):
         raise TypeError(f"{path.name} must contain a JSON object")
     return raw
@@ -179,10 +195,8 @@ async def async_load_bundled_stops_matrix() -> StopsMatrix:
             if _SEED_CACHE is None:
                 loop = asyncio.get_running_loop()
                 try:
-                    _SEED_CACHE = await loop.run_in_executor(
-                        None, _read_bundled_matrix
-                    )
-                except (OSError, TypeError, ValueError) as err:
+                    _SEED_CACHE = await loop.run_in_executor(None, _read_bundled_matrix)
+                except (OSError, TypeError, ValueError, json.JSONDecodeError) as err:
                     _LOGGER.warning(
                         "Could not load bundled stops matrix %s: %s",
                         STOPS_MATRIX_SEED_FILENAME,

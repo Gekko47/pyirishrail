@@ -82,7 +82,6 @@ class RebuildResult:
         return out
 
 
-
 def _dump_document(output: Path, document: dict[str, Any]) -> None:
     """Write the seed document to a temp file, then atomically swap it in.
 
@@ -174,11 +173,11 @@ async def sample_stops_matrix(
     for index, station in enumerate(stations):
         direction_buckets: dict[str, set[str]] = {}
         try:
-            trains = await client.async_get_station_by_code(station.code, priority=priority)
-        except IrishRailError as err:
-            _LOGGER.warning(
-                "Skipping %s (%s): %s", station.name, station.code, err
+            trains = await client.async_get_station_by_code(
+                station.code, priority=priority
             )
+        except IrishRailError as err:
+            _LOGGER.warning("Skipping %s (%s): %s", station.name, station.code, err)
             result.skipped += 1
         else:
             for train in trains:
@@ -237,7 +236,9 @@ async def sample_stops_matrix(
                         },
                     }
                     result.buckets_updated += len(direction_buckets)
-                    result.stops_added += sum(len(s) for s in direction_buckets.values())
+                    result.stops_added += sum(
+                        len(s) for s in direction_buckets.values()
+                    )
 
                 summary = f"{len(direction_buckets)} bucket(s) sampled"
             else:
@@ -257,7 +258,6 @@ async def sample_stops_matrix(
 
         finally:
             await asyncio.sleep(delay)
-
 
     finished = dt_util.utcnow()
     result.finished = finished.isoformat()
