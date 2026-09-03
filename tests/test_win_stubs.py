@@ -130,7 +130,7 @@ def test_second_thread_blocked_during_pair_construction(
     def build_pair() -> None:
         try:
             built.append(win_stubs._unguarded_socketpair())
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 — deliberately collect any exception for later assertion
             built.append(err)
 
     builder = threading.Thread(target=build_pair, daemon=True, name="builder")
@@ -142,7 +142,7 @@ def test_second_thread_blocked_during_pair_construction(
     def probe() -> None:
         try:
             probed.append(socket.socket())
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 — deliberately collect any exception for later assertion
             probed.append(err)
 
     prober = threading.Thread(target=probe, daemon=True, name="prober")

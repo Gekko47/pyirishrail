@@ -187,7 +187,7 @@ class ConnectivityMonitor:
         for listener in list(self.listeners):
             try:
                 listener()
-            except Exception:  # noqa: BLE001 — listeners must never break the notify loop
+            except Exception:  # listeners must never break the notify loop
                 _LOGGER.warning(
                     "Irish Rail health monitor listener %s raised; skipping",
                     listener,
