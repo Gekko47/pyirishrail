@@ -31,8 +31,8 @@ without losing any of the rules-evidencing code paths.
 |---|---:|---:|
 | Integration source LOC (`custom_components/irish_rail/`) | ~2,700 | **~1,500–1,700** |
 | Docstring density (lines per source LOC) | ~0.50 | **~0.15** |
-| Per-station sensors | 3 | **1** |
-| Sensor `extra_state_attributes` count | 18 | **~7** |
+| Per-station sensors | 3 | **2** (next + following train) |
+| Sensor `extra_state_attributes` count | 18 | **7 (next) / 5 (following)** |
 | README length | ~370 lines | **~180 lines** |
 | `quality_scale.yaml` length | 21 KB / 426 lines | **~7 KB / 150 lines** |
 | Stops-matrix rebuild implementations | 2 (script + button) | **1** |
@@ -44,7 +44,9 @@ without losing any of the rules-evidencing code paths.
 
 - Repository or domain rename.
 - Republishing `pyirishrail` to PyPI.
-- New user-facing features.
+- New user-facing features. (Exception: the 2026-09-03 Phase C
+  revision — `following_train_due` replaces the `upcoming_trains`
+  attribute; recorded in Phase C and Decision S4.)
 - Migration shims.
 - Entity `unique_id` changes that would orphan user customisations.
 - Live-API behaviour changes (XML guard, gate, polling cadence stay byte-for-byte identical).
@@ -77,7 +79,7 @@ without losing any of the rules-evidencing code paths.
 | S1 | From-scratch vs incremental | **Incremental** (5 small PR-sized phases). Preserves Platinum and the 100% coverage gate. |
 | S2 | `pyirishrail` sub-package fate | **Keep, but rebrand internals**: drop the sub-`__init__.py` re-export layer, fold the four public re-exports into a single `pyirishrail/__init__.py`, drop the standalone `pyirishrail/README.md`. The "vendored framework-agnostic client" identity is preserved (still no HA imports) but the surface is one module deep. |
 | S3 | `stops_matrix.seed.json` in tree | **Drop from the repo** after Phase A3 commits a 3-station example seed (`stops_matrix.seed.example.json`) as a smoke fixture. The real seed is generated at release time by `scripts/build_stops_matrix.py` and attached to the GitHub release. |
-| S4 | Three-sensor collapse | **One rich sensor** (`next_train_due` with attributes). Drop `next_train_destination` and `next_train_delay`. Update `strings.json` and `icons.json` to match. |
+| S4 | Three-sensor collapse | **Two rich sensors**: `next_train_due` (unchanged TIMESTAMP presentation) + `following_train_due` (same presentation, second train). Drop `next_train_destination` and `next_train_delay`. Fixed attribute surface (four per-train keys + `api_reachable`, plus the `expected_arrival`/`time_until_arrival` countdown pair on `next_train_due` only). Drop the `upcoming_trains` attribute and the `num_trains` option; retain only the next two trains. |
 | S5 | Build script + matrix-rebuild unification | **Unify behind one shared loop** in `matrix_rebuild.py`; the offline `scripts/build_stops_matrix.py` becomes a 40-line CLI wrapper that calls it. The "by design" differences (gap-fill vs full replace, atomic temp-file vs storage, background vs normal priority) become parameters. |
 | S6 | `gate.py` + `health.py` consolidation | **Yes**, into a single `_runtime.py` module exposing a `RuntimeRegistry` class. Singleton lifecycles become structural (the registry is the only writer to `loaded_entry_ids` and to each subkey). The `RequestGate` primitive in `pyirishrail._gate` stays separate — it's the framework-agnostic gate, not a singleton. |
 | S7 | Docstring discipline | **Three categories** (see Skill 10 §2): keep contract docstrings tight; move design history to `docs/architecture.md`; delete "what the name says" docstrings. Density target: 0.15 lines/LOC. |
@@ -215,46 +217,98 @@ changes the user sees.
 
 ---
 
-### Phase C — Feature consolidation (collapse three sensors into one)
+### Phase C — Feature consolidation (two-train sensor surface)
 
-**Goal:** Drop the two redundant per-station sensors; the single
-rich sensor carries the full arrival context via attributes. This
-is the one phase that changes user-visible state, so it is split
-across two commits to keep the diff reviewable.
+> **Revised 2026-09-03 (user decision):** the original plan collapsed
+> the three sensors into one rich sensor whose `upcoming_trains[]`
+> attribute carried the extra trains. The revised target is **two**
+> per-station sensors — `next_train_due` (presentation unchanged) and
+> a new `following_train_due` — a fixed attribute surface, **no**
+> `upcoming_trains` attribute, **no** `num_trains` option, and the
+> coordinator retaining only the next two trains. Decision S4 and the
+> Goals table were updated to match.
+
+**Goal:** The devices show the next train due in (a live
+minutes-and-seconds countdown, exactly as today) and the following
+train due in (the same presentation for the second train). The two
+redundant sensors (`next_train_destination`, `next_train_delay`) are
+dropped, each sensor carries a small fixed attribute surface, the
+`upcoming_trains` attribute and the `num_trains` option are removed,
+and only the next and following trains are retained — on first
+configuration and reconfiguration alike.
+
+| Sensor | State | `state_attributes` |
+|---|---|---|
+| `next_train_due` | `TIMESTAMP` datetime of the next train's expected arrival (unchanged) | `expected_arrival_time`, `scheduled_arrival_time`, `direction`, `train_code`, `api_reachable`, `expected_arrival`, `time_until_arrival` |
+| `following_train_due` | `TIMESTAMP` datetime of the following train's expected arrival; `unknown` when fewer than two trains are scheduled | `expected_arrival_time`, `scheduled_arrival_time`, `direction`, `train_code`, `api_reachable` |
 
 **Steps:**
 
-- [ ] **C1 — Deprecate `next_train_destination` and
-  `next_train_delay`.** Remove the entity classes from
-  `sensor.py`, remove the keys from `icons.json` and
-  `strings.json`. Update `test_sensor.py` to assert these
-  entities are no longer registered. (The next-trains and
-  upcoming-trains attributes on the primary sensor still expose
-  destination and late data, so existing dashboards and templates
-  have a one-line migration path.)
-- [ ] **C2 — Trim `extra_state_attributes` to ~7 keys.** Drop
-  `origin_time`, `destination_time`, `expected_arrival_time`,
-  `expected_departure_time`, `scheduled_arrival_time`,
-  `scheduled_departure_time`, `direction`, `train_code` from the
-  top-level attributes — they are reachable via
-  `upcoming_trains[0]` (each entry carries them) or via the
-  `expected_arrival` datetime state itself. Update
-  `test_sensor.py` to pin the new attribute surface.
-- [ ] **C3 — Update `README.md` Entities section and any
-  `quality_scale.yaml` evidence that named the old sensors.**
-  The README's Entities table now lists one sensor; its
-  attributes section replaces the per-sensor table.
+- [ ] **C1 — Drop `next_train_destination` and
+  `next_train_delay`.** Remove their instantiations and the
+  destination/delay branches from `sensor.py`; remove the keys from
+  `icons.json` and the `strings.json` / `translations/en.json`
+  entity sections. Update `test_sensor.py`, `test_icons.py`, and
+  `test_translations.py` (whose source-regex check pins the
+  remaining instantiations) to assert the two keys are gone.
+  Destination and delay data are no longer exposed anywhere.
+- [ ] **C2 — Add `following_train_due`; retain only two trains.**
+  Instantiate `following_train_due` from the same sensor class:
+  `TIMESTAMP` device class, state =
+  `_parse_expected_arrival(data[1], now)`, `None` (→ unknown) when
+  fewer than two trains exist — the defensive-read rule, never a
+  crash. The coordinator returns at most the next two trains
+  (`trains[:MAX_RETAINED_TRAINS]` against a new
+  `MAX_RETAINED_TRAINS = 2` in `const.py`); the API look-ahead still
+  returns everything, only the next and following trains are
+  retained, so the stops-at learning path (client-side
+  `last_downstream_stop_names`) is unaffected and diagnostics'
+  `due_trains_count` reports the retained list. New tests: the
+  following-train state when a second train exists, `unknown` when
+  only one does, and a coordinator test pinning the two-train slice.
+- [ ] **C3 — Fix the attribute surface.** Each sensor carries
+  exactly the keys in the table above (next: 7, following: 5).
+  Drop `origin`, `origin_time`, `destination_time`,
+  `expected_departure_time`, `scheduled_departure_time`,
+  `train_type`, `due_in_mins`, `late_mins`, and `upcoming_trains`.
+  The zero-train case becomes `{"api_reachable": True}` on both
+  sensors. Update `test_sensor.py` to pin the per-sensor surface.
+- [ ] **C4 — Remove the `num_trains` option end-to-end.** Delete
+  `CONF_NUM_TRAINS` / `DEFAULT_NUM_TRAINS` / `MIN_NUM_TRAINS` /
+  `MAX_NUM_TRAINS` from `const.py`, `resolve_num_trains` from
+  `coordinator.py`, the field from the config-flow user step and the
+  options flow, the `num_trains` value from the created entry's data
+  (`async_create_entry`) and from the reconfigure path's preserved
+  data, and the `num_trains` `data_description` entries from
+  `strings.json` / `translations/en.json`. Existing entries that
+  carry the key simply ignore it (no migration shims, per the
+  baseline precedent). Update `test_config_flow.py` and delete
+  `test_resolve_num_trains_precedence_and_clamping`.
+- [ ] **C5 — Docs and evidence pass.** `README.md`: two-sensor
+  Entities table, config walkthrough without the upcoming-trains
+  step, updated attribute tables, and the delay-notification example
+  replaced (a countdown-based trigger — `late_mins` no longer
+  exists). `quality_scale.yaml`: `entity_device_class`,
+  `icon_translations`, and the docs_* evidence re-pointed at the
+  two-sensor surface. `docs/architecture.md`: §6 attribute tables
+  and a two-sensor rationale replacing "one sensor, not three"; §15
+  stays for the timestamp class. Skills 00 (Phase C summary), 05
+  ("One-sensor-per-station model", "Next-N-trains entities"), 08
+  (sensor-surface-stable rule), and 10 §4 rewritten for the
+  two-train design.
 
 **Acceptance:**
 
-- All gates green.
-- `test_sensor.py` is shorter (one fewer entity class, fewer
-  attribute assertions).
-- `sensor.py` is ≤ 150 LOC (down from 245).
-- `icons.json` has one fewer sensor entry; `strings.json` has
-  two fewer entity translation keys.
-- One commit per step (C1, C2, C3) so each is independently
-  revertible.
+- All gates green (ruff · strict mypy · pytest, 100% coverage).
+- `sensor.py` instantiates exactly two per-station entities and is
+  ≤ 150 LOC; `coordinator.data` never holds more than two trains.
+- Attribute surfaces are exactly the 7-key (next) and 5-key
+  (following) sets; `upcoming_trains` and `num_trains` appear
+  nowhere in the integration (verified by repo-wide grep).
+- `icons.json` and the entity translations carry exactly
+  `next_train_due` and `following_train_due` for per-station
+  sensors.
+- One commit per step (C1–C5) so each is independently revertible.
 
 ---
 
@@ -493,4 +547,16 @@ coverage gate.
   39 source files, docstring density 0.197 (Phase A 0.20
   gate still passes), project-internal reference gate
   clean.
+- 2026-09-03 — Phase C revised (user decision): the collapse target
+  changed from one rich sensor plus an `upcoming_trains[]` attribute
+  to **two** per-station sensors (`next_train_due`, presentation
+  unchanged, plus a new `following_train_due` with the same
+  TIMESTAMP presentation) with a fixed attribute surface (four
+  per-train keys + `api_reachable`, plus the
+  `expected_arrival`/`time_until_arrival` countdown pair on
+  `next_train_due` only), no `upcoming_trains` attribute, no
+  `num_trains` option, and the coordinator retaining only the next
+  two trains on first configuration and reconfiguration alike.
+  Decision S4, the Goals table, and a Non-goals exception note
+  updated; C1–C5 re-scoped accordingly.
 
