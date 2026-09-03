@@ -8,15 +8,39 @@ creation in every other thread at all times.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 import socket
 import sys
 import threading
+from collections.abc import Callable
 
 import pytest
 import pytest_socket
 
 from tests import win_stubs
+
+# ── Smoke test (all platforms) ──────────────────────────────────────────────
+
+
+def test_win_stubs_importable_on_all_platforms() -> None:
+    """The shim module is importable on all platforms.
+
+    The ``-p tests.win_stubs`` plugin mechanism force-loads this module
+    on every developer's pytest invocation. This smoke test verifies the
+    module imports cleanly on non-Windows hosts (where it no-ops) so CI
+    on macOS/Linux does not fail at plugin load time.
+    """
+    # The import at module level already succeeded; assert the module
+    # has the expected attributes regardless of platform.
+    assert hasattr(win_stubs, "__doc__")
+    if sys.platform == "win32":
+        # Windows: the shim installs its socketpair wrapper.
+        assert socket.socketpair is win_stubs._unguarded_socketpair
+    else:
+        # Non-Windows: the shim no-ops; socketpair is unchanged.
+        assert socket.socketpair is not win_stubs._unguarded_socketpair
+
+
+# ── Windows-only regression tests ──────────────────────────────────────────
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "win32",
