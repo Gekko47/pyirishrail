@@ -1,10 +1,7 @@
-# Irish Rail — HA Quality Scale (Bronze / Silver / Gold / Platinum).
-# Rule IDs: underscore form of the official hyphenated names. Statuses:
-#   done   — evidenced by a file/function pointer in the comment; long-form
-#            rationale lives in docs/architecture.md (or CHANGELOG.md for
-#            per-phase history) and is not duplicated here.
-#   exempt — the rule's own exception clause applies; one-line justification.
-#   todo   — assessed but not yet satisfied; tracked in the active roadmap.
+# Irish Rail — HA Quality Scale (Bronze/Silver/Gold/Platinum).
+# Rule IDs: underscore form of official hyphenated names.
+#   done   — file/function pointer in comment; rationale in docs/architecture.md.
+#   exempt — rule exception clause; one-line justification.
 
 rules:
   # Bronze
@@ -64,11 +61,7 @@ rules:
   entity_translations: {status: done, comment: Every sensor sets _attr_translation_key with has_entity_name=True; strings.json + translations/en.json define a name per key. Alignment enforced by test_icons.py and test_translations.py.}
   stale_devices: {status: done, comment: entity.py binds each service device to exactly one config entry via identifiers=(DOMAIN, entry.unique_id); HA registry cleanup removes the device when the entry is removed. One device per entry ⇒ no hub list to sweep.}
 
-  # Platinum — three rules, all satisfied without an external PyPI package;
-  # the async client lives in the integration package itself
-  # (client.py, request_gate.py, models.py, errors.py, lib_const.py).
-  # The PyPI name "pyirishrail" is owned by an unrelated project and
-  # the v0.3.0 baseline kept the client vendored rather than published.
-  async_dependency: {status: done, comment: manifest.json declares zero third-party runtime requirements; every outbound call is await session.get(...) on the injected aiohttp session (client.py::IrishRailClient._request); XML parsed by stdlib xml.etree.ElementTree on bytes already fetched, guarded by an explicit pre-parse DTD/entity policy (client.py::_DTD_KEYWORDS). See docs/architecture.md §4.}
+  # Platinum
+  async_dependency: {status: done, comment: manifest.json requirements: []; aiohttp via injected session; stdlib xml.etree.ElementTree with DTD/entity guard. See docs/architecture.md §4.}
   inject_websession: {status: done, comment: client.py::IrishRailClient.__init__ accepts an injected aiohttp.ClientSession; __init__.py and config_flow.py pass async_get_clientsession(hass); the health probe and rebuild button reuse the entry's client.}
   strict_typing: {status: done, comment: '(1) type IrishRailConfigEntry = ConfigEntry[IrishRailRuntimeData] in types.py, used in every entry-taking signature. (2) CI mypy gate in .github/workflows/ci.yml runs mypy custom_components/irish_rail tests/components/irish_rail with strict = true. (3) py.typed ships vendored per PEP-561. No # type: ignore remains.'}
