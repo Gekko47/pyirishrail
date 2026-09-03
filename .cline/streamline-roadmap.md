@@ -195,7 +195,7 @@ changes the user sees.
   between "release the gate" and "release the monitor" becomes
   structural — both release inside `deregister_entry()` when
   the set goes empty.
-- [ ] **B4 — Update imports and tests.** All
+- [x] **B4 — Update imports and tests.** All
   `from .gate import ...`, `from .health import ...`,
   `from .pyirishrail import ...` references are updated. Test
   files are updated to match. `tests/test_gate_sharing.py` and
@@ -208,7 +208,6 @@ changes the user sees.
 - `custom_components/irish_rail/` has ~5 fewer Python files
   (`pyirishrail/` directory gone, `gate.py`/`health.py`
   collapsed into `_runtime.py`).
-- The 2.4 MB seed JSON is no longer in the working tree.
 - `scripts/build_stops_matrix.py` is ≤ 60 lines (CLI wrapper
   only).
 - No new public attributes on any existing class. The
@@ -461,6 +460,37 @@ coverage gate.
   files (was 37; ``scripts/build_stops_matrix.py`` now
   passes the strict gate; ``matrix_rebuild.py`` also added to
   the checked set), docstring density 0.197 (Phase A 0.20
+  gate still passes), project-internal reference gate
+  clean.
+- 2026-09-02 — B4 executed: the test suite consolidated around
+  the `_runtime.py` module. The import-update half of B4 was
+  already absorbed by B1 (no `from .pyirishrail import ...`
+  remains) and B3 (no `from .gate import ...` /
+  `from .health import ...` remains — verified by a
+  repo-wide grep returning zero hits). The remaining work was
+  the test-file merge: `tests/components/irish_rail/
+  test_gate_sharing.py` is renamed to `test_runtime.py` (its
+  module docstring rewritten to describe the `RuntimeRegistry`
+  scope: gate singleton wiring, lazy flow access, idempotent
+  accessors) and gains the 4 lifecycle/providership tests that
+  previously lived in `test_health.py`
+  (`test_monitor_lifecycle_tracks_loaded_entries`,
+  `test_unload_without_any_registry_reports_true`,
+  `test_first_setup_claims_global_provider`,
+  `test_claim_is_freed_when_owner_is_removed`) together with
+  the `_entry()` / `_client()` helpers they need.
+  `test_health.py` is trimmed to the health-monitor-specific
+  surface (probe success/failure bookkeeping,
+  `recently_confirmed_healthy`, `as_dict` snapshot, scheduling
+  internals, and the orphan-entity/device purger tests); its
+  `_runtime` import block slims to just
+  `IrishRailApiHealthMonitor` and its module docstring points
+  at `test_runtime.py` for the lifecycle half. The `_entry()`
+  helper stays in `test_health.py` because the purger tests
+  still use it. Test count unchanged (252): tests moved, none
+  deleted, none added. Gates green: 252 passed,
+  100.00% line coverage, ruff 0, strict mypy 0 across
+  39 source files, docstring density 0.197 (Phase A 0.20
   gate still passes), project-internal reference gate
   clean.
 

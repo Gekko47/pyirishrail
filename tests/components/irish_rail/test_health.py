@@ -1,4 +1,13 @@
-"""Tests for the shared Irish Rail API health monitor."""
+"""Irish Rail API health monitor: probe semantics and registry purge.
+
+The monitor's *lifecycle* (loaded-entry tracking, gate sharing,
+providership claim/release) lives in ``test_runtime.py`` alongside the
+other ``RuntimeRegistry`` singleton tests. This file pins the probe
+itself: success/failure bookkeeping, ``recently_confirmed_healthy``,
+the ``as_dict`` diagnostics snapshot, the interval/scheduling
+internals, and the orphan-entity/device purge used on providership
+transfer.
+"""
 
 from __future__ import annotations
 
@@ -16,14 +25,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.irish_rail._runtime import (
-    IrishRailApiHealthMonitor,
-    async_claim_global_provider,
-    async_note_entry_loaded,
-    async_note_entry_unloaded,
-    get_health_monitor,
-    get_runtime,
-)
+from custom_components.irish_rail._runtime import IrishRailApiHealthMonitor
 from custom_components.irish_rail.const import (
     DOMAIN,
     GLOBAL_HEALTH_UNIQUE_ID,
@@ -176,7 +178,7 @@ async def test_async_start_is_idempotent_and_probes_immediately(
         assert unsub_calls == [True]
 
 
-# ── Singleton lifecycle across config entries ───────────────────────────────
+# ── Shared helper for the providership-purge tests ──────────────────────────
 
 
 def _entry(
@@ -191,92 +193,6 @@ def _entry(
     )
     entry.add_to_hass(hass)
     return entry
-
-
-async def test_monitor_lifecycle_tracks_loaded_entries(hass: HomeAssistant) -> None:
-    """The monitor starts once, survives sibling loads and stops at zero.
-
-    Lifecycle is tracked by a set of loaded entry ids (not a counter), so a
-    re-setup — e.g. an automatic retry after ``ConfigEntryNotReady`` — cannot
-    double-count and the probe can never be left running by phantom counts.
-    """
-    client = _client()
-
-    # The first loaded entry returns True and starts the probe.
-    assert await async_note_entry_loaded(hass, "E1", client) is True
-    first = get_health_monitor(hass)
-    assert isinstance(first, IrishRailApiHealthMonitor)
-
-    # A second entry reuses the same singleton without restarting anything.
-    assert await async_note_entry_loaded(hass, "E2", client) is False
-    assert get_health_monitor(hass) is first
-    # Internal detail, checked deliberately: one running subscription.
-    assert first._unsub_interval is not None
-
-    # Re-registering the same entry (setup retry) is idempotent.
-    assert await async_note_entry_loaded(hass, "E1", client) is False
-    assert get_health_monitor(hass) is first
-    assert first._unsub_interval is not None
-
-    # Unloading a sibling keeps the probe running.
-    assert await async_note_entry_unloaded(hass, "E2") is False
-    assert get_health_monitor(hass) is first
-    assert first._unsub_interval is not None
-
-    # Only when the last entry unloads does probing pause.
-    assert await async_note_entry_unloaded(hass, "E1") is True
-    assert get_health_monitor(hass) is first
-    assert first._unsub_interval is None
-
-    # And it restarts cleanly for subsequent entries.
-    assert await async_note_entry_loaded(hass, "E3", client) is True
-    assert first._unsub_interval is not None
-
-    # Leave no lingering interval timer for the next test.
-    await first.async_stop()
-
-
-async def test_unload_without_any_registry_reports_true(
-    hass: HomeAssistant,
-) -> None:
-    """An unload when no runtime was ever created is a no-op success.
-
-    ``async_note_entry_unloaded`` is normally called from
-    ``async_unload_entry``, which only runs for a loaded entry, so the
-    no-registry path is defensive. It must report "no entries remain"
-    and neither create state nor start/stop anything.
-    """
-    assert await async_note_entry_unloaded(hass, "NEVER_LOADED") is True
-    assert get_runtime(hass) is None
-
-
-async def test_first_setup_claims_global_provider(hass: HomeAssistant) -> None:
-    """The first claiming entry wins; siblings are denied, owner sticky."""
-    entry_one = _entry(hass)
-    entry_two = _entry(hass, unique_id="KENT_all")
-
-    assert async_claim_global_provider(hass, entry_one) is True
-    assert async_claim_global_provider(hass, entry_two) is False
-    # Owner re-claiming stays True.
-    assert async_claim_global_provider(hass, entry_one) is True
-
-
-async def test_claim_is_freed_when_owner_is_removed(
-    hass: HomeAssistant,
-) -> None:
-    """Removing the owning entry (not merely unloading) frees the claim."""
-    entry_one = _entry(hass)
-    entry_two = _entry(hass, unique_id="KENT_all")
-
-    assert async_claim_global_provider(hass, entry_one) is True
-
-    # Unload must NOT transfer ownership mid-session.
-    assert await hass.config_entries.async_unload(entry_one.entry_id)
-    assert async_claim_global_provider(hass, entry_two) is False
-
-    # Full removal frees the claim for the next setup.
-    await hass.config_entries.async_remove(entry_one.entry_id)
-    assert async_claim_global_provider(hass, entry_two) is True
 
 
 async def test_claim_purges_orphan_global_entity_rows(
