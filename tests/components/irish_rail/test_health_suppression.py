@@ -66,7 +66,6 @@ async def _setup_entry(hass: HomeAssistant) -> MockConfigEntry:
             "station": "Dublin Pearse",
             "station_code": "PEARS",
             "direction": "Northbound",
-            "num_trains": 3,
         },
         unique_id="PEARS_Northbound",
     )

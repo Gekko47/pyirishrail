@@ -19,18 +19,14 @@ from .const import (
     CONF_DIRECTION,
     CONF_ENABLE_DIRECTION_FILTER,
     CONF_ENABLE_STOPS_AT_FILTER,
-    CONF_NUM_TRAINS,
     CONF_SCAN_INTERVAL,
     CONF_STATION,
     CONF_STATION_CODE,
     CONF_STATION_FILTER,
     CONF_STOPS_AT,
-    DEFAULT_NUM_TRAINS,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
-    MAX_NUM_TRAINS,
     MAX_SCAN_INTERVAL_SECONDS,
-    MIN_NUM_TRAINS,
     MIN_SCAN_INTERVAL_SECONDS,
 )
 from .errors import IrishRailError
@@ -89,7 +85,6 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
         self._client: IrishRailClient | None = None
         self._directions_cache: dict[str, list[str] | None] = {}
         self._station_code: str | None = None
-        self._num_trains: int = DEFAULT_NUM_TRAINS
         self._stops_at: str | None = None
         self._station_filter: str = ""
         self._candidates: list[Station] | None = None
@@ -172,16 +167,11 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_DIRECTION, default=default): vol.In(options),
             }
         )
-
     def _build_schema(self) -> vol.Schema:
-        """Build the first-step schema (filter text and train count)."""
+        """Build the first-step schema (station filter text only)."""
         return vol.Schema(
             {
                 vol.Optional(CONF_STATION_FILTER, default=""): str,
-                vol.Optional(CONF_NUM_TRAINS, default=DEFAULT_NUM_TRAINS): vol.All(
-                    vol.Coerce(int),
-                    vol.Range(min=MIN_NUM_TRAINS, max=MAX_NUM_TRAINS),
-                ),
             }
         )
 
@@ -223,7 +213,6 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
 
         # Remember the step-one answers up front: only station/direction
         # form part of the entry identity created later.
-        self._num_trains = int(user_input.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS))
         self._station_filter = str(user_input.get(CONF_STATION_FILTER, "")).strip()
 
         candidates = filter_stations(stations, self._station_filter)
@@ -412,9 +401,7 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_STATION: station_name,
             CONF_STATION_CODE: station_code,
             CONF_DIRECTION: self._direction,
-            CONF_NUM_TRAINS: self._num_trains,
         }
-        # "All" (or blank free text) seeds no filter at all, mirroring the
         # options flow's normalization convention.
         if self._stops_at and self._stops_at != NO_FILTER_SENTINEL:
             entry_data[CONF_STOPS_AT] = self._stops_at
@@ -564,7 +551,6 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_STATION: selected_station.name,
             CONF_STATION_CODE: station_code,
             CONF_DIRECTION: direction,
-            CONF_NUM_TRAINS: entry.data.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS),
         }
         # The "stops at" filter is not editable here (the options flow owns
         # it), so any existing value must survive the identity rewrite.
@@ -587,9 +573,9 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
 class IrishRailOptionsFlow(OptionsFlow):
     """Handle an options flow for Irish Rail.
 
-    Allows changing the polling interval (30 s - 10 min), the number of
-    upcoming trains exposed via attributes, and an optional "only show
-    trains stopping at <station>" filter without reloading the entry.
+    Allows changing the polling interval (30 s - 10 min) and an optional
+    "only show trains stopping at <station>" filter without reloading the
+    entry.
     """
 
     def __init__(self) -> None:
@@ -624,12 +610,6 @@ class IrishRailOptionsFlow(OptionsFlow):
         current_interval = int(
             entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL.total_seconds())
         )
-        current_num_trains = int(
-            entry.options.get(
-                CONF_NUM_TRAINS,
-                entry.data.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS),
-            )
-        )
         current_stops_at = entry.options.get(
             CONF_STOPS_AT, entry.data.get(CONF_STOPS_AT) or "All"
         )
@@ -652,10 +632,6 @@ class IrishRailOptionsFlow(OptionsFlow):
                         min=MIN_SCAN_INTERVAL_SECONDS,
                         max=MAX_SCAN_INTERVAL_SECONDS,
                     ),
-                ),
-                vol.Required(CONF_NUM_TRAINS, default=current_num_trains): vol.All(
-                    vol.Coerce(int),
-                    vol.Range(min=MIN_NUM_TRAINS, max=MAX_NUM_TRAINS),
                 ),
                 **build_stops_at_schema_field(stations, current_stops_at),
             }

@@ -98,7 +98,6 @@ def _add_entry(hass: HomeAssistant) -> MockConfigEntry:
             "station": "Dublin Pearse",
             "station_code": "PEARS",
             "direction": "Northbound",
-            "num_trains": 3,
         },
         unique_id="PEARS_northbound",
     )
@@ -162,7 +161,6 @@ async def test_config_flow_success(hass: HomeAssistant) -> None:
             "station": "Dublin Pearse",
             "station_code": "PEARS",
             "direction": "Northbound",
-            "num_trains": 3,
         }
         # The direction component of the unique ID is always lowercase.
         assert result["result"].unique_id == "PEARS_northbound"
@@ -288,43 +286,6 @@ async def test_config_flow_duplicate_abort(hass: HomeAssistant) -> None:
         )
         assert result["type"] == data_entry_flow.FlowResultType.ABORT
         assert result["reason"] == "already_configured"
-
-
-async def test_config_flow_stores_num_trains(hass: HomeAssistant) -> None:
-    """Test the user step stores the requested number of upcoming trains."""
-    with (
-        patch(
-            "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
-            return_value=[_mock_station()],
-        ),
-        patch(
-            "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
-            return_value=[_mock_train()],
-        ),
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": config_entries.SOURCE_USER}
-        )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {"num_trains": 5},
-        )
-        assert result["type"] == data_entry_flow.FlowResultType.FORM
-        assert result["step_id"] == "filter_options"
-
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {CONF_ENABLE_DIRECTION_FILTER: True},
-        )
-        assert result["type"] == data_entry_flow.FlowResultType.FORM
-        assert result["step_id"] == "directions"
-
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {"direction": "All"},
-        )
-        assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
-        assert result["data"]["num_trains"] == 5
 
 
 async def test_user_step_offers_only_discovered_directions(
@@ -666,7 +627,6 @@ async def test_reconfigure_preserves_seeded_stops_at(
             "station": "Dublin Pearse",
             "station_code": "PEARS",
             "direction": "Northbound",
-            "num_trains": 3,
             CONF_STOPS_AT: "Howth",
         },
         unique_id="PEARS_northbound",
@@ -718,7 +678,6 @@ async def test_reconfigure_keeps_stored_value_selectable_when_unsampled(
             "station": "Dublin Pearse",
             "station_code": "PEARS",
             "direction": "Southbound",
-            "num_trains": 3,
         },
         unique_id="PEARS_southbound",
     )
@@ -787,7 +746,6 @@ async def test_reconfigure_flow_rejects_duplicate_identity(
             "station": "Dublin Pearse",
             "station_code": "PEARS",
             "direction": "Southbound",
-            "num_trains": 3,
         },
         unique_id="PEARS_southbound",
     ).add_to_hass(hass)
@@ -857,7 +815,6 @@ async def test_reconfigure_flow_invalid_station(hass: HomeAssistant) -> None:
             "station": "Ghost Station",
             "station_code": "NOPE",
             "direction": "Northbound",
-            "num_trains": 3,
         },
         unique_id="NOPE_Northbound",
     )
@@ -916,7 +873,7 @@ async def test_reconfigure_flow_reload_failure_still_updates_data(
     assert entry.data[CONF_DIRECTION] == "Southbound"
 
 
-async def test_options_flow_updates_interval_and_num_trains(
+async def test_options_flow_updates_interval(
     hass: HomeAssistant,
 ) -> None:
     """Test valid option values are stored and applied to the coordinator."""
@@ -931,12 +888,11 @@ async def test_options_flow_updates_interval_and_num_trains(
         assert result["step_id"] == "init"
 
         result = await hass.config_entries.options.async_configure(
-            result["flow_id"], {"scan_interval": 120, "num_trains": 2}
+            result["flow_id"], {"scan_interval": 120}
         )
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert entry.options == {
         "scan_interval": 120,
-        "num_trains": 2,
         CONF_STOPS_AT: None,
     }
 
@@ -952,11 +908,9 @@ async def test_options_flow_rejects_out_of_range_values(
     entry = await _setup_entry(hass)
 
     bad_inputs = (
-        {"scan_interval": 10, "num_trains": 3},  # below 30 s minimum
-        {"scan_interval": 601, "num_trains": 3},  # above 10 min maximum
-        {"scan_interval": "abc", "num_trains": 3},  # non-numeric
-        {"scan_interval": 60, "num_trains": 99},  # train count above 5
-        {"scan_interval": 60, "num_trains": 0},  # train count below 1
+        {"scan_interval": 10},  # below 30 s minimum
+        {"scan_interval": 601},  # above 10 min maximum
+        {"scan_interval": "abc"},  # non-numeric
     )
     with patch(
         "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
@@ -979,12 +933,11 @@ async def test_options_flow_rejects_out_of_range_values(
         # A subsequent valid submission still succeeds (recovery).
         result = await hass.config_entries.options.async_init(entry.entry_id)
         result = await hass.config_entries.options.async_configure(
-            result["flow_id"], {"scan_interval": 90, "num_trains": 4}
+            result["flow_id"], {"scan_interval": 90}
         )
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert entry.options == {
         "scan_interval": 90,
-        "num_trains": 4,
         CONF_STOPS_AT: None,
     }
 
@@ -1008,14 +961,10 @@ async def test_options_flow_defaults_reflect_current_settings(
     scan_interval_key = next(
         k for k in schema if getattr(k, "schema", None) == "scan_interval"
     )
-    num_trains_key = next(
-        k for k in schema if getattr(k, "schema", None) == "num_trains"
-    )
     stops_at_key = next(
         k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
     )
     assert scan_interval_key.default() == 60
-    assert num_trains_key.default() == 3
     assert stops_at_key.default() == "All"
 
 
@@ -1030,7 +979,6 @@ def _add_entry_with_options(
             "station": "Dublin Pearse",
             "station_code": "PEARS",
             "direction": "Northbound",
-            "num_trains": 3,
         },
         unique_id="PEARS_northbound",
         options=options,
@@ -1065,7 +1013,7 @@ async def test_options_flow_stops_at_dropdown_and_selection(
 
         result = await hass.config_entries.options.async_configure(
             result["flow_id"],
-            {"scan_interval": 60, "num_trains": 3, "stops_at": "Dublin Pearse"},
+            {"scan_interval": 60, "stops_at": "Dublin Pearse"},
         )
 
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
@@ -1095,7 +1043,7 @@ async def test_options_flow_stops_at_all_clears_filter(
 
         result = await hass.config_entries.options.async_configure(
             result["flow_id"],
-            {"scan_interval": 60, "num_trains": 3, "stops_at": "All"},
+            {"scan_interval": 60, "stops_at": "All"},
         )
 
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
@@ -1127,7 +1075,7 @@ async def test_options_flow_stops_at_free_text_fallback_on_connection_error(
 
         result = await hass.config_entries.options.async_configure(
             result["flow_id"],
-            {"scan_interval": 60, "num_trains": 3, "stops_at": "Howth"},
+            {"scan_interval": 60, "stops_at": "Howth"},
         )
 
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
@@ -1211,14 +1159,13 @@ async def test_options_change_does_not_schedule_reload(
     ):
         result = await hass.config_entries.options.async_init(entry.entry_id)
         result = await hass.config_entries.options.async_configure(
-            result["flow_id"], {"scan_interval": 90, "num_trains": 2}
+            result["flow_id"], {"scan_interval": 90}
         )
         await hass.async_block_till_done()
 
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert entry.options == {
         "scan_interval": 90,
-        "num_trains": 2,
         CONF_STOPS_AT: None,
     }
     coordinator = entry.runtime_data.coordinator
@@ -1466,7 +1413,6 @@ async def test_reconfigure_leaves_sibling_direction_entries_untouched(
             "station": "Dublin Pearse",
             "station_code": "PEARS",
             "direction": None,
-            "num_trains": 3,
         },
         unique_id="PEARS_all",
     )

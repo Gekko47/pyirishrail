@@ -17,7 +17,6 @@ CONF_STATION_CODE = "station_code"
 CONF_STATION_FILTER = "station_filter"
 CONF_DIRECTION = "direction"
 CONF_SCAN_INTERVAL = "scan_interval"
-CONF_NUM_TRAINS = "num_trains"
 CONF_STOPS_AT = "stops_at"
 CONF_ENABLE_DIRECTION_FILTER = "enable_direction_filter"
 CONF_ENABLE_STOPS_AT_FILTER = "enable_stops_at_filter"
@@ -26,12 +25,6 @@ CONF_ENABLE_STOPS_AT_FILTER = "enable_stops_at_filter"
 # See docs/architecture.md §13.
 MIN_SCAN_INTERVAL_SECONDS = 30
 MAX_SCAN_INTERVAL_SECONDS = 600
-
-# Number of upcoming trains exposed via the ``upcoming_trains`` attribute.
-# See docs/architecture.md §15 for the attribute contract.
-DEFAULT_NUM_TRAINS = 3
-MIN_NUM_TRAINS = 1
-MAX_NUM_TRAINS = 5
 
 # The coordinator retains at most this many trains from the API's
 # look-ahead window: the two per-station sensors (`next_train_due`,

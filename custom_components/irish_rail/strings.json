@@ -5,12 +5,10 @@
         "title": "Set up Irish Rail",
         "description": "Choose the station you want to monitor.",
         "data": {
-          "station_filter": "Filter stations (optional)",
-          "num_trains": "Number of upcoming trains"
+          "station_filter": "Filter stations (optional)"
         },
         "data_description": {
-          "station_filter": "Type the start of a word in the station's name, like the irishrail.ie search (e.g. pearse). Leave empty to browse all stations.",
-          "num_trains": "How many of the next trains (1-5, default 3) are exposed in the upcoming_trains attribute of each sensor."
+          "station_filter": "Type the start of a word in the station's name, like the irishrail.ie search (e.g. pearse). Leave empty to browse all stations."
         }
       },
       "station_pick": {
@@ -76,15 +74,13 @@
     "step": {
       "init": {
         "title": "Irish Rail options",
-        "description": "Adjust polling and how many upcoming trains are exposed.",
+        "description": "Adjust polling and the \"stops at\" filter.",
         "data": {
           "scan_interval": "Scan interval (seconds)",
-          "num_trains": "Number of upcoming trains",
           "stops_at": "\"Stops at\" filter"
         },
         "data_description": {
           "scan_interval": "How often to poll the Irish Rail API, between 30 seconds and 10 minutes (default 60 seconds).",
-          "num_trains": "How many of the next trains (1-5, default 3) are exposed in the upcoming_trains attribute of each sensor.",
           "stops_at": "Only show trains that stop at this station en route. Choose All to disable the filter."
         }
       }

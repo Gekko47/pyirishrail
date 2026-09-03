@@ -19,21 +19,17 @@ from .client import IrishRailClient
 from .const import (
     BACKOFF_MULTIPLIER,
     CONF_DIRECTION,
-    CONF_NUM_TRAINS,
     CONF_SCAN_INTERVAL,
     CONF_STATION,
     CONF_STATION_CODE,
     CONF_STOPS_AT,
-    DEFAULT_NUM_TRAINS,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     DUBLIN_TZ,
     EMPTY_DATA_ISSUE_THRESHOLD,
     MAX_BACKOFF_INTERVAL,
-    MAX_NUM_TRAINS,
     MAX_RETAINED_TRAINS,
     MAX_SCAN_INTERVAL_SECONDS,
-    MIN_NUM_TRAINS,
     MIN_SCAN_INTERVAL_SECONDS,
     SERVICE_HOURS_END_HOUR,
     SERVICE_HOURS_START_HOUR,
@@ -69,23 +65,6 @@ def resolve_scan_interval(config_entry: IrishRailConfigEntry) -> timedelta:
         MIN_SCAN_INTERVAL_SECONDS, min(MAX_SCAN_INTERVAL_SECONDS, seconds)
     )
     return timedelta(seconds=seconds)
-
-
-def resolve_num_trains(config_entry: IrishRailConfigEntry) -> int:
-    """Return the number of upcoming trains to expose for an entry.
-
-    Precedence: ``entry.options`` (options flow) → ``entry.data``
-    (initial setup) → default of 3. Values are clamped to 1-5.
-    """
-    raw = config_entry.options.get(
-        CONF_NUM_TRAINS,
-        config_entry.data.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS),
-    )
-    try:
-        num = int(raw)
-    except (TypeError, ValueError):
-        num = DEFAULT_NUM_TRAINS
-    return max(MIN_NUM_TRAINS, min(MAX_NUM_TRAINS, num))
 
 
 def resolve_stops_at(config_entry: IrishRailConfigEntry) -> str | None:

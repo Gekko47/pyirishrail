@@ -26,7 +26,6 @@ from custom_components.irish_rail.const import (
 from custom_components.irish_rail.coordinator import (
     IrishRailDataUpdateCoordinator,
     empty_data_issue_id,
-    resolve_num_trains,
     resolve_scan_interval,
     resolve_stops_at,
 )
@@ -416,28 +415,8 @@ def test_resolve_scan_interval_clamps_to_bounds(hass: HomeAssistant) -> None:
         _entry_with(options={"scan_interval": "bad"})
     ) == timedelta(seconds=60)
 
-
-def test_resolve_num_trains_precedence_and_clamping(hass: HomeAssistant) -> None:
-    """Test num_trains resolution: options > data > default, clamped to 1-5."""
-    # No configuration at all: default.
-    assert resolve_num_trains(_entry_with()) == 3
-
-    # Value from initial setup data.
-    assert resolve_num_trains(_entry_with(data={"num_trains": 2})) == 2
-
-    # Options take precedence over data.
-    entry = _entry_with(data={"num_trains": 2}, options={"num_trains": 4})
-    assert resolve_num_trains(entry) == 4
-
-    # Out-of-range values are clamped.
-    assert resolve_num_trains(_entry_with(options={"num_trains": 99})) == 5
-    assert resolve_num_trains(_entry_with(options={"num_trains": 0})) == 1
-
-    # Non-numeric values fall back to the default.
-    assert resolve_num_trains(_entry_with(options={"num_trains": "bad"})) == 3
-
-
 def test_resolve_stops_at_precedence(hass: HomeAssistant) -> None:
+
     """Test stops_at resolution: options > data > no filter."""
     # No configuration at all: no filter.
     assert resolve_stops_at(_entry_with()) is None
