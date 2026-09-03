@@ -178,9 +178,21 @@ class ConnectivityMonitor:
 
     @callback
     def notify_listeners(self) -> None:
-        """Invoke every registered change listener."""
+        """Invoke every registered change listener.
+
+        Each listener is guarded so a single misbehaving listener cannot
+        abort the loop for the others or propagate out of ``async_ping()``
+        (which is reached via a fire-and-forget ``hass.async_create_task()``).
+        """
         for listener in list(self.listeners):
-            listener()
+            try:
+                listener()
+            except Exception:  # noqa: BLE001 — listeners must never break the notify loop
+                _LOGGER.warning(
+                    "Irish Rail health monitor listener %s raised; skipping",
+                    listener,
+                    exc_info=True,
+                )
 
     @property
     def recently_confirmed_healthy(self) -> bool:

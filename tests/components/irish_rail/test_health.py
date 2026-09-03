@@ -70,6 +70,32 @@ async def test_ping_success_records_health(hass: HomeAssistant) -> None:
     )
 
 
+async def test_notify_listeners_isolates_a_raising_listener(
+    hass: HomeAssistant,
+) -> None:
+    """A raising listener must not abort the loop for the others.
+
+    ``notify_listeners`` runs after ``async_ping``'s own ``try/except``
+    block and is reached via a fire-and-forget ``hass.async_create_task()``.
+    An unguarded ``listener()`` call would both skip every subsequent
+    listener *and* leak the exception out as an unretrieved-task
+    traceback. Each call is guarded so one bad listener is logged and
+    skipped while the rest still fire.
+    """
+    monitor = ConnectivityMonitor(hass, _client())
+    fired: list[bool] = []
+
+    def raising_listener() -> None:
+        raise RuntimeError("boom")
+
+    monitor.listeners.add(raising_listener)
+    monitor.listeners.add(lambda: fired.append(True))
+
+    # No exception escapes; the second listener still fires.
+    monitor.notify_listeners()
+    assert fired == [True]
+
+
 async def test_not_yet_probed_reports_unconservative_true_only_on_evidence(
     hass: HomeAssistant,
 ) -> None:
