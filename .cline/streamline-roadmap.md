@@ -368,7 +368,7 @@ coverage gate.
   it to cover the small variations other tests duplicate
   (e.g. stations with vs without direction, services with vs
   without due trains).
-- [ ] **E3 — Move `tests/win_stubs.py` into a CI-only guard.**
+- [x] **E3 — Move `tests/win_stubs.py` into a CI-only guard.**
   Today the shim is force-loaded by every developer's pytest
   invocation via `-p tests.win_stubs`. Move the platform check
   inside the shim so non-Windows hosts no-op, and add a
@@ -598,4 +598,18 @@ coverage gate.
   (was 250; +3 new tests), 100.00% line coverage, ruff 0,
   strict mypy 0 across 37 source files; docstring density and
   project-internal reference gates clean.
+- 2026-09-03 — C3-C5 executed: fixed attribute surface, removed
+  num_trains option end-to-end, updated README and architecture docs.
+  See commits 419f690, bb54001, bec51a8.
+- 2026-09-03 — D1-D4 executed: tightened README (removed duplicate
+  sections), compressed quality_scale.yaml, renamed for clarity
+  (ConnectivityMonitor, claim_service_entities, applied_unique_id),
+  added v0.4.0 changelog entry. See commits 4a4498b, 39a3901, 4443aaf,
+  d8ba1ba.
+- 2026-09-03 — E3 executed: added win_stubs importability smoke test.
+  The new test `test_win_stubs_importable_on_all_platforms` verifies
+  the shim module imports cleanly on all platforms (not just Windows),
+  ensuring CI on macOS/Linux does not fail at plugin load time. The
+  existing Windows-only regression tests remain skipped on non-Windows
+  via pytestmark. Gates green: 252 passed, 100.00% coverage.
 
