@@ -4,15 +4,16 @@ All notable changes to this project are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and versioning follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-## [0.4.0] — 2026-09-03
+## [0.4.0] — 2026-09-04
 
 Maintainability release. The integration has no active users, so
 this release makes no migration changes. Phases A–C of the streamline
 roadmap collapsed the per-station sensor surface, dropped the
-`num_trains` option, and renamed three over-clever identifiers. The
-plan, per-phase status, and decisions are recorded in
+`num_trains` option, and renamed three over-clever identifiers. After
+Phase D, the health monitor gained a listener API with
+shutdown/reload hygiene, and one raising listener can no longer break
+the notify loop. The plan, per-phase status, and decisions are
+recorded in
 [`.cline/streamline-roadmap.md`](.cline/streamline-roadmap.md).
 
 ### Highlights
@@ -32,6 +33,10 @@ plan, per-phase status, and decisions are recorded in
   `request_gate.py`, `models.py`, `errors.py`, `lib_const.py`).
 - **`quality_scale.yaml` compressed** from 22.7 KB / 438 lines to
   10.4 KB / 69 lines (–54% size, –84% line count).
+- **Health-monitor listeners.** Entities register callbacks for
+  connectivity-state changes via `ConnectivityMonitor.add_listener()`
+  (a removal callback is returned); shutdown clears the listeners and
+  resets the health state so a reload starts clean.
 
 ### Removed (Phase C)
 
@@ -54,12 +59,141 @@ plan, per-phase status, and decisions are recorded in
 - `async_claim_global_provider` → `claim_service_entities`
 - `previous_unique_id()` → `applied_unique_id()`
 
+### Added (post-D4)
+
+- **`ConnectivityMonitor` listener system.** `add_listener()`
+  registers a health-state-change callback and returns a removal
+  callback, so entities can register for connectivity transitions and
+  detach cleanly.
+- **Runtime wiring for entity restore.** The rebuild/last-rebuild
+  store keys and the shared stops store are reachable through
+  `IrishRailRuntimeData` for improved entity-restore handling.
+
+### Changed (post-D4)
+
+- **Shutdown/reload hygiene.** `ConnectivityMonitor.async_stop()`
+  clears listeners and resets health state;
+  `RuntimeRegistry.loaded_entry_ids` is reset on shutdown so a reload
+  starts from a clean state.
+- **Formatting normalized.** A black formatting pass joined the
+  wrapped signatures across the integration and its tests.
+- Exception-suppression `noqa` comments consolidated: the `BLE001`
+  markers now sit on the two deliberate-collection handlers in
+  `tests/test_win_stubs.py`; the `_runtime.py` listener guard keeps
+  its rationale as a plain comment.
+
+### Fixed (post-D4)
+
+- **Raising listeners are isolated.** `notify_listeners()` guards
+  each listener: a single misbehaving callback can no longer abort
+  the notify loop or escape the fire-and-forget ping task as an
+  unretrieved-task traceback. The failure is logged at warning level
+  and the remaining listeners still fire.
+
+### Tests and CI
+
+- New all-platform smoke test pins that the `tests/win_stubs` plugin
+  shim imports cleanly on non-Windows hosts, so CI on macOS/Linux
+  does not fail at plugin load time (Phase E3).
+- CI docstring-density gate raised from 0.20 to 0.21 (Phase A
+  closed).
+
 ### Gates
 
-- All gates green: 248 passed, 100.00% coverage, ruff clean,
+- All gates green: 267 passed, 100.00% coverage, ruff clean,
   strict mypy clean (37 files).
 
-## [0.3.0] — 2026-08-30
+## [0.3.1] — 2026-08-31
+
+### Public surface — cross-package underscore-prefix dependency removed
+
+The v0.3.0 release shipped a deliberate "cross-package
+private-symbol contract" where the integration's
+`matrix_rebuild` button and the offline
+`scripts/build_stops_matrix.py` seed generator both reached into
+`pyirishrail.api` for the leading-underscore helper
+`_scoped_journey_stops`. The contract was documented in the
+`pyirishrail` package docstring and in the integration
+roadmap. With the package now vendored in the same repo under
+the same commits and the same CI, the external-drift risk that
+originally motivated the contract is gone, but the
+underscore convention still signalled "don't build on this
+shape" and was a footgun for future contributors editing
+`api.py` in isolation. The contract has been replaced with a
+documented public surface.
+
+- **`IrishRailClient.scope_journey_stops(...)`** is a new public
+  method on the client that delegates to the module-private
+  `_scoped_journey_stops` helper. The integration's
+  `matrix_rebuild` button and `scripts/build_stops_matrix.py`
+  both call it via the client instance they already hold; no
+  cross-package underscore imports remain in the production
+  tree.
+- **`strip_namespaces`** is a new public re-export at
+  `pyirishrail` package level. It is an alias for
+  `pyirishrail.api._strip_namespaces` (the function name is
+  unchanged for `git blame` continuity). Test stubs that need
+  to mimic the client's parse-side normalization now import the
+  public name; the only cross-module consumer of the
+  underscore helper was in `tests/components/irish_rail/test_client.py`
+  and has been moved over.
+
+### Documentation
+
+- `pyirishrail/__init__.py` docstring rewritten: the duplicated
+  "Public surface" block (a paste artifact from the v0.2.0
+  → vendored transition) is collapsed to a single copy; the
+  import example now includes `strip_namespaces`; the
+  "Private helpers" paragraph no longer documents the
+  cross-package underscore import and instead states the
+  general convention. The stale reference to a non-existent
+  `pyirishrail.api._DTD_DECL_RE` symbol is corrected to
+  `_DTD_KEYWORDS` (the actual pre-parse-guard constant).
+- `pyirishrail/README.md` "Public API" table gains a row for
+  `strip_namespaces` and an annotation on the `IrishRailClient`
+  row pointing at `scope_journey_stops`. The "deliberately
+  reaches into one of them" paragraph is replaced with a
+  description of the new public method.
+
+### Tests
+
+- `test_scope_journey_stops_method_delegates_to_helper` (new)
+  pins the public method on a real `IrishRailClient` instance
+  and confirms it returns the same answer as the helper.
+- `tests/components/irish_rail/test_matrix_rebuild.py` and
+  `test_button.py` switch from `patch.object(IrishRailClient,
+  "scope_journey_stops", ...)` (which triggered mypy --strict
+  `[method-assign]` errors) to the module-level string-path
+  form `patch("custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops", ...)`
+  that `test_config_flow.py` already uses for class-method
+  patches. `_client_mock` is updated to return a real
+  `IrishRailClient(MagicMock())` instance (with `cast(MagicMock, ...)`
+  on the return) so class-level patches reach the test
+  client through normal attribute lookup while the static
+  type remains `MagicMock` for test-body attribute
+  assignment.
+- The implementation note at
+  `.cline/irish-rail-improvement-roadmap.md:487–494` (the
+  "cross-package private-symbol contract" entry) is preserved
+  for audit history and annotated with a **Resolved
+  2026-08-31** closure that names the new public surface and
+  explicitly says "do not reinstate" the underscore import
+  pattern.
+
+### Gates
+
+- All gates green: 245 passed (one new test for
+  `scope_journey_stops`), 100.00% coverage, ruff clean,
+  strict mypy clean (39 files).
+- `grep` audit: zero cross-module
+  `from .pyirishrail.api import _*` or `ir_api._*` references
+  remain in `custom_components/irish_rail/` and `scripts/`.
+- The pre-existing 3 ruff errors in
+  `tests/test_win_stubs.py` (an import-ordering issue and two
+  `BLE001` blind-`except` findings) are unchanged on master
+  and not introduced by this work.
+  
+  ## [0.3.0] — 2026-08-30
 
 The v0.3.0 Clean Baseline. The integration has no active users, so
 this release is a clean cut with no migration path: every claim in
@@ -249,92 +383,4 @@ remove that test and document the change here.
 - All gates green: 244 passed, 100.00% coverage, ruff clean,
   strict mypy clean (39 files).
 
-## [0.3.1] — 2026-08-31
 
-### Public surface — cross-package underscore-prefix dependency removed
-
-The v0.3.0 release shipped a deliberate "cross-package
-private-symbol contract" where the integration's
-`matrix_rebuild` button and the offline
-`scripts/build_stops_matrix.py` seed generator both reached into
-`pyirishrail.api` for the leading-underscore helper
-`_scoped_journey_stops`. The contract was documented in the
-`pyirishrail` package docstring and in the integration
-roadmap. With the package now vendored in the same repo under
-the same commits and the same CI, the external-drift risk that
-originally motivated the contract is gone, but the
-underscore convention still signalled "don't build on this
-shape" and was a footgun for future contributors editing
-`api.py` in isolation. The contract has been replaced with a
-documented public surface.
-
-- **`IrishRailClient.scope_journey_stops(...)`** is a new public
-  method on the client that delegates to the module-private
-  `_scoped_journey_stops` helper. The integration's
-  `matrix_rebuild` button and `scripts/build_stops_matrix.py`
-  both call it via the client instance they already hold; no
-  cross-package underscore imports remain in the production
-  tree.
-- **`strip_namespaces`** is a new public re-export at
-  `pyirishrail` package level. It is an alias for
-  `pyirishrail.api._strip_namespaces` (the function name is
-  unchanged for `git blame` continuity). Test stubs that need
-  to mimic the client's parse-side normalization now import the
-  public name; the only cross-module consumer of the
-  underscore helper was in `tests/components/irish_rail/test_client.py`
-  and has been moved over.
-
-### Documentation
-
-- `pyirishrail/__init__.py` docstring rewritten: the duplicated
-  "Public surface" block (a paste artifact from the v0.2.0
-  → vendored transition) is collapsed to a single copy; the
-  import example now includes `strip_namespaces`; the
-  "Private helpers" paragraph no longer documents the
-  cross-package underscore import and instead states the
-  general convention. The stale reference to a non-existent
-  `pyirishrail.api._DTD_DECL_RE` symbol is corrected to
-  `_DTD_KEYWORDS` (the actual pre-parse-guard constant).
-- `pyirishrail/README.md` "Public API" table gains a row for
-  `strip_namespaces` and an annotation on the `IrishRailClient`
-  row pointing at `scope_journey_stops`. The "deliberately
-  reaches into one of them" paragraph is replaced with a
-  description of the new public method.
-
-### Tests
-
-- `test_scope_journey_stops_method_delegates_to_helper` (new)
-  pins the public method on a real `IrishRailClient` instance
-  and confirms it returns the same answer as the helper.
-- `tests/components/irish_rail/test_matrix_rebuild.py` and
-  `test_button.py` switch from `patch.object(IrishRailClient,
-  "scope_journey_stops", ...)` (which triggered mypy --strict
-  `[method-assign]` errors) to the module-level string-path
-  form `patch("custom_components.irish_rail.pyirishrail.IrishRailClient.scope_journey_stops", ...)`
-  that `test_config_flow.py` already uses for class-method
-  patches. `_client_mock` is updated to return a real
-  `IrishRailClient(MagicMock())` instance (with `cast(MagicMock, ...)`
-  on the return) so class-level patches reach the test
-  client through normal attribute lookup while the static
-  type remains `MagicMock` for test-body attribute
-  assignment.
-- The implementation note at
-  `.cline/irish-rail-improvement-roadmap.md:487–494` (the
-  "cross-package private-symbol contract" entry) is preserved
-  for audit history and annotated with a **Resolved
-  2026-08-31** closure that names the new public surface and
-  explicitly says "do not reinstate" the underscore import
-  pattern.
-
-### Gates
-
-- All gates green: 245 passed (one new test for
-  `scope_journey_stops`), 100.00% coverage, ruff clean,
-  strict mypy clean (39 files).
-- `grep` audit: zero cross-module
-  `from .pyirishrail.api import _*` or `ir_api._*` references
-  remain in `custom_components/irish_rail/` and `scripts/`.
-- The pre-existing 3 ruff errors in
-  `tests/test_win_stubs.py` (an import-ordering issue and two
-  `BLE001` blind-`except` findings) are unchanged on master
-  and not introduced by this work.
