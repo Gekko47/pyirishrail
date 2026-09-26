@@ -1,7 +1,7 @@
 # Roo Skill Pack — Irish Rail Integration
 
 Roo loads skills **on demand** by description match, not as an ordered pack.
-The four skills here are named and trigger-rich so the right one loads for the
+The five skills here are named and trigger-rich so the right one loads for the
 work at hand. Anything that must never be violated lives in
 [`.roo/rules/`](../rules/) instead, because rules apply whether or not a skill
 loads.
@@ -11,7 +11,7 @@ Read a skill when its `description` matches the task. Read
 
 ---
 
-## The four skills
+## The five skills
 
 | Skill | Covers |
 |---|---|
@@ -19,6 +19,11 @@ Read a skill when its `description` matches the task. Read
 | **data-and-entities** | The runtime data path: async client, config flow, coordinator, entities, translations. Load when touching any of those modules. |
 | **testing-and-ci** | Test stack, test layer map, coverage gate, CI workflows. Load when writing tests or touching CI. |
 | **roadmap-execution** | The active plan, increment protocol, streamline discipline, review order, acceptance. Load before multi-step work or a PR. |
+| **mcp-tooling** | The four MCP servers in `.roo/mcp.json`, what each provides, the known `git` server defect, and when to prefer a built-in tool over an MCP one. Load when a task needs tree browsing, git history, live library docs, or structured reasoning. |
+
+**`mcp-tooling` is not a Cline port.** It was added after the pack was
+written, to document the workspace's own tooling rather than the
+integration's code. It has no entry in the mapping table below.
 
 ---
 
@@ -82,6 +87,17 @@ alongside post-baseline ones) is preserved in
 [ha-integration-conventions §1](../skills/ha-integration-conventions/SKILL.md)
 as an explicitly labelled **superseded / historical** block, because roadmap
 items and older commits still reference those numbers.
+
+---
+
+## Workspace tooling (not skills)
+
+`.roo/mcp.json` defines four MCP servers: `filesystem`, `git`,
+`context7`, and `sequentialthinking`. The **`git` entry is misconfigured** — it
+invokes `@modelcontextprotocol/inspector`, which is a debugging proxy rather
+than a server, so no git tools are exposed. See
+[mcp-tooling §2](../skills/mcp-tooling/SKILL.md) for the fix and for why MCP
+servers are never a dependency channel for the integration source.
 
 ---
 
