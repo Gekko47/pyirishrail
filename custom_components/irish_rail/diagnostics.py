@@ -12,16 +12,20 @@ from .const import (
     CONF_STATION,
     CONF_STATION_CODE,
     CONF_STATION_FILTER,
+    CONF_STOPS_AT,
     GLOBAL_LAST_REBUILD_KEY,
 )
 from .types import IrishRailConfigEntry, IrishRailRuntimeData
 
 # Sensitive fields are partially masked (not fully redacted) so maintainers
 # can still tell what a user's setup looks like without exposing the full
-# station name. Non-sensitive configuration choices (scan interval, num
-# trains, direction, stops-at filter) are kept as-is because they are
-# never personally identifying.
-_SENSITIVE_KEYS = frozenset({CONF_STATION, CONF_STATION_CODE, CONF_STATION_FILTER})
+# station name. "stops_at" is masked alongside the station fields: it holds
+# another station's name, so leaving it cleartext would defeat the masking
+# of everything else. Non-sensitive configuration choices (scan interval,
+# direction) are kept as-is because they are never personally identifying.
+_SENSITIVE_KEYS = frozenset(
+    {CONF_STATION, CONF_STATION_CODE, CONF_STATION_FILTER, CONF_STOPS_AT}
+)
 
 _MASK_PREFIX_LENGTH = 3
 _MASK_HASH_LENGTH = 8

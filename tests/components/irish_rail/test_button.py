@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
@@ -309,7 +310,14 @@ async def test_unload_cancels_an_in_flight_rebuild(
 async def test_press_serializes_concurrent_invocations(
     hass: HomeAssistant,
 ) -> None:
-    """A second press while one runs raises instead of double-sampling."""
+    """A second press while one runs raises a translated error.
+
+    The service path calls ``async_press`` directly and bypasses
+    ``available``, so this guard is the only thing standing between an
+    automation and a second several-minute sweep against the public API.
+    The error is a ``HomeAssistantError`` carrying a translation key so
+    the caller's log shows the integration's own wording.
+    """
     button = IrishRailRebuildStopsMatrixButton(hass, MagicMock())
     running = {"flag": False}
     release = asyncio.Event()
@@ -337,12 +345,49 @@ async def test_press_serializes_concurrent_invocations(
 
         # The duplicate press must surface its guard error straight away;
         # it never touches ``release``, so awaiting it cannot deadlock.
-        with pytest.raises(RuntimeError, match="already running"):
+        with pytest.raises(HomeAssistantError) as raised:
             await second
+        assert raised.value.translation_key == "rebuild_already_running"
+        assert raised.value.translation_domain == DOMAIN
 
         release.set()
         # ``async_press`` returns ``None``; this await is purely so the
         # first rebuild actually finishes before the test moves on.
+        await first
+        await hass.async_block_till_done()
+
+
+async def test_concurrent_service_call_raises_the_translated_error(
+    hass: HomeAssistant,
+) -> None:
+    """The automation surface surfaces the same translated failure.
+
+    End-to-end through ``hass.services.async_call`` so the guarantee is
+    pinned on the path a user's automation actually takes, not just on
+    ``async_press``.
+    """
+    await _setup_entry(hass)
+    release = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def slow_rebuild(_hass: object, _client: object) -> None:
+        entered.set()
+        await release.wait()
+
+    with patch(
+        "custom_components.irish_rail.button.async_run_matrix_rebuild",
+        side_effect=slow_rebuild,
+    ):
+        first = hass.async_create_task(
+            hass.services.async_call(DOMAIN, SERVICE_REBUILD, {}, blocking=True)
+        )
+        await entered.wait()
+
+        with pytest.raises(HomeAssistantError) as raised:
+            await hass.services.async_call(DOMAIN, SERVICE_REBUILD, {}, blocking=True)
+        assert raised.value.translation_key == "rebuild_already_running"
+
+        release.set()
         await first
         await hass.async_block_till_done()
 

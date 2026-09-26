@@ -74,8 +74,9 @@ single lifecycle: the set of loaded config entry ids.
 
 | Key | Owner | Purpose |
 |---|---|---|
-| `loaded_entry_ids` | `_runtime.py` | Authoritative count of loaded entries; the gate and the health monitor are released when this set goes empty. |
+| `loaded_entry_ids` | `_runtime.py` | Authoritative count of loaded entries; the gate, the movement cache and the health monitor are released when this set goes empty. |
 | `request_gate` | `_runtime.py` (`RuntimeRegistry`) | One `RequestGate` shared by every `IrishRailClient` the integration constructs. |
+| `movement_cache` | `_runtime.py` (`RuntimeRegistry`) | One `{(train_code, date): [TrainMovement]}` route cache shared by every client, so a train serving two stations is resolved once. |
 | `api_health_monitor` | `_runtime.py` (`RuntimeRegistry`) | One `IrishRailApiHealthMonitor`; backs the connectivity binary sensor and classifies empty polls. |
 | `stops_matrix_store` | `store.py` | One `StopsMatrixStore`; the gap-fill merge for live, config-flow, and rebuild writes. |
 | `global_provider_entry_id` | `_runtime.py` | Which entry owns the global connectivity sensor and rebuild button. |
@@ -209,22 +210,33 @@ station the selected direction does not serve.
 
 ## 6. Entity model
 
-Each station/direction config entry creates one device with **one
-sensor** (`sensor.<station>_<direction>_next_train_due`) that exposes
-the full arrival context as `extra_state_attributes`:
+Each station/direction config entry creates one device with **two
+sensors** — `sensor.<station>_<direction>_next_train_due` and
+`..._following_train_due` — holding the next and the following service.
+Each exposes the same fixed attribute surface:
 
 | Attribute | Meaning |
 |---|---|
-| `expected_arrival` | Full datetime of expected arrival (HA `TIMESTAMP` device class). |
-| `destination` | Final destination of the next train. |
-| `origin` | Origin station. |
-| `due_in_mins` | Signed minutes until departure (negative = departed). |
-| `late_mins` | Minutes late. |
-| `train_type` | Train category (DART, Commuter, InterCity, …). |
-| `train_code` | Irish Rail train identifier. |
+| `expected_arrival_time` | The API's `HH:MM` expected arrival, verbatim. |
+| `scheduled_arrival_time` | The API's `HH:MM` scheduled arrival, verbatim. |
 | `direction` | Reported direction string. |
-| `upcoming_trains[]` | Next N trains (1–5, default 3). |
+| `train_code` | Irish Rail train identifier. |
 | `api_reachable` | Always `true` when readable; absence means the coordinator marked the sensor `unavailable`. |
+
+`next_train_due` additionally carries the live countdown pair
+`expected_arrival` (ISO 8601 mirror of its own state) and
+`time_until_arrival` (whole seconds until arrival, recomputed on every
+read so it is genuinely live while the state is frozen at the last poll
+instant). **Both appear together or not at all**: the two are derived
+from the same optional arrival, so a template reading one never has to
+guard on the other. A service the API reports with neither `Duein` nor
+`HH:MM` resolves to no arrival and therefore carries neither key — the
+other four attributes keep the card readable and the absence is the
+signal that no arrival time is known.
+
+The sensor state itself is a `datetime` under the `TIMESTAMP` device
+class, resolved from the signed `due_in_mins` offset rather than from
+`HH:MM` (see §15).
 
 **Why one sensor, not three:** the previous design had three
 near-identical sensors (`next_train_due`, `next_train_destination`,
@@ -236,7 +248,8 @@ idiomatic HA pattern (see the `weather` integration) and lets
 templates read a single attribute key for any arrival detail.
 
 The integration also exposes two **service** entities on a fixed
-"Irish Rail Services" device:
+"Irish Rail Services" device — see §11 for the invariant governing when
+they exist:
 
 - `binary_sensor.irish_rail_api_connectivity`
   (`EntityCategory.DIAGNOSTIC`, `BinarySensorDeviceClass.CONNECTIVITY`)
@@ -245,16 +258,10 @@ The integration also exposes two **service** entities on a fixed
 
 ## 7. Global-entity providership
 
-The two service entities exist exactly once per Home Assistant
-session regardless of how many station config entries are installed.
-The first entry to set up "claims" providership; subsequent entries
-become no-ops for the service entities.
-
-When the owning entry is removed, its orphan entity-registry rows for
-the two global unique IDs are wiped (along with the matching
-"Irish Rail Services" device row) so the new claiming entry's
-`async_add_entities` does not collide and the user does not see a
-stray "entity not available" badge.
+Superseded by §11, which records the election model. The short form:
+providership is *derived* from the loaded-entry set, not cached at first
+claim, and the globals exist if and only if at least one station entry
+is loaded.
 
 ## 8. Reconfigure identity preservation
 
@@ -266,12 +273,44 @@ listener can double-reload or race. The pattern:
    `entry.async_update_reload_and_abort()` in the reconfigure flow;
    the update listener schedules exactly one reload afterwards.
 2. Option-only changes are applied in place
-   (`coordinator.update_interval = resolve_scan_interval(entry)`)
-   without a reload.
-3. Before the scheduled reload, the previous identity's
-   entities/device are positively removed from the entity/device
-   registries (matching on the previous unique ID) so the new
-   direction's entities are the only ones registered.
+   (`coordinator.async_set_configured_interval(...)`, which re-arms the
+   armed timer — see §9) without a reload.
+3. The reconfigure flow **merges** rather than replaces:
+   `new_data` is built from `{**entry.data, ...}` with only the three
+   identity keys overwritten, so a key added to the entry later is
+   carried across the reconfigure instead of silently dropped.
+
+**The reconfigure is transactional.** The old identity's registry rows
+are *not* removed when the reload is scheduled, because nothing at that
+point knows whether the reload will succeed. Instead:
+
+- The update listener **captures** the previous identity's
+  customisations (entity id, name, icon, disabled-by) into a
+  module-level pending-restore map keyed by entry id, and only then
+  schedules the reload.
+- `async_setup_entry` consumes that capture at its very end, after the
+  platforms have built their entities: the previous rows are dropped and
+  the new ones written back with the user's customisations. Setup
+  reaching that line is itself proof the new identity took — the entity
+  base class rejects an entry with no unique ID — so the restore target
+  is never missing.
+- A reload that fails leaves the old entities and device exactly as
+  they were, still restorable on the next attempt.
+- `ConfigEntryChange.REMOVED` pops any unconsumed capture, so removing a
+  sibling mid-flight cannot leak it for the session.
+
+The map lives in `__init__.py`, not on `RuntimeRegistry`, because
+`async_release` runs during the *reload's own* unload and would clear
+the capture at the exact moment it must survive.
+
+**Same station + same direction is a no-op by construction.** The
+reconfigure flow compares the normalized direction against the current
+value and aborts early without touching `entry.data`, so the identity
+cannot change and the transactional machinery never runs. Only a
+direction change is destructive, and the two global entities plus the
+services device are outside its blast radius: their unique IDs and
+device identifier match neither the `f"{previous_uid}_"` prefix nor
+`(DOMAIN, previous_uid)`.
 
 The coordinator snapshots the entry data it was built from
 (`_applied_entry_data`) and exposes:
@@ -280,11 +319,10 @@ The coordinator snapshots the entry data it was built from
   `entry.data`; the update listener uses this to distinguish
   data/identity changes (reload) from option-only changes
   (apply in place).
-- `previous_unique_id()` — derived from the snapshot, identifies
-  the pre-reconfigure identity even after
-  `config_entry.unique_id` has been rewritten. The reconfigure
-  flow uses this to target the registry cleanup at exactly the
-  old station/direction entities.
+- `applied_unique_id()` — derived from the snapshot, identifies the
+  identity currently on the registries even after
+  `config_entry.unique_id` has been rewritten, and is what the capture
+  step targets.
 
 ---
 
@@ -302,6 +340,13 @@ the configured interval immediately.
   `_failure_streak`, the setter updates `_configured_interval`
   and then delegates to the base class so HA's
   `_update_interval_seconds` cache stays in sync.
+- **An interval change re-arms the armed timer.** HA 2026.8 exposes no
+  public re-arm; assigning the property only mirrors the seconds cache,
+  so the already-scheduled `loop.call_at` keeps the old spacing until
+  something else reschedules. `_async_apply_effective_interval` uses
+  the base class' own `_unschedule_refresh` / `_schedule_refresh` pair —
+  the same two calls its add/remove-listener paths make. This is what
+  makes "applies immediately" true for an options change.
 - `_schedule_refresh()` mirrors the property into
   `_update_interval_seconds` before calling the base method,
   because HA 2026.8+ schedules from the cached value, not by
@@ -330,6 +375,16 @@ fresh streak.
   scheduled services within the look-ahead window": no issue is
   raised, any already-open one is cleared immediately, and the
   streak resets.
+- **…but only for an entry that filters nothing.** The probe queries a
+  different station with no filters, so "the API answered" says nothing
+  about whether *this* entry's filter is satisfiable. `is_unfiltered`
+  reports exactly the two filters the poll actually sends — the
+  direction snapshotted at coordinator construction and
+  `resolve_stops_at(entry)`, read live — so it can never disagree with
+  the query it qualifies. A filtered entry that comes back empty for
+  the whole threshold during service hours is precisely the case the
+  issue exists to catch, and suppressing it is what made an impossible
+  `stops_at` value permanently silent.
 - The registry is authoritative: a coordinator reconstructed
   after a reload may see `_empty_issue_reported = False` while
   the issue is still registered, so the clear path checks the
@@ -338,15 +393,29 @@ fresh streak.
 ### Downstream-stops learning
 
 While a "stops at" filter is active, pruning already fetches
-each candidate's movement history. The client records the
-journey-scoped downstream stops it saw in
-`client.last_downstream_stop_names` at zero extra API cost;
-the coordinator's `_async_learn_downstream_stops` merges them
-into `StopsMatrixStore` on every successful poll. This keeps
-the config flow's option list current without any additional
-requests. Persistence failures are logged and never fail the
-poll: the matrix is an optimization over live sampling, not a
-data source of record.
+each candidate's movement history. The **caller** owns the
+observation set: the poll passes an empty `set[str]` down to
+`async_get_station_by_code`, which clears and fills it with the
+journey-scoped downstream stops it resolved, and hands it to
+`_async_learn_downstream_stops` to merge into `StopsMatrixStore` on
+every successful poll. The client keeps no copy of its own — two
+entries sharing a client must not observe each other's stations.
+This keeps the config flow's option list current without any
+additional requests.
+
+Two guards on the write path:
+
+- `async_record` returns the count of **newly added** stops, so a poll
+  that re-observes what the matrix already holds flushes its batch
+  (otherwise the same stops would be rewritten every poll forever) but
+  reports no progress.
+- A `CancelledError` at the storage `await` restores the batch to
+  `_pending_stops` and re-raises. The batch was already taken out of
+  the pending set, so without this an unload or shutdown mid-write
+  would lose the poll's observations for good.
+
+Persistence failures are logged and never fail the poll: the matrix is
+an optimization over live sampling, not a data source of record.
 
 ---
 
@@ -381,8 +450,11 @@ entries ("All") still get persistence.
 
 `StopsMatrixStore.async_record` is serialized on an
 `asyncio.Lock` so two concurrent writers see each other's
-unions before persisting. A no-op write returns `False`
-without writing; a successful merge returns `True`.
+unions before persisting. It returns the number of **newly
+added** stops — `0` for a no-op write, so a caller can tell
+"nothing new" from "everything new" without diffing the matrix
+itself. That is what `RebuildResult.stops_added` reports, instead of
+a bool that counted re-observed stops as progress.
 
 ### Bundled seed double-checked load
 
@@ -452,26 +524,54 @@ probe) behind.
 
 ### Global-entity providership
 
-The connectivity binary sensor and the stops-matrix rebuild
-button exist exactly once per Home Assistant session
-regardless of how many station config entries are installed.
-The first entry to set up claims providership; subsequent
-entries become no-ops for these two entities.
+**The invariant:** the connectivity binary sensor, the stops-matrix
+rebuild button, their shared "Irish Rail Services" device and the
+`rebuild_stops_matrix` service exist **if and only if at least one
+station config entry is loaded**.
 
-When the previous owner disappears entirely, its orphan
-entity-registry rows for the two global unique IDs are wiped
-before the new claim is granted, along with the matching
-"Irish Rail Services" device row. The membership check is the
-same as for entity rows: only items whose `config_entry_id`
-references the dead owner are removed, so a live co-owned
-device is left alone. The new `async_get_device(identifiers=...)`
-returns at most one device (identifiers are unique per
-device), so a direct `async_remove_device` replaces the old
-`for dev in registry.devices.values()` iteration: equivalent
-semantics on the single device that can match the
-integration's `GLOBAL_SERVICES_IDENTIFIER`, and one call to a
-public API instead of iterating a private mapping that the
-modern registry no longer exposes.
+Providership is therefore a value *derived* from
+`registry.loaded_entry_ids`, not a fact cached at first claim. That
+distinction is the whole fix: the previous check asked
+`hass.config_entries.async_entries(DOMAIN)` whether the recorded owner
+was still *installed*, which ignores load state, so removing the owner
+while a sibling stayed loaded orphaned the globals for the rest of the
+session. A sticky election is unsound; a recomputed one is
+self-healing.
+
+- `elect_provider(hass, entry)` runs from `async_setup_entry` and
+  grants the key only to an entry that is in the loaded set. A second
+  loaded entry is a no-op, so the globals exist exactly once.
+- `async_promote_provider` re-elects onto a survivor — the lowest
+  loaded entry id, so the same survivor wins regardless of unload
+  order — and re-adds the two entities to that entry's *already
+  running* platforms. Reloading the survivor instead would make its
+  own sensors blink out and back on an entry that did nothing wrong.
+- `async_promote_on_removal` is driven by `ConfigEntryChange.REMOVED`,
+  which HA dispatches only once the entry has left the store, so it
+  never races a reload. It is a no-op unless the removed entry was the
+  owner waiting for a survivor, and it declines if the key was
+  re-claimed in the meantime.
+- Ownership transfers mid-session, so the **service lifetime is now
+  session-scoped, not owner-scoped**: the `rebuild_stops_matrix`
+  alias is (re-)registered on every promotion, and the rebuild task
+  is deliberately owned by `hass.async_create_background_task` rather
+  than by the owning entry, so a promotion that happens mid-rebuild
+  cannot cancel a sweep that is still useful.
+
+On every claim change the departing owner's orphan entity-registry
+rows for the two global unique IDs are wiped, along with the matching
+"Irish Rail Services" device row, so the new owner's
+`async_add_entities` does not collide and the user does not see a
+stray "entity not available" badge. The membership check is the same
+as for entity rows: only items whose `config_entry_id` references the
+departed owner are removed, so a live co-owned device is left alone.
+`async_get_device(identifiers=...)` returns at most one device
+(identifiers are unique per device), so a direct `async_remove_device`
+replaces the old `for dev in registry.devices.values()` iteration:
+equivalent semantics on the single device that can match the
+integration's `GLOBAL_SERVICES_IDENTIFIER`, and one call to a public
+API instead of iterating a private mapping that the modern registry no
+longer exposes.
 
 ---
 
@@ -498,13 +598,12 @@ alongside the listener can double-reload or race. The pattern:
 - The update listener compares the entry data snapshot taken
   at coordinator construction (`_applied_entry_data`) to the
   current `entry.data` via `coordinator.requires_reload()`:
-  - **Data/identity change** (station or direction): schedule
-    one reload. Before scheduling, positively remove the
-    previous identity's entity and device rows from the
-    registries so post-reload setup registers only the new
-    direction's entities.
-  - **Option-only change**: apply the new
-    `coordinator.update_interval` in place; no reload.
+  - **Data/identity change** (station or direction): capture the
+    previous identity's customisations into the pending-restore
+    map (§8) and schedule one reload. Nothing is removed here, so
+    a reload that fails leaves the old entities intact.
+  - **Option-only change**: apply the new interval in place via
+    `async_set_configured_interval`; no reload.
 
 `resolve_scan_interval()` defends against invalid or
 non-numeric stored option values, falling back to the default
@@ -515,13 +614,20 @@ instead of raising.
 `async_unload_entry` deletes any pending empty-data repair
 issue for the entry, unloads platforms, and deregisters the
 entry from the loaded-entry set. If the deregistration was
-the last, the shared request gate is released at the same
-moment so a subsequent load gets a fresh gate. Releasing
-only here keeps the one-gate-per-HA contract intact while
-sibling entries stay loaded — releasing on every unload
-would strand those siblings on a dropped gate while new
-clients built a second one, splitting the shared rate
-budget.
+the last, the shared request gate, the shared movement-history
+cache and the session-scoped keys are released at the same
+moment so a subsequent load starts clean. Releasing only here
+keeps the one-gate-per-HA contract intact while sibling entries
+stay loaded — releasing on every unload would strand those
+siblings on a dropped gate while new clients built a second
+one, splitting the shared rate budget.
+
+The issue delete and the shared-state release are **deliberately
+unconditional**, not guarded on the platform unload succeeding. HA
+marks a failed platform unload `FAILED_UNLOAD`, which is
+non-recoverable: the entry is never set up again, so leaving the gate
+and the probe running would leak them for the rest of the session.
+Verified against `config_entries.py` in HA 2026.8.
 
 ---
 
@@ -548,20 +654,37 @@ field degrades to free text so setup never blocks.
 
 ### Stops-at step
 
-The `stops_at` step (when requested) narrows on the selected
-direction's services. Options come from services currently
-due; when none can be sampled, the per-install cache and the
-bundled seed are used instead. Only as a last resort is the
-full national station list offered. A `stops_at` filter can
-never silently match nothing.
+The `stops_at` step (when requested) offers only stops a train from
+*this* station and *this* direction can actually reach. Sources, in
+order of freshness:
+
+1. The per-install learned matrix, for this station **and** direction.
+2. The bundled seed, likewise scoped.
+3. A live sample of the station's current services in that direction.
+4. Only when all three come up empty, the full national station list —
+   labelled as such, because a station chosen from it may never be
+   reached. Its `data_description` says so in the form.
+
+The stored value is merged back into the options whether or not it
+appears in the reachable set, so a no-op resubmit stays valid and a
+filter the user already has is never silently dropped. A `stops_at`
+filter can never silently match nothing.
+
+The options flow uses the same four-source order. It previously built
+the list from *every* station unconditionally, so a user could pick a
+stop upstream of their own; the filter then pruned every train on every
+poll and, until the repair-issue scoping fix, the one diagnostic that
+would have said so was suppressed.
 
 ### Reconfigure flow
 
 The station is fixed; only the direction filter is editable.
 The relevant options are discovered live for that one
 station. On success the entry data (and identity) are
-updated in place and the integration's update listener
-schedules the single required reload.
+updated in place — merged from `{**entry.data, ...}` — and the
+integration's update listener schedules the single required
+reload, transactionally (§8). A resubmit of the *same* direction is
+a no-op: nothing is written, nothing is reloaded.
 
 When rebuilding the form, the stored value is merged back
 into the options so resubmitting the current setting always

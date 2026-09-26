@@ -4,6 +4,107 @@ All notable changes to this project are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and versioning follows [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] — 2026-09-26
+
+Second audit pass, from a review of the 0.5.0 release. Phase G of the
+streamline roadmap; the plan, per-increment status and every decision
+taken during execution are recorded in
+[`.cline/streamline-roadmap.md`](.cline/streamline-roadmap.md).
+
+### Fixed
+
+- **The "Irish Rail Services" device now survives removing one of
+  several stations.** Ownership was decided by "which entry set up
+  first" and only re-checked at zero loaded entries, so removing the
+  owning entry while a sibling stayed loaded orphaned the connectivity
+  sensor, the rebuild button and the `rebuild_stops_matrix` service for
+  the rest of the session. Ownership is now derived from the loaded
+  entry set and transferred to a survivor automatically. The device,
+  its two entities and the service now exist **if and only if at least
+  one station entry is loaded**.
+- **Reconfigure is transactional.** A direction change used to delete
+  the previous identity's entities before the reload ran, so a failed
+  reload left you with nothing. Customisations are now captured first
+  and swapped in only once the new identity is up. This also removes
+  the ten-second stall the old restore path could hit, and carries your
+  entity names, ids, icons and disabled states across reliably.
+  Re-submitting the direction you already have is a no-op, as before.
+- **The "stops at" dropdown only offers reachable stops.** It listed
+  every station in Ireland, so you could pick one upstream of your own;
+  the filter then pruned every train on every poll and the sensors went
+  quiet with no explanation. The options are now scoped to your own
+  station *and* direction, drawn from the learned matrix, then the
+  bundled seed, then a live sample, with the full national list shown
+  (and labelled) only as a last resort. A filter you already have is
+  never silently dropped.
+- **The "no train data" repair issue now fires for filtered stations.**
+  It was suppressed whenever the shared API-health probe was happy, but
+  that probe polls a different, unfiltered station — so "the API
+  answered" said nothing about whether *your* filter was satisfiable.
+  An impossible filter value was the exact case the issue exists to
+  catch, and it was permanently silent.
+- **Changing the scan interval now re-arms the polling timer.** The new
+  interval was stored but the already-scheduled poll kept the old
+  spacing, so "applies immediately" was not true until the next tick.
+- **A single bad station no longer discards a whole stops-matrix
+  rebuild.** An unexpected error on one of ~150 stations aborted the
+  sweep and reported the rest as never visited; it is now logged and
+  skipped.
+- **Non-Irish hosts no longer prune every train overnight.** The
+  movement-history lookup defaulted to the *host's* local date, so a
+  host in another time zone queried yesterday's schedule between 00:00
+  and 05:00 Dublin time. The poll now pins an Irish civil date.
+- **A shutdown during a matrix write no longer loses what it learned.**
+  The batch had already been taken out of the pending set; a
+  cancellation at the storage write now puts it back.
+- `stops_at` is masked in downloaded diagnostics alongside the station
+  fields.
+- The rebuild progress counters no longer count re-observed stops as
+  new knowledge.
+- A reconfigure no longer risks dropping an entry key added later: the
+  new data is merged from the existing entry data.
+
+### Changed
+
+- Pressing **Rebuild stops at matrix** while a sweep is already running
+  now raises a translated, user-facing error instead of a bare English
+  string, and the sweep's own outcome still lands in the button's
+  attributes and a notification.
+- One movement-history cache is shared per Home Assistant instance
+  instead of one per client, so a train serving two stations is
+  resolved once.
+- The two per-station sensors' `next_train_due` countdown pair
+  (`expected_arrival` / `time_until_arrival`) now appears together or
+  not at all, so a template never has to guard on one to read the
+  other. A service with no resolvable arrival time carries neither.
+
+### Build and documentation
+
+- Minimum Home Assistant version in `hacs.json` is now the version CI
+  actually installs and tests against, `2026.8.2`.
+- Coverage is measured on branches as well as lines, and the suite sits
+  at exactly 100% of both. Two branches this exposed were provably dead
+  rather than untested and were removed or marked as such.
+- The build gates moved out of the CI workflow into
+  `scripts/`, are now typed and unit-tested like the rest of the
+  repository, and gained a check that a backticked module reference in
+  a docstring still points at a file that exists.
+- A new CI job fails a tagged release whose `manifest.json` version
+  disagrees with the CHANGELOG or the tag.
+- Every CI tool is pinned exactly, `pytest-timeout` bounds a hung test,
+  and Dependabot now watches the Python tooling as well as the actions.
+- The docstring-density gate was found to be **failing on master** once
+  it became runnable; `client.py` was brought back inside the budget.
+
+### Known limitations
+
+- `home-assistant/actions/hassfest` and `hacs/action` are still
+  referenced by tag rather than by commit SHA. Pinning them needs the
+  upstream commit id, which the environment this pass was executed in
+  could not resolve; guessing one would be worse than the honest gap.
+
+---
+
 ## [0.5.0] — 2026-09-05
 
 Correctness release driven by a full audit of the integration against

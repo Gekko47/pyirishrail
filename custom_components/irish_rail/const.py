@@ -87,10 +87,11 @@ STOPS_MATRIX_FILENAME = "stops_matrix.json"
 # The connectivity binary_sensor and the stops-matrix rebuild button are
 # registered as integration-level service entities (no device, with
 # EntityCategory.DIAGNOSTIC / CONFIG respectively) so the per-station devices
-# never have to carry them. The first loaded config entry "claims" providership
-# (see health.py) for the lifetime of the Home Assistant session; if that entry
-# is unloaded the globals disappear with it until reload/restart rather than
-# fighting over entity-registry ownership mid-session.
+# never have to carry them. Exactly one loaded config entry owns them (see
+# _runtime.py), elected from the loaded set rather than claimed by whichever
+# entry happened to set up first: when the owner is removed or unloaded a
+# surviving entry is promoted, and the globals exist if and only if at least
+# one station entry is loaded.
 
 # Fixed unique IDs (not derived from any config entry unique_id) so registry
 # identity survives reloads and ownership changes alike.

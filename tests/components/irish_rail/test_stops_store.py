@@ -44,14 +44,16 @@ async def test_concurrent_records_serialize_and_preserve_every_stop(
     """
     store = StopsMatrixStore(hass)
 
-    async def record(index: int) -> bool:
+    async def record(index: int) -> int:
         return await store.async_record(
             f"S{index:02d}", "Northbound", [f"Stop {index}", "Shared"]
         )
 
     results = await asyncio.gather(*(record(i) for i in range(25)))
 
-    assert all(results)
+    # Each station is its own bucket, so every writer adds both of its
+    # stops; the return value is a count, not a flag.
+    assert sum(results) == 50
     for index in range(25):
         assert await store.async_lookup(f"S{index:02d}", "Northbound") == [
             "Shared",
@@ -98,15 +100,15 @@ async def test_store_roundtrip_merge_and_persistence(hass: HomeAssistant) -> Non
     """Records merge, skip redundant saves, and persist across instances."""
     store = StopsMatrixStore(hass)
 
-    assert await store.async_record("PEARS", "Northbound", ["Howth"]) is True
+    assert await store.async_record("PEARS", "Northbound", ["Howth"]) == 1
     assert await store.async_lookup("PEARS", "Northbound") == ["Howth"]
 
     with patch.object(store._store, "async_save") as mock_save:
         # Re-recording identical stops must not rewrite storage.
-        assert await store.async_record("PEARS", "Northbound", ["Howth"]) is False
+        assert await store.async_record("PEARS", "Northbound", ["Howth"]) == 0
         mock_save.assert_not_called()
         # New stops merge into the bucket.
-        assert await store.async_record("PEARS", "Northbound", ["Malahide"]) is True
+        assert await store.async_record("PEARS", "Northbound", ["Malahide", "Howth"]) == 1
 
     assert await store.async_lookup("PEARS", "Northbound") == [
         "Howth",
@@ -115,7 +117,7 @@ async def test_store_roundtrip_merge_and_persistence(hass: HomeAssistant) -> Non
     # Lookups never leak across direction buckets.
     assert await store.async_lookup("PEARS", "Southbound") is None
     # Directionless filters land in the shared ``_all`` bucket.
-    assert await store.async_record("TARA", None, ["Dublin Connolly"]) is True
+    assert await store.async_record("TARA", None, ["Dublin Connolly"]) == 1
     assert await store.async_lookup("TARA", None) == ["Dublin Connolly"]
     # A separate instance sees the data persisted by the first one.
     fresh = StopsMatrixStore(hass)
@@ -129,7 +131,7 @@ async def test_store_ignores_empty_observations(hass: HomeAssistant) -> None:
     """Empty observation sets neither save nor create entries."""
     store = StopsMatrixStore(hass)
     with patch.object(store._store, "async_save") as mock_save:
-        assert await store.async_record("PEARS", None, []) is False
+        assert await store.async_record("PEARS", None, []) == 0
         mock_save.assert_not_called()
 
 
@@ -143,7 +145,7 @@ async def test_store_survives_corrupt_storage_file(hass: HomeAssistant) -> None:
     store = StopsMatrixStore(hass)
     assert await store.async_lookup("PEARS", None) is None
     # Recording afterwards writes fresh data over the corrupt file.
-    assert await store.async_record("PEARS", None, ["Bray"]) is True
+    assert await store.async_record("PEARS", None, ["Bray"]) == 1
     assert await store.async_lookup("PEARS", None) == ["Bray"]
 
 
@@ -265,7 +267,7 @@ async def test_store_corrupt_load_exception_degrades_to_empty(
         assert await store.async_lookup("PEARS", None) is None
     assert "Could not load stored stops matrix" in caplog.text
     # The instance continues usable from its degraded empty state.
-    assert await store.async_record("PEARS", None, ["Bray"]) is True
+    assert await store.async_record("PEARS", None, ["Bray"]) == 1
 
 
 async def test_bundled_seed_with_nondict_json_degrades_to_empty(

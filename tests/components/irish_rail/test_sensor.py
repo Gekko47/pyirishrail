@@ -567,3 +567,26 @@ def test_entity_requires_config_entry_unique_id(hass: HomeAssistant) -> None:
 
     with pytest.raises(ValueError, match="no unique_id"):
         IrishRailDueTrainSensor(coordinator, "next_train_due")
+
+
+def test_a_train_with_no_resolvable_arrival_omits_the_countdown() -> None:
+    """Neither ``Duein`` nor ``HH:MM``: the countdown keys are absent.
+
+    The API can send a service with both arrival fields blank (a
+    cancelled or data-incomplete record). Publishing the other four
+    attributes keeps the card readable while making it explicit that
+    no arrival time is known.
+    """
+    base = _mock_train()
+    blank = replace(base, due_in_mins=0, expected_arrival_time="")
+    object.__setattr__(blank, "due_in_mins", None)
+
+    coordinator = MagicMock()
+    coordinator.data = [blank]
+    sensor = IrishRailDueTrainSensor(coordinator, "next_train_due")
+
+    attrs = sensor.extra_state_attributes
+    assert attrs is not None
+    assert attrs["api_reachable"] is True
+    assert "expected_arrival" not in attrs
+    assert "time_until_arrival" not in attrs

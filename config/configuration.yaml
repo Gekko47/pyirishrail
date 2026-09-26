@@ -1,6 +1,0 @@
-default_config:
-
-logger:
-  default: debug
-  logs:
-    custom_components.irish_rail: debug

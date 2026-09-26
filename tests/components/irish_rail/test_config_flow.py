@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from dataclasses import replace
 from datetime import timedelta
 from typing import Any
@@ -15,6 +16,7 @@ from homeassistant.data_entry_flow import InvalidData
 from homeassistant.helpers import device_registry, entity_registry
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.irish_rail import _PENDING_IDENTITY_RESTORES
 from custom_components.irish_rail.config_flow import IrishRailConfigFlow
 from custom_components.irish_rail.const import (
     CONF_DIRECTION,
@@ -31,6 +33,23 @@ from custom_components.irish_rail.models import (
     TrainDueTime,
 )
 from custom_components.irish_rail.store import get_stops_store
+
+
+@pytest.fixture(autouse=True)
+def _quiet_live_stop_discovery() -> Iterator[None]:
+    """Keep the options flow's live stops sample out of the way by default.
+
+    The options flow only reaches live discovery when this install's
+    learned matrix and the bundled seed are both empty for the entry,
+    which is the normal case for a station the seed does not cover. Tests
+    that exercise that path patch the method again.
+    """
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient."
+        "async_get_station_stops_at_options",
+        return_value=[],
+    ):
+        yield
 
 
 def _mock_station() -> Station:
@@ -1208,6 +1227,177 @@ async def test_options_flow_stops_at_free_text_fallback_on_connection_error(
     assert entry.options[CONF_STOPS_AT] == "Howth"
 
 
+# ── Reachable-stops scoping for the options dropdown (G4) ────────────────────
+
+
+def _stops_field_container(
+    result: config_entries.ConfigFlowResult, key: str = CONF_STOPS_AT
+) -> set[str]:
+    """Return the dropdown options the rendered schema offers for one key."""
+    data_schema = result["data_schema"]
+    assert data_schema is not None
+    schema = data_schema.schema
+    field_key = next(k for k in schema if getattr(k, "schema", None) == key)
+    return set(schema[field_key].container)
+
+
+async def test_options_stops_at_is_scoped_to_learned_reachable_stops(
+    hass: HomeAssistant,
+) -> None:
+    """A learned stop is offered; a station list is not consulted.
+
+    The full station list would let the user pick a stop upstream of
+    their own station, which no train from there can ever satisfy.
+    """
+    entry = await _setup_entry(hass)
+    await get_stops_store(hass).async_record(
+        "PEARS", "Northbound", ["Howth", "Malahide"]
+    )
+
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
+        return_value=[_mock_station()],
+    ) as stations:
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    # The learned matrix answers, so the station list is never fetched.
+    stations.assert_not_called()
+    assert _stops_field_container(result) == {"All", "Howth", "Malahide"}
+
+
+async def test_options_stops_at_falls_back_to_the_bundled_seed(
+    hass: HomeAssistant,
+) -> None:
+    """With nothing learned, the bundled seed scopes the dropdown."""
+    entry = await _setup_entry(hass)
+    seed: dict[str, Any] = {
+        "schema_version": 1,
+        "stations": {
+            "PEARS": {
+                "updated": "2026-08-25T16:20:42+01:00",
+                "directions": {"northbound": ["Howth", "Malahide"]},
+            }
+        },
+    }
+
+    with (
+        patch(
+            "custom_components.irish_rail.config_flow.async_load_bundled_stops_matrix",
+            new=AsyncMock(return_value=seed),
+        ),
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ) as stations,
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    stations.assert_not_called()
+    assert _stops_field_container(result) == {"All", "Howth", "Malahide"}
+
+
+async def test_options_stops_at_falls_back_to_live_discovery(
+    hass: HomeAssistant,
+) -> None:
+    """An uncovered station is sampled live before any list is offered."""
+    entry = await _setup_entry(hass)
+
+    with (
+        patch(
+            "custom_components.irish_rail.config_flow.async_load_bundled_stops_matrix",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient."
+            "async_get_station_stops_at_options",
+            return_value=["Greystones"],
+        ) as discover,
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ) as stations,
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    discover.assert_awaited_once_with(
+        "PEARS", direction="Northbound", exclude="Dublin Pearse"
+    )
+    stations.assert_not_called()
+    assert _stops_field_container(result) == {"All", "Greystones"}
+
+
+async def test_options_stops_at_last_resort_is_the_labelled_station_list(
+    hass: HomeAssistant,
+) -> None:
+    """With no source at all, the full list is offered rather than a dead end."""
+    entry = await _setup_entry(hass)
+
+    with (
+        patch(
+            "custom_components.irish_rail.config_flow.async_load_bundled_stops_matrix",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient."
+            "async_get_station_stops_at_options",
+            side_effect=IrishRailConnectionError,
+        ),
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    assert _stops_field_container(result) == {"All", "Dublin Pearse"}
+
+
+async def test_options_stops_at_keeps_a_stored_value_outside_the_matrix(
+    hass: HomeAssistant,
+) -> None:
+    """Scoping never makes a stored filter unsubmittable.
+
+    A stop learned for a different direction is not in this entry's
+    reachable set, but a no-op resubmit must still validate rather than
+    silently drop the filter.
+    """
+    entry = await _setup_entry(hass)
+    await get_stops_store(hass).async_record(
+        "PEARS", "Northbound", ["Howth", "Malahide"]
+    )
+    hass.config_entries.async_update_entry(
+        entry, options={CONF_STOPS_AT: "Greystones"}
+    )
+
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
+        return_value=[_mock_station()],
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        assert _stops_field_container(result) == {
+            "All",
+            "Greystones",
+            "Howth",
+            "Malahide",
+        }
+
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        stops_at_key = next(
+            k
+            for k in data_schema.schema
+            if getattr(k, "schema", None) == CONF_STOPS_AT
+        )
+        assert stops_at_key.default() == "Greystones"
+
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"scan_interval": 60, "stops_at": "Greystones"}
+        )
+
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_STOPS_AT] == "Greystones"
+
+
 # ── Update-listener-owned reload (HA >= 2026.6 deprecation, 2026.12 hard) ────
 
 
@@ -2166,7 +2356,7 @@ async def test_stops_at_step_prefers_cached_matrix_when_live_unavailable(
 ) -> None:
     """With no samplable services, the learned matrix beats the full list."""
     store = get_stops_store(hass)
-    assert await store.async_record("PEARS", None, ["Bray"]) is True
+    assert await store.async_record("PEARS", None, ["Bray"]) == 1
 
     async def _empty_seed() -> dict[str, Any]:
         return {}
@@ -2281,7 +2471,7 @@ async def test_stops_at_step_uses_bundled_seed_before_full_list(
 async def test_stops_matrix_cache_is_direction_scoped(hass: HomeAssistant) -> None:
     """A cached bucket is only offered for its own direction."""
     store = get_stops_store(hass)
-    assert await store.async_record("PEARS", "Northbound", ["Howth"]) is True
+    assert await store.async_record("PEARS", "Northbound", ["Howth"]) == 1
 
     async def _empty_seed() -> dict[str, Any]:
         return {}
@@ -2340,3 +2530,202 @@ async def test_stops_matrix_cache_is_direction_scoped(hass: HomeAssistant) -> No
 
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_DIRECTION] == "Southbound"
+
+
+# ── Transactional identity reconfigure (G2) ──────────────────────────────────
+
+
+def _due_sensor_row(
+    hass: HomeAssistant, entry: MockConfigEntry, suffix: str = "next_train_due"
+) -> Any:
+    """Return the entry's live station-sensor registry row for one entity key."""
+    ent_reg = entity_registry.async_get(hass)
+    return next(
+        registry_entry
+        for registry_entry in entity_registry.async_entries_for_config_entry(
+            ent_reg, entry.entry_id
+        )
+        if str(registry_entry.unique_id).endswith(suffix)
+    )
+
+
+def _rows_for_identity(
+    hass: HomeAssistant, entry: MockConfigEntry, unique_id_prefix: str
+) -> dict[str, Any]:
+    """Return the entry's live station-sensor rows keyed by entity key."""
+    ent_reg = entity_registry.async_get(hass)
+    return {
+        str(registry_entry.unique_id).removeprefix(unique_id_prefix): registry_entry
+        for registry_entry in entity_registry.async_entries_for_config_entry(
+            ent_reg, entry.entry_id
+        )
+        if str(registry_entry.unique_id).startswith(unique_id_prefix)
+    }
+
+
+async def test_reconfigure_failed_reload_leaves_the_old_identity_intact(
+    hass: HomeAssistant,
+) -> None:
+    """A reconfigure whose reload fails destroys nothing.
+
+    The registry swap is deferred to the end of the *next* successful
+    setup, so a reload that ends in SETUP_RETRY still shows the previous
+    identity's entities and device, and the capture survives so a later
+    successful reload can still carry the customisations across.
+    """
+    entry = await _setup_entry(hass)
+    ent_reg = entity_registry.async_get(hass)
+    dev_reg = device_registry.async_get(hass)
+
+    old_due = _due_sensor_row(hass, entry)
+    ent_reg.async_update_entity(old_due.entity_id, name="My train")
+    old_device_id = device_registry.async_get_device_id_by_identifier(
+        hass, (DOMAIN, "PEARS_northbound"), config_entry_id=entry.entry_id
+    )
+    assert old_device_id is not None
+
+    with (
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.async_get_station_directions",
+            return_value=["Northbound", "Southbound"],
+        ),
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
+            side_effect=IrishRailConnectionError,
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_RECONFIGURE,
+                "entry_id": entry.entry_id,
+            },
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"direction": "Southbound"}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert entry.state is config_entries.ConfigEntryState.SETUP_RETRY
+
+    # Nothing was removed: the old rows, their customisation and the old
+    # station device are all still registered against the entry.
+    survivor = ent_reg.async_get(old_due.entity_id)
+    assert survivor is not None
+    assert survivor.name == "My train"
+    assert dev_reg.async_get(old_device_id) is not None
+    assert not _rows_for_identity(hass, entry, "PEARS_southbound_")
+    # The capture is still pending, waiting for a setup that gets that far.
+    assert entry.entry_id in _PENDING_IDENTITY_RESTORES
+
+    # Once the API recovers, the retry completes the swap and carries the
+    # customisation across.
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
+        return_value=_both_direction_trains(),
+    ):
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state.value == "loaded"
+    assert entry.entry_id not in _PENDING_IDENTITY_RESTORES
+    after = _rows_for_identity(hass, entry, "PEARS_southbound_")
+    assert set(after) == {"next_train_due", "following_train_due"}
+    assert after["next_train_due"].name == "My train"
+    assert ent_reg.async_get(old_due.entity_id) is None
+    assert dev_reg.async_get(old_device_id) is None
+
+
+async def test_reconfigure_reload_does_not_trip_the_unload_task_timeout(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A reconfigure reload finishes without the ten-second unload stall.
+
+    The customisation restore used to run as an entry-owned task that
+    waited on the reload while the reload's unload waited on that task, so
+    every reconfigure logged "Task ... did not complete in time".
+    """
+    entry = await _setup_entry(hass)
+
+    with (
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
+            return_value=_both_direction_trains(),
+        ),
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.async_get_station_directions",
+            return_value=["Northbound", "Southbound"],
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_RECONFIGURE,
+                "entry_id": entry.entry_id,
+            },
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"direction": "Southbound"}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert entry.state is config_entries.ConfigEntryState.LOADED
+    assert not [
+        record.getMessage()
+        for record in caplog.records
+        if "did not complete in time" in record.getMessage()
+    ]
+
+
+async def test_removing_a_sibling_drops_its_unconsumed_capture(
+    hass: HomeAssistant,
+) -> None:
+    """A capture whose entry is removed is discarded, not left behind.
+
+    Only a *loaded* sibling can observe the removal signal, which is why
+    the assertion is made with a second entry still running.
+    """
+    survivor = await _setup_entry(hass)
+    doomed = MockConfigEntry(
+        domain=DOMAIN,
+        title="Galway (All)",
+        data={
+            "station": "Galway",
+            "station_code": "GALWAY",
+            "direction": None,
+        },
+        unique_id="GALWAY_all",
+    )
+    doomed.add_to_hass(hass)
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
+        return_value=[_mock_train()],
+    ):
+        assert await hass.config_entries.async_setup(doomed.entry_id)
+        await hass.async_block_till_done()
+
+    # Give the doomed entry a pending capture without letting the reload run.
+    with patch.object(hass.config_entries, "async_schedule_reload"):
+        hass.config_entries.async_update_entry(
+            doomed,
+            data={**doomed.data, CONF_DIRECTION: "To Dublin Heuston"},
+            unique_id="GALWAY_todublinheuston",
+        )
+        await hass.async_block_till_done()
+    assert doomed.entry_id in _PENDING_IDENTITY_RESTORES
+
+    assert await hass.config_entries.async_remove(doomed.entry_id)
+    await hass.async_block_till_done()
+
+    assert doomed.entry_id not in _PENDING_IDENTITY_RESTORES
+    assert survivor.state is config_entries.ConfigEntryState.LOADED

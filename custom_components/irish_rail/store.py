@@ -120,10 +120,16 @@ class StopsMatrixStore:
 
     async def async_record(
         self, station_code: str, direction: str | None, stops: list[str]
-    ) -> bool:
-        """Merge observed stops into the matrix, saving only real changes."""
+    ) -> int:
+        """Merge observed stops into the matrix; return how many were new.
+
+        The count (not a bare bool) is what callers report as
+        "stops added", so a batch that only re-observed known stops does
+        not over-report progress. ``0`` means nothing changed, and the
+        save is skipped.
+        """
         if not stops:
-            return False
+            return 0
         async with self._record_lock:
             data = await self._async_ensure_loaded()
             stations: dict[str, Any] = data.setdefault("stations", {})
@@ -137,14 +143,16 @@ class StopsMatrixStore:
                 if isinstance(existing_raw, list)
                 else set()
             )
-            merged = existing | {stop for stop in stops if stop}
+            incoming = {stop for stop in stops if stop}
+            merged = existing | incoming
             if merged == existing:
-                return False
+                return 0
 
+            added = len(merged - existing)
             directions[key] = sorted(merged, key=str.casefold)
             entry["updated"] = dt_util.utcnow().isoformat()
             await self._store.async_save(data)
-            return True
+            return added
 
 
 @callback

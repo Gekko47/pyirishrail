@@ -89,6 +89,16 @@ without losing any of the rules-evidencing code paths.
 | S6 | `gate.py` + `health.py` consolidation | **Yes**, into a single `_runtime.py` module exposing a `RuntimeRegistry` class. Singleton lifecycles become structural (the registry is the only writer to `loaded_entry_ids` and to each subkey). The `RequestGate` primitive in `pyirishrail._gate` stays separate — it's the framework-agnostic gate, not a singleton. |
 | S7 | Docstring discipline | **Three categories** (see Skill 10 §2): keep contract docstrings tight; move design history to `docs/architecture.md`; delete "what the name says" docstrings. Density target: 0.15 lines/LOC. |
 | S8 | Tests for the simplify pass | **Tighten, do not just re-keep**. Several test files cover the same edge cases (e.g. matrix-rebuild tests vs build-script tests). Phase E deduplicates while preserving the 100% coverage gate. |
+| S14 | Global-entity lifecycle (audit HIGH-1) | **Re-elect, do not persist.** Ownership of the "Irish Rail Services" device becomes a value *derived* from `loaded_entry_ids` rather than a fact cached at first claim. The defect was that `claim_service_entities` tested liveness with `hass.config_entries.async_entries(DOMAIN)` — which ignores load state — while `GLOBAL_PROVIDER_KEY` was cleared only at zero loaded entries, so removing the owner with a sibling still loaded orphaned the globals for the session. A sticky election is unsound; a recomputed one is self-healing. |
+| S15 | Promotion mechanism (audit HIGH-1) | **Re-add entities directly; do not reload the survivor.** Reloading a live station entry makes its own sensors disappear and reappear — user-visible churn on an entry that did nothing wrong. Use `entity_platform.async_get_platforms` + `EntityPlatform.async_add_entities` on the survivor's already-running platforms. Recorded fallback: `async_schedule_reload`, which is correct but impolite. Two implementation notes proved out during G1: `async_get_platforms` is keyed by the *integration* name (the config entry's domain) and each platform carries its own `.domain`; and the dispatcher behind `ConfigEntryChange.REMOVED` passes `(change, entry)` as two positional arguments, not one `Event`. |
+| S16 | Reconfigure destructiveness (audit HIGH-3, MEDIUM-8) | **Make it transactional.** The listener currently deletes the old identity's registry rows *before* knowing the reload will succeed, and restores via `entry.async_create_task` + `async_block_till_done` — which the reload's own `_async_process_on_unload` waits on, producing a mutual wait broken only by a hard-coded 10 s timeout. Replace both with a pending-restore map consumed at the end of `async_setup_entry`. Scope confirmed: same station + same direction is already a no-op (`config_flow.py:543`), so only a direction change is destructive, and the globals are never in the purge's blast radius. Three implementation notes proved out during G2: the map is a module-level dict in `__init__.py` rather than `RuntimeRegistry` state, because `async_release` runs during the *reload's* unload and would clear the capture at the exact moment it must survive; `ConfigEntryChange.REMOVED` is dispatched from `ConfigEntries._async_clean_up`, i.e. after `entry.async_unload` has already run the entry's `async_on_unload` callbacks, so only a still-loaded sibling can observe a removal and the pop on that signal is a best-effort bound rather than a guarantee; and `entity.py` rejects an entry without a unique ID, so by the time the swap runs the restore target is always a `str`. |
+| S17 | Health-probe suppression of the empty-data issue (audit HIGH-2) | **Suppress only for unfiltered entries.** The probe queries a different station with no filters, so "the API answered" says nothing about whether *this* entry's filter is satisfiable. A filtered entry returning nothing for the threshold during service hours is precisely the case the issue exists to catch, and suppressing it is what made an impossible `stops_at` value permanently silent. One implementation note proved out during G3: the new `is_unfiltered` precondition reports exactly the two filters `_async_update_data` actually sends — `self.direction`, snapshotted at coordinator construction, and `resolve_stops_at(entry)`, read live — rather than re-reading both from the entry, so it can never disagree with the query it is qualifying. |
+| S18 | Scope of the audit's MEDIUM-8 finding | **Narrowed, not withdrawn.** Recorded so the next reader does not re-derive it: the finding holds only for a *direction* change, and the two global entities plus the services device are outside its blast radius (their unique IDs and device identifier match neither the `f"{previous_uid}_"` prefix nor `(DOMAIN, previous_uid)`). The minimal fix stands; the blast radius is smaller than first reported. |
+| S19 | Where the source-hygiene gate lives | **`scripts/`, not a heredoc in `ci.yml`.** `scripts/check_streamline_a4.py` now owns all three checks (docstring density, project-internal cross-references, backticked module pointers) so the gate is importable, typed and unit-tested rather than untested YAML. The module-pointer check is new and is what would have caught the stale `health.py` / `gate.py` pointers: a backticked `` `foo.py` `` must now name a file that exists under `custom_components/irish_rail/`. The cross-reference regex widened from `roadmap\s+\d\.\d` to a bare `\broadmap\b` — the digit requirement was exactly what let the line-wrapped `roadmap item 4.4` at `client.py:73` through. |
+| S20 | Docstring density after enabling `--cov-branch` | **Trimmed, not the ceiling raised.** G10h turned on branch coverage, and running the now-runnable density gate showed 0.220 against a 0.21 ceiling: the G1–G9 increments had pushed the source past the threshold the previous progress log recorded as 0.197, so CI was already red on master. ~100 lines of contract-exceeding prose in `client.py` were compressed to one-or-two-line contracts with `docs/architecture.md §N` pointers, per S7; density is now 0.201. Note the recorded discrepancy: the roadmap's Phase A acceptance says 0.20 and the enforced ceiling has always been 0.21 — the enforced value is the stricter-contract-by-accident of the two and is unchanged, only the failure message, which used to say 0.20 while checking 0.21. |
+| S21 | Unreachable branches vs untested branches | **Split, deliberately.** Enabling `--cov-branch` surfaced 18 partial branches. Seventeen are real untested behaviour and now have tests. Two are not: `sensor.py`'s inner `if time_until_arrival is not None` (the value is derived from `expected_arrival`, so it cannot be `None` there — replaced with a `cast`, which removes the branch instead of decorating it) and `matrix_rebuild.py`'s `elif document is not None` (`document` is `None` only under `gap_fill=True`, which always installs a store — marked `# pragma: no branch`). Both are provably dead rather than merely uncovered; the pragma records the proof. |
+| S22 | `home-assistant/actions/hassfest` SHA pin | **OPEN — not done, not guessed.** Pinning requires the upstream commit id for the tag, and the build environment has no network access to resolve it. A fabricated SHA would break the build or, worse, pin to nothing real, so the reference stays `@master` with an in-file comment marking it as the single remaining mutable action reference. `hacs/action@main` is the same case. Recorded here and in the G10 note rather than silently dropped. |
+| S23 | Build gates under test and mypy | **`scripts/` joined the strict run and the coverage gate.** The gates are part of the build, so untested shell in `ci.yml` was a hole in the same way the prose-grepping test was (see G8). `tests/test_scripts.py` drives all three scripts through their real `main()` entry points. `if __name__ == "__main__":` and `if TYPE_CHECKING:` blocks are excluded from coverage — process entry points and type-only imports are not behaviour. |
 
 ## Phases
 
@@ -486,6 +496,103 @@ of test-only work and repository hygiene.
 
 ---
 
+### Phase G — Audit remediation from the 0.5.0 review
+
+A comprehensive repository review was carried out after v0.5.0 against
+the Home Assistant integration contract, the Quality Scale rules, and
+the CI/release configuration. It confirmed a small number of lifecycle
+and correctness defects and produced five structural recommendations
+(R1–R5). Phase G lands them.
+
+Phase G is a **behaviour-change phase**: several items are user-visible
+fixes, not refactors, so ground rule 4 applies — each lands as its own
+committed step with the gates green.
+
+The detailed plan — per-item design, file touchpoints, and acceptance
+criteria — lives in
+[`plans/phase-g-audit-remediation.md`](../plans/phase-g-audit-remediation.md).
+This section carries the ordering and the decisions; the plan file
+carries the mechanics.
+
+**Governing invariant (user-specified):** the "Irish Rail Services"
+device, its two entities, and the `rebuild_stops_matrix` service exist
+**if and only if** at least one station config entry is loaded. The
+"own grouping, never attached to a station device" half already holds —
+both globals carry the fixed `GLOBAL_SERVICES_IDENTIFIER` — and G1 adds
+a test that pins it.
+
+#### G1–G4 — P0 correctness
+
+- [x] **G1 — Provider election derived from the loaded set.** Replace
+      the sticky claim with `elect_provider` / `disown_provider_if` /
+      `async_promote_provider` in `_runtime.py`, keyed on
+      `loaded_entry_ids` rather than `hass.config_entries.async_entries(
+      DOMAIN)`. Move the rebuild-service registration out of per-entry
+      `button.py` setup so service lifetime tracks the loaded set.
+      Re-point `_purge_orphan_global_entities` at a just-departed owner.
+      Fixes HIGH-1. (Decisions S14, S15.)
+- [x] **G2 — Transactional reconfigure.** Pending-restore map consumed
+      at the end of `async_setup_entry`; delete the
+      `async_create_task` + `async_block_till_done` handshake and the
+      pre-reload purge. Fixes HIGH-3 and MEDIUM-8. (Decision S16.)
+- [x] **G3 — Stop suppressing the empty-data issue for filtered
+      entries.** Probe health only suppresses when the entry has no
+      `direction` and no `stops_at`. Fixes HIGH-2a. (Decision S17.)
+- [x] **G4 — Scope the `stops_at` options to reachable stops.** Learned
+      matrix → bundled seed → live discovery → full station list as a
+      labelled last resort. Fixes HIGH-2b, and delivers R5.
+
+#### G5–G6 — Structural recommendations
+
+- [x] **G5 — Return observations instead of parking them on the client.**
+      `IrishRailClient.last_downstream_stop_names` is shared
+      mutable state across the coordinator, the health monitor and the
+      rebuild button; safe today only because the latter two pass no
+      filter. Deliver R3.
+- [x] **G6 — Share the movement cache on the registry.** One cache per
+      HA instance instead of one per config entry. Deliver R4, and fixes
+      MEDIUM-6.
+
+#### G7–G9 — Claims, translations, remaining correctness
+
+- [x] **G7 — Correct six inaccurate `quality_scale.yaml` rows.**
+      `entity_event_setup`, `action_exceptions`,
+      `exception_translations`, `docs_triggers`, `docs_conditions`,
+      `docs_actions`. Fixes MEDIUM-9.
+- [x] **G8 — Translated `HomeAssistantError` for the rebuild service**,
+      and delete `test_no_homeassistanterror_raised_to_users`, which
+      greps source prose and actively blocks the fix. Fixes MEDIUM-10
+      and MEDIUM-11.
+- [x] **G9 — Remaining MEDIUM items**, each its own checkbox: G9a guard
+      unload side effects on success; G9b re-arm the scheduler after an
+      interval change; G9c merge rather than replace `entry.data` on
+      reconfigure; G9d isolate per-station rebuild failures; G9e thread a
+      `DUBLIN_TZ` date through the pruning path; G9f button
+      `async_cancel()`; G9g return the added-stop count from
+      `async_record`; G9h restore pending stops on cancellation; G9i
+      mask `stops_at` in diagnostics. **G9a was investigated and
+      withdrawn** (see the progress log); G9f landed with G1.
+
+#### G10–G11 — Hygiene and evidence
+
+- [x] **G10 — LOW findings and repository hygiene**: stale docstring
+      pointers to the deleted `health.py` / `gate.py`; the
+      `roadmap item 4.4` breadcrumb and the CI regex hole that let it
+      through; `hacs.json` floor to the tested `2026.8.2`; stray `-p/`
+      directory; CI action SHA pins and pinned dev tooling;
+      `--cov-branch`; `pytest-timeout`; a seeded RNG in the gate stress
+      test; move the docstring-density gate into `scripts/`.
+      **Landed with two recorded exceptions**: the
+      `home-assistant/actions/hassfest` SHA pin is still open (see
+      D19), and enabling branch coverage exposed a real
+      docstring-density breach that had to be fixed first (D20).
+- [x] **G11 — Documentation and evidence pass**: `docs/architecture.md`
+      §§2/6/7/8/9/10/11/12/13, `README.md`, `quality_scale.yaml` evidence
+      pointers, and a `CHANGELOG.md` v0.5.1 entry. `manifest.json` bumped
+      to 0.5.1 so the release-version gate agrees with the tag.
+
+---
+
 ## Progress log (append one line per increment)
 
 - 2026-08-31 — Roadmap created from the lead-dev review. Skill 10
@@ -770,4 +877,303 @@ of test-only work and repository hygiene.
     parse as YAML (an unquoted `requirements:` in the
     `async_dependency` comment), and the coordinator's interval
     property was shadowing a base setter that had never needed it.
+- 2026-09-26 — G0 executed: Phase G recorded from the 0.5.0 audit,
+  with decisions S14–S18. The governing invariant is user-specified —
+  the "Irish Rail Services" device, its two entities and the
+  `rebuild_stops_matrix` service exist if and only if at least one
+  station entry is loaded. Per-item design and acceptance criteria
+  live in `plans/phase-g-audit-remediation.md`. S18 records a scope
+  correction so the next reader does not re-derive it: the audit's
+  MEDIUM-8 (destructive reconfigure) holds only for a direction
+  change — same station and same direction is already a no-op via
+  `config_flow.py:543` — and the two global entities are outside its
+  blast radius. No code changed in this increment.
+- 2026-09-26 — G1 executed: the "Irish Rail Services" device, its two
+  entities and the `rebuild_stops_matrix` service now exist **if and
+  only if** at least one station entry is loaded. HIGH-1 closed.
+  *Ownership is derived, not cached:* `elect_provider` tests the
+  recorded owner against `loaded_entry_ids` instead of
+  `async_entries(DOMAIN)`, which ignores load state and so pinned
+  ownership to a dead entry for the rest of the session.
+  *Promotion is driven by `ConfigEntryChange.REMOVED`,* which HA
+  dispatches only once the entry has left the store. An unload is
+  ambiguous — it is the first half of a reload *and* the whole of a
+  removal — and a time-based settle guess was tried and rejected: it
+  misread a routine reconfigure reload as a removal and handed the
+  globals to a sibling mid-reconfigure, breaking
+  `test_reconfigure_leaves_sibling_direction_entries_untouched`. The
+  removal signal cannot race a reload.
+  *The survivor is not reloaded:* entities are added to its
+  already-running platforms, so a station that did nothing wrong never
+  sees its own sensors blink out.
+  *Service lifetime moved off the individual entry:* registration is
+  now idempotent and keyed to the loaded set, and teardown happens on
+  the zero-survivors path in `async_release`.
+  *Entity construction is shared:* `build_connectivity_sensor` and
+  `build_rebuild_button` serve both the setup path and promotion, so
+  the two cannot drift.
+  Gates: ruff 0 · strict mypy 0 · **306 passed · 100.00% coverage**.
+  New tests: owner removed with a sibling loaded (device, both
+  entities and the service all reappear on the survivor, on their own
+  device); last entry removed (device, entities and service all gone);
+  a plain reload keeps ownership; election is deterministic; the purge
+  runs on re-election over a departed owner; promotion declines
+  without a runtime or with a vanished survivor.
+- 2026-09-26 — G2 executed: the identity reconfigure is now
+  transactional. HIGH-3 and MEDIUM-8 closed together, because they
+  share one root cause — destructive registry work ran *before* the
+  reload was known to succeed.
+  *The handshake is gone.* The restore used to run as an
+  `entry.async_create_task` whose first statement was
+  `hass.async_block_till_done()`, while the reload's own
+  `_async_process_on_unload` did `asyncio.wait([*self._tasks, ...],
+  timeout=10)` and `self._tasks` contained that very task: a mutual
+  wait broken only by the hard-coded timeout, after which HA logged
+  `Task ... did not complete in time`. There is no task any more.
+  *Nothing is removed before the replacement exists.* The update
+  listener now only *captures* the outgoing identity's customisations
+  into `_PENDING_IDENTITY_RESTORES` and schedules the reload;
+  `_async_apply_pending_identity_restore` runs after
+  `async_forward_entry_setups` and is the single place that drops the
+  old rows and re-applies the customisations. A reload that ends in
+  `SETUP_RETRY` therefore leaves the old entities, their
+  customisations and the station device intact, and the capture
+  survives so a later successful reload still carries the name, icon,
+  area and disabled state across. The user's guarantee is preserved
+  and now holds for the failure path too: same station + same
+  direction is still a pure no-op (no listener, no reload, no
+  registry touch), and the two global entities are outside the purge.
+  *Cleanup on removal.* A removed entry never runs setup again, so the
+  removal handler drops its capture; a removed entry's own dispatcher
+  subscription is already torn down by then, so this is a best-effort
+  bound observed by any still-loaded sibling, not a guarantee.
+  Gates: ruff 0 · strict mypy 0 · **309 passed · 100.00% coverage**.
+  New tests: a failed direction reconfigure leaves the old rows,
+  customisation and device in place, the capture still pending, and a
+  later successful reload completes the swap carrying the
+  customisation; a successful reconfigure logs no
+  "did not complete in time"; removing a sibling with an unconsumed
+  capture discards it.
+- 2026-09-26 — G3 executed: the health probe no longer silences the
+  persistent-empty-data repair issue for an entry that filters
+  anything. HIGH-2a closed. The probe queries a *different* station
+  with no filters, so "the API answered" says nothing about whether
+  this entry's own filter is satisfiable; suppressing on that basis is
+  what let an impossible `stops_at` value stay silent for the rest of
+  the session. `coordinator.is_unfiltered` is now the precondition on
+  the suppression branch. *The unfiltered path is unchanged:* a
+  station with nothing scheduled and a healthy API still clears a
+  stale issue and resets the streak silently. *Two existing tests
+  changed meaning and were corrected rather than deleted:* both built
+  a `direction`-filtered entry and then asserted probe suppression,
+  which is exactly the behaviour being removed; the shared fixture is
+  now unfiltered by default and takes the filter as an argument.
+  Gates: ruff 0 · strict mypy 0 · **313 passed · 100.00% coverage**.
+  New tests: a direction-filtered and a `stops_at`-filtered entry each
+  reach the threshold and raise the issue with a green probe; an
+  unfiltered entry reports `is_unfiltered`; and the precondition
+  responds to each filter independently.
+- 2026-09-26 — G5 executed: the client no longer parks the
+  downstream-stop observations on itself (R3).
+  `async_get_station_by_code` / `async_get_station_by_name` /
+  `_async_prune_trains` take an optional `observed_stops` set that the
+  caller owns; `last_downstream_stop_names` and its reset are gone.
+  Previously the same attribute was shared by the coordinator, the
+  health monitor and the rebuild button, and was safe only because the
+  latter two pass no `stops_at` filter - an invariant nothing enforced.
+  A dead `if not self._pending_stops: return` guard in the learn path
+  turned out to be unreachable and was removed rather than tested.
+  Gates: ruff 0 · strict mypy 0 · **320 passed · 100.00% coverage**.
+  New tests: the caller's set is populated; a pre-seeded stale set is
+  replaced rather than merged; two concurrent passes on one client keep
+  their observations to themselves.
+- 2026-09-26 — G6 executed: one movement-history cache per Home
+  Assistant instance (R4, MEDIUM-6). `RuntimeRegistry` owns
+  `movement_cache`, `async_get_movement_cache` hands it out, and
+  `async_release` clears it alongside the request gate. The client takes
+  an optional `movement_cache` argument, so the module stays
+  framework-agnostic and standalone-testable; omitted, the client keeps
+  a private cache exactly as before. Previously each config entry built
+  its own client with its own 1024-entry cache, which is both a memory
+  spike on the constrained hosts this integration targets and pure
+  duplicated fetching for a train code serving two stations.
+  Gates: ruff 0 · strict mypy 0 · **321 passed · 100.00% coverage**.
+  New test: two entries share one cache object, a route warmed by one is
+  visible to the other, and the cache is dropped with the last entry.
+- 2026-09-26 — G8 then G7 executed together, in that order, because
+  the plan requires `exception_translations` to become `done` through a
+  code fix rather than a YAML edit. G8: the rebuild button raises
+  `HomeAssistantError(translation_key="rebuild_already_running")`
+  instead of a bare `RuntimeError`, with the wording under a new
+  `exceptions` section in both translation files.
+  `test_no_homeassistanterror_raised_to_users` - which grepped source
+  *text* for the string `HomeAssistantError` and therefore blocked the
+  fix - is deleted and replaced by
+  `test_exception_keys_raised_toward_users_resolve`, which asserts
+  every raised `HomeAssistantError` carries a `translation_key` that
+  resolves in both files. Behavioural tests cover the button press and
+  the real `hass.services.async_call` path. G7: the six rows are
+  corrected - `entity_event_setup` now describes the actual wiring
+  (sensors inherit `CoordinatorEntity`, the binary sensor removes its
+  monitor listener via `self.async_on_remove`), `action_exceptions` and
+  `exception_translations` move `exempt` -> `done` on the strength of
+  G8, and `docs_triggers` / `docs_conditions` / `docs_actions` move
+  `done` -> `exempt` because the integration registers none of those
+  three (a binary sensor is not a Quality Scale condition, and the
+  rebuild *service* is not an action).
+  The evidence-pointer gate caught the deleted test name exactly as
+  designed, which is what forced the G7 edit in the same run.
+  Gates: ruff 0 · strict mypy 0 · **322 passed · 100.00% coverage**.
+- 2026-09-26 — G9 executed. **G9a was investigated and withdrawn:**
+  the finding claimed a failed platform unload leaves the entry
+  ``LOADED``, so releasing the shared singletons would strand it. Read
+  against `config_entries.py` in HA 2026.8, a failed unload sets
+  ``FAILED_UNLOAD``, which is *non-recoverable* - the entry is never
+  set up again, so releasing is the correct cleanup and keeping the
+  singletons would leave shared state owned by a dead entry. The
+  original code was right; the finding's premise was wrong. The
+  reasoning is now a comment on ``async_unload_entry`` so the next
+  reader does not re-derive it.
+  **G9f needed no change:** G1 already added
+  ``IrishRailRebuildStopsMatrixButton.async_cancel`` and scheduled the
+  sweep with ``hass.async_create_background_task``. (The plan's
+  suggestion of ``entry.async_create_background_task`` was wrong: after
+  a provider promotion the button deliberately outlives its original
+  entry, so tying the task to that entry's lifecycle would kill a
+  rebuild the survivor now owns.)
+  Landed: G9b, the coordinator now re-arms the scheduler through the
+  base class' reschedule pair - HA 2026.8 has no public
+  ``async_set_update_interval``, and assigning ``update_interval``
+  only mirrors the seconds cache, so the docstring's "applies
+  immediately" claim was false; G9c, the reconfigure flow builds
+  ``new_data`` from ``{**entry.data, ...}`` so a future key is not
+  silently dropped; G9d, a per-station ``except Exception`` in the
+  rebuild sweep logs and continues, so one bad row no longer discards
+  ~150 sampled stations; G9e, the schedule date is derived in
+  ``DUBLIN_TZ`` and threaded through the pruning path, because
+  ``async_get_train_stops``'s own default is the *host's* local date -
+  a host in another zone queried yesterday's schedule between 00:00 and
+  05:00 Dublin time and pruned every train; G9g, ``async_record``
+  returns the number of newly added stops instead of a bool, so
+  ``RebuildResult.stops_added`` stops over-reporting re-observed
+  stops; G9h, a ``BaseException`` (cancellation) around the learn
+  write restores the batch it had already taken out of
+  ``_pending_stops`` and re-raises; G9i, ``stops_at`` is masked in
+  diagnostics alongside the station fields.
+  Gates: ruff 0 · strict mypy 0 · **325 passed · 100.00% coverage**.
+  New tests: the poll pins the Dublin service date; a cancelled learn
+  write restores the batch without advancing the debounce clock; an
+  interval change re-arms the armed timer (asserted on
+  ``hass.loop.call_at``); an unexpected per-station failure does not
+  end the sweep.
+- 2026-09-26 — G4 executed: the options flow's "stops at" dropdown is
+  scoped to the stops a train from *this* entry can actually reach.
+  HIGH-2b closed and R5 delivered. The list is built from, in order of
+  freshness, this install's learned matrix, the bundled seed, and a
+  live sample — each keyed on the entry's own station *and* direction,
+  so an option offered from them can match a train. Only when all three
+  come up empty does the full station list appear, and the field's
+  `data_description` now says so and warns that a station from it may
+  never be reached. Previously the list was built from every station
+  unconditionally, so a user could pick one upstream of their own; the
+  filter then pruned every train on every poll and, until G3, the one
+  diagnostic that would have said so was suppressed.
+  *The stored value is still merged in* whether or not it appears in
+  the reachable set, so a no-op resubmit stays valid and a filter the
+  user already has is never silently dropped.
+  *Two notes for the next reader.* The initial config flow already
+  scoped its stops-at step this way; only the options flow had drifted.
+  And `test_config_flow.py` now carries an autouse fixture that
+  neutralises live stop discovery, because the options flow now reaches
+  that call whenever the matrix and seed are both empty — the normal
+  state for a station the seed does not cover — and the suite blocks
+  sockets.
+  Gates: ruff 0 · strict mypy 0 · **318 passed · 100.00% coverage**.
+  New tests: the learned matrix scopes the list and the station list is
+  never fetched; the seed is the second source; live discovery is the
+  third; the full list is the labelled last resort; and a stored value
+  outside the reachable set stays selectable and resubmittable.
+- 2026-09-26 — G10 executed: the LOW findings and the repository
+  hygiene pass, with one item recorded as open rather than closed
+  (S22).
+  *Stale pointers.* The nine backticked references to the deleted
+  `health.py` / `gate.py` modules now point at `_runtime.py` /
+  `request_gate.py`, and the `roadmap item 4.4` breadcrumb is gone
+  from `client.py:73`. The new module-pointer check in
+  `scripts/check_streamline_a4.py` makes that class of drift fail the
+  build rather than survive a rename.
+  *The density gate was already red.* Moving the gate out of
+  `ci.yml` into a runnable script immediately reported density 0.220
+  against the 0.21 ceiling — the G1–G9 work had pushed the source past
+  the 0.197 the last progress log recorded, so master was failing its
+  own gate. Roughly 100 lines of prose in `client.py` were compressed
+  to contract docstrings with `docs/architecture.md §N` pointers, per
+  S7. Density is now 0.201 and the failure message finally states the
+  number it checks (S20).
+  *Hygiene.* `hacs.json` floor → `2026.8.2` (the version CI actually
+  installs and the tests actually run against); the stray `-p/`
+  directory and the committed `config/configuration.yaml` dev artefact
+  removed; every CI tool pinned exactly; `dependabot.yml` gained a
+  `pip` ecosystem so a pytest or mypy release is noticed.
+  One rule conflict, recorded rather than papered over: the project
+  conventions file lists `config/configuration.yaml` under "Layout" as
+  local dev config. A local dev config has no business in the tree — it
+  is four lines of logger config, is regenerated per developer, and was
+  never read by the test suite or CI. The file is deleted; the
+  conventions table should drop the row, which is a
+  `.roo/rules` edit and therefore outside this phase's scope.
+  *Branch coverage.* `--cov-branch` is on. It exposed 18 partial
+  branches, of which two proved to be dead code rather than untested
+  code (S21): `sensor.py`'s `time_until_arrival` guard, removed
+  outright, and `matrix_rebuild.py`'s `elif document is not None`,
+  marked `# pragma: no branch` with the reason inline. The other
+  sixteen now have tests — an unresolvable arrival, an empty movement
+  response, a direction-filtered train, an unchanged matrix write, a
+  train code shared by two stations, promotion with no global
+  entities, and the teardown no-ops.
+  *Build gates are code now.* `scripts/` joins the strict mypy run and
+  the coverage gate, with `tests/test_scripts.py` driving all three
+  scripts. A new `release` CI job runs
+  `scripts/check_release_version.py` on tag pushes so a tag can never
+  ship a `manifest.json` version nobody tested.
+  *Not done, on purpose.* `home-assistant/actions/hassfest@master` and
+  `hacs/action@main` remain the only mutable action references; pinning
+  them needs the upstream commit id, which this environment cannot
+  resolve. Guessing a SHA would be worse than the honest gap, so the
+  reference carries a comment saying so (S22).
+  Gates: ruff 0 · strict mypy 0 across 42 files ·
+  **353 passed · 100.00% line and branch coverage** across the 19
+  integration modules and the 3 build gates · source-hygiene gate
+  clean · release-version gate clean.
+- 2026-09-26 — G11 executed: the documentation and evidence pass, and
+  **Phase G is complete**. No behaviour changed; every claim below was
+  checked against the code that now exists.
+  *`docs/architecture.md`.* §2 gained the shared movement cache; §6 was
+  rewritten, because the old attribute table described a design the
+  integration left two phases ago (three sensors, an `upcoming_trains`
+  list, a `num_trains` option) — it now documents the two sensors, the
+  fixed five-key surface and the countdown pair's all-or-nothing rule;
+  §7 was reduced to a pointer at §11, which now carries the election
+  model, the promotion rule and the iff invariant; §8 records the
+  transactional reconfigure and the no-op-by-construction case; §9
+  records the re-armed scheduler and the filtered-entry exemption from
+  probe-based suppression; §10 records what `async_record` now returns;
+  §12 records why the unload release is unconditional; §13 records the
+  four-source order the stops-at dropdown actually uses.
+  *`README.md`.* The iff invariant, the transactional-reconfigure and
+  re-armed-timer claims, the filtered-station repair-issue behaviour and
+  the corrected stops-at fallback order. The minimum HA version was
+  already 2026.8.2 and now matches `hacs.json` for the first time.
+  *`quality_scale.yaml`.* Five evidence rows re-pointed at the G1/G2/G3
+  functions that now implement them (`devices`, `dynamic_devices`,
+  `entity_category`, `stale_devices`, `repair_issues`) plus `test_coverage`
+  and `strict_typing` for the widened gate.
+  *`CHANGELOG.md`.* A v0.5.1 entry written for a user, not for the
+  plan: what changed, what it means, and the one known limitation
+  carried over from S22. `manifest.json` bumped to match, which the new
+  release-version gate now enforces on every tag.
+  Gates: ruff 0 · strict mypy 0 across 42 files ·
+  **353 passed · 100.00% line and branch coverage** · source-hygiene
+  gate clean (density 0.201) · release-version gate clean against
+  `v0.5.1`.
 

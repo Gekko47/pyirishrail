@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, time, timedelta
-from typing import Any
+from typing import Any, cast
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -200,6 +200,9 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
         next_train = data[0]
         now = dt_util.utcnow()
         expected_arrival = _parse_expected_arrival(next_train, now)
+        # Only meaningful when the arrival resolved; ``time_until_arrival`` is
+        # recomputed on every read, so the countdown is genuinely live even
+        # though the sensor state is frozen at the last poll instant.
         time_until_arrival: timedelta | None = (
             expected_arrival - now if expected_arrival is not None else None
         )
@@ -215,15 +218,17 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
         # state on the ``next_train_due`` entity) is mirrored here as
         # ``expected_arrival`` so device-level attribute readers and
         # string-rendering widgets have a single canonical key.
+        # The full datetime of expected arrival (the sensor's primary
+        # state on the ``next_train_due`` entity) is mirrored here as
+        # ``expected_arrival`` so device-level attribute readers and
+        # string-rendering widgets have a single canonical key. Both keys
+        # appear together or not at all: a template reading
+        # ``time_until_arrival`` never has to guard on ``expected_arrival``.
         if expected_arrival is not None:
             attrs["expected_arrival"] = expected_arrival.isoformat()
-            if time_until_arrival is not None:
-                # ``time_until_arrival`` is recomputed on every read, so
-                # the value is genuinely live (the sensor state itself
-                # is frozen at the last poll instant). Templates and
-                # automations can read this directly: a "5 min" countdown
-                # chip or a trigger condition ``< 1 min`` both work
-                # without a custom template.
-                attrs["time_until_arrival"] = int(time_until_arrival.total_seconds())
+            # ``time_until_arrival`` is derived from ``expected_arrival``, so
+            # it is non-None on exactly this path.
+            remaining = cast(timedelta, time_until_arrival)
+            attrs["time_until_arrival"] = int(remaining.total_seconds())
 
         return attrs

@@ -192,90 +192,114 @@ async def sample_stops_matrix(
     for index, station in enumerate(stations):
         direction_buckets: dict[str, set[str]] = {}
         try:
-            trains = await client.async_get_station_by_code(
-                station.code, priority=priority
-            )
-        except IrishRailError as err:
-            _LOGGER.warning("Skipping %s (%s): %s", station.name, station.code, err)
-            result.skipped += 1
-        else:
-            for train in trains:
-                cache_key = (train.code, today)
-                if cache_key not in movement_cache:
-                    try:
-                        movement_cache[cache_key] = await client.async_get_train_stops(
-                            train.code, date=today, priority=priority
-                        )
-                    except IrishRailError as err:
-                        _LOGGER.warning(
-                            "Movement lookup failed for %s: %s", train.code, err
-                        )
-                        movement_cache[cache_key] = []
-                    _evict_movement_cache(movement_cache, today)
-                journey = client.scope_journey_stops(
-                    movement_cache[cache_key],
-                    train.destination,
-                    station_code=station.code,
-                    station_name=station.name,
+            try:
+                trains = await client.async_get_station_by_code(
+                    station.code, priority=priority
                 )
-                stops = {movement.location for movement in journey if movement.location}
-                stops.discard(station.name)
-                if not stops:
-                    continue
-                bucket_key = normalize_direction_key(train.direction)
-                direction_buckets.setdefault(bucket_key, set()).update(stops)
-                direction_buckets.setdefault(ALL_DIRECTIONS_KEY, set()).update(stops)
-
-            result.sampled += 1
-            if direction_buckets:
-                if stops_store is not None:
-                    for key, sampled in direction_buckets.items():
+            except IrishRailError as err:
+                _LOGGER.warning("Skipping %s (%s): %s", station.name, station.code, err)
+                result.skipped += 1
+            else:
+                for train in trains:
+                    cache_key = (train.code, today)
+                    if cache_key not in movement_cache:
                         try:
-                            changed = await stops_store.async_record(
-                                station.code, key, sorted(sampled)
+                            movement_cache[
+                                cache_key
+                            ] = await client.async_get_train_stops(
+                                train.code, date=today, priority=priority
                             )
-                        except Exception:
+                        except IrishRailError as err:
                             _LOGGER.warning(
-                                "Could not persist sampled stops for %s (%s, %s)",
-                                station.name,
-                                station.code,
-                                key,
-                                exc_info=True,
+                                "Movement lookup failed for %s: %s", train.code, err
                             )
-                            continue
-                        if changed:
-                            result.buckets_updated += 1
-                            result.stops_added += len(sampled)
-                elif document is not None:
-                    now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
-                    document["stations"][station.code] = {
-                        "updated": now_iso,
-                        "directions": {
-                            key: sorted(stops, key=str.casefold)
-                            for key, stops in sorted(direction_buckets.items())
-                        },
+                            movement_cache[cache_key] = []
+                        _evict_movement_cache(movement_cache, today)
+                    journey = client.scope_journey_stops(
+                        movement_cache[cache_key],
+                        train.destination,
+                        station_code=station.code,
+                        station_name=station.name,
+                    )
+                    stops = {
+                        movement.location
+                        for movement in journey
+                        if movement.location
                     }
-                    result.buckets_updated += len(direction_buckets)
-                    result.stops_added += sum(
-                        len(s) for s in direction_buckets.values()
+                    stops.discard(station.name)
+                    if not stops:
+                        continue
+                    bucket_key = normalize_direction_key(train.direction)
+                    direction_buckets.setdefault(bucket_key, set()).update(stops)
+                    direction_buckets.setdefault(ALL_DIRECTIONS_KEY, set()).update(
+                        stops
                     )
 
-                summary = f"{len(direction_buckets)} bucket(s) sampled"
-            else:
-                summary = "no due services to sample"
+                result.sampled += 1
+                if direction_buckets:
+                    if stops_store is not None:
+                        for key, sampled in direction_buckets.items():
+                            try:
+                                added = await stops_store.async_record(
+                                    station.code, key, sorted(sampled)
+                                )
+                            except Exception:
+                                _LOGGER.warning(
+                                    "Could not persist sampled stops for %s (%s, %s)",
+                                    station.name,
+                                    station.code,
+                                    key,
+                                    exc_info=True,
+                                )
+                                continue
+                            if added:
+                                result.buckets_updated += 1
+                                result.stops_added += added
+                    # ``document`` is None exactly when ``stops_store`` is
+                    # not: gap_fill=True is the only mode that skips it,
+                    # and that mode always installs a store.
+                    elif document is not None:  # pragma: no branch
+                        now_iso = (
+                            datetime.now().astimezone().isoformat(timespec="seconds")
+                        )
+                        document["stations"][station.code] = {
+                            "updated": now_iso,
+                            "directions": {
+                                key: sorted(stops, key=str.casefold)
+                                for key, stops in sorted(direction_buckets.items())
+                            },
+                        }
+                        result.buckets_updated += len(direction_buckets)
+                        result.stops_added += sum(
+                            len(s) for s in direction_buckets.values()
+                        )
 
-            _LOGGER.info(
-                "[%d/%d] %s (%s): %s",
-                index + 1,
-                len(stations),
+                    summary = f"{len(direction_buckets)} bucket(s) sampled"
+                else:
+                    summary = "no due services to sample"
+
+                _LOGGER.info(
+                    "[%d/%d] %s (%s): %s",
+                    index + 1,
+                    len(stations),
+                    station.name,
+                    station.code,
+                    summary,
+                )
+
+                if atomic_dump and document is not None and output_path is not None:
+                    await asyncio.to_thread(_dump_document, output_path, document)
+        except Exception:
+            # A single station must never end the sweep: an unexpected
+            # failure on one row would otherwise discard the ~150 already
+            # sampled stations and report them as never visited.
+            _LOGGER.warning(
+                "Skipping %s (%s): unexpected sampling failure",
                 station.name,
                 station.code,
-                summary,
+                exc_info=True,
             )
-
-            if atomic_dump and document is not None and output_path is not None:
-                await asyncio.to_thread(_dump_document, output_path, document)
-
+            result.skipped += 1
         finally:
             await asyncio.sleep(delay)
 

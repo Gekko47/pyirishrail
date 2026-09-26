@@ -6,8 +6,10 @@ See docs/architecture.md §12 for entry setup, update listener, and unload.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from functools import partial
+from typing import Any, cast
 
+from homeassistant.config_entries import ConfigEntryChange
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import (
@@ -20,11 +22,14 @@ from homeassistant.helpers import (
     issue_registry as ir,
 )
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from ._runtime import (
+    async_get_movement_cache,
     async_get_request_gate,
     async_note_entry_loaded,
     async_note_entry_unloaded,
+    async_promote_on_removal,
 )
 from .client import IrishRailClient
 from .const import DOMAIN
@@ -43,15 +48,79 @@ PLATFORMS: list[Platform] = [
     Platform.SENSOR,
 ]
 
+# Dispatched by Home Assistant for every config-entry state change,
+# including ConfigEntryChange.REMOVED.
+SIGNAL_CONFIG_ENTRY_CHANGED = "config_entry_changed"
+
+# Identity reconfigure is transactional: the update listener captures the
+# outgoing identity's customisations into this map, and ``async_setup_entry``
+# swaps the registry rows only once the reload has re-created the new ones.
+# A reload that never completes therefore leaves the old entities and device
+# intact. Keyed by entry id, dropped on removal. See docs/architecture.md §8.
+_PENDING_IDENTITY_RESTORES: dict[str, tuple[str, dict[str, dict[str, Any]]]] = {}
+
+
+@callback
+def _async_apply_pending_identity_restore(
+    hass: HomeAssistant, entry: IrishRailConfigEntry
+) -> None:
+    """Swap the previous identity's registry rows for the re-created ones.
+
+    Called at the very end of setup, once the new entities exist, so the
+    old rows are never removed before the replacement is known to be live.
+    A no-op for every setup that was not preceded by an identity change.
+    """
+    pending = _PENDING_IDENTITY_RESTORES.pop(entry.entry_id, None)
+    if pending is None:
+        return
+    previous_uid, captured = pending
+    _async_drop_stale_identity_registries(hass, entry, previous_uid)
+    # Setup got this far only because the platforms built their entities, and
+    # the entity base class rejects an entry without a unique ID.
+    new_uid = cast(str, entry.unique_id)
+    _async_restore_identity_customisations(hass, entry, new_uid, captured)
+
+
+@callback
+def _async_handle_config_entry_removed(
+    hass: HomeAssistant,
+    change: ConfigEntryChange,
+    removed: IrishRailConfigEntry,
+) -> None:
+    """Re-elect the global entities when the owning entry is removed.
+
+    A reload also unloads, so promotion cannot be driven from the unload
+    path without racing it. ``ConfigEntryChange.REMOVED`` is dispatched
+    only once the entry has left the store, which makes it the exact
+    signal. See docs/architecture.md §11.
+    """
+    if change != ConfigEntryChange.REMOVED or removed.domain != DOMAIN:
+        return
+    # A removed entry is never re-set up, so drop any reconfigure it never
+    # consumed rather than leaving the capture keyed to a dead id forever.
+    _PENDING_IDENTITY_RESTORES.pop(removed.entry_id, None)
+    async_promote_on_removal(hass, removed.entry_id)
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: IrishRailConfigEntry) -> bool:
     """Set up Irish Rail from a config entry."""
+    entry.async_on_unload(
+        async_dispatcher_connect(
+            hass,
+            SIGNAL_CONFIG_ENTRY_CHANGED,
+            partial(_async_handle_config_entry_removed, hass),
+        )
+    )
     session = async_get_clientsession(hass)
     # Pass the per-HA shared request gate so every client the
     # integration creates (coordinator, both config flows, rebuild,
     # health probe) draws from one rate budget against the public
-    # api.irishrail.ie endpoints. See ``gate.py`` for the rationale.
-    client = IrishRailClient(session, gate=async_get_request_gate(hass))
+    # api.irishrail.ie endpoints. See ``request_gate.py`` for the rationale.
+    client = IrishRailClient(
+        session,
+        gate=async_get_request_gate(hass),
+        movement_cache=async_get_movement_cache(hass),
+    )
 
     coordinator = IrishRailDataUpdateCoordinator(hass, client, entry)
 
@@ -74,6 +143,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrishRailConfigEntry) ->
     await async_note_entry_loaded(hass, entry.entry_id, client)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Last step: the new identity exists, so the old one can go. Running
+    # this before the first refresh would make a failed reload destructive.
+    _async_apply_pending_identity_restore(hass, entry)
 
     return True
 
@@ -171,28 +244,13 @@ async def _async_update_listener(
     coordinator = entry.runtime_data.coordinator
     if coordinator.requires_reload():
         previous_uid = coordinator.applied_unique_id()
-        new_uid = entry.unique_id
-        # Capture before dropping: the rows are about to be removed, and
-        # the re-created entities inherit their customisations from here.
-        captured = (
-            _async_capture_identity_customisations(hass, entry, previous_uid)
-            if previous_uid is not None
-            else {}
-        )
         if previous_uid is not None:
-            _async_drop_stale_identity_registries(hass, entry, previous_uid)
-        if captured and new_uid:
-            # Applied once the reload has re-registered the new entities.
-            async def _async_restore() -> None:
-                await hass.async_block_till_done()
-                _async_restore_identity_customisations(
-                    hass, entry, new_uid, captured
-                )
-
-            entry.async_create_task(
-                hass,
-                _async_restore(),
-                name=f"{DOMAIN}_restore_customisations_{entry.entry_id}",
+            # Capture only; nothing is removed here. The registry swap runs
+            # at the end of the next setup, so a reload that fails leaves the
+            # old entities and device in place and still restorable.
+            _PENDING_IDENTITY_RESTORES[entry.entry_id] = (
+                previous_uid,
+                _async_capture_identity_customisations(hass, entry, previous_uid),
             )
         hass.config_entries.async_schedule_reload(entry.entry_id)
         return
@@ -205,5 +263,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: IrishRailConfigEntry) -
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     # Also releases the shared gate and stops the probe when this was
     # the last loaded entry (single registry write path, see _runtime.py).
+    # Deliberately unconditional: HA marks a failed unload FAILED_UNLOAD
+    # (non-recoverable) and will never set the entry up again, so the
+    # shared state must be released even when a platform refused to
+    # unload. Verified against config_entries.py in HA 2026.8.
     await async_note_entry_unloaded(hass, entry.entry_id)
     return unloaded

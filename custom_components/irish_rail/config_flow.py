@@ -13,7 +13,7 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFl
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from ._runtime import async_get_request_gate
+from ._runtime import async_get_movement_cache, async_get_request_gate
 from .client import IrishRailClient
 from .const import (
     CONF_DIRECTION,
@@ -55,6 +55,22 @@ def build_stops_at_schema_field(
         return {vol.Optional(CONF_STOPS_AT, default=current): str}
     options = {NO_FILTER_SENTINEL: NO_FILTER_SENTINEL}
     options.update({s.name: s.name for s in sorted(stations, key=lambda x: x.name)})
+    if current and current != NO_FILTER_SENTINEL:
+        options.setdefault(current, current)
+    return {vol.Optional(CONF_STOPS_AT, default=current): vol.In(options)}
+
+
+def build_reachable_stops_field(stops: list[str], current: str) -> dict[Any, Any]:
+    """Build the ``stops_at`` field from the stops a train can actually reach.
+
+    The currently stored value is merged in even when it is not in
+    ``stops``, for the same reason :func:`build_stops_at_schema_field`
+    merges it: without the merge a stored filter that has not been seen
+    recently renders a select whose default is not one of its options,
+    and submitting it silently drops the filter.
+    """
+    options: dict[str, str] = {NO_FILTER_SENTINEL: NO_FILTER_SENTINEL}
+    options.update({stop: stop for stop in sorted(stops)})
     if current and current != NO_FILTER_SENTINEL:
         options.setdefault(current, current)
     return {vol.Optional(CONF_STOPS_AT, default=current): vol.In(options)}
@@ -107,10 +123,11 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
             # Share the per-HA request gate with the coordinator's
             # client so the config flow's discovery lookups and the
             # live polling share one rate budget against the public
-            # API. See ``gate.py`` for the rationale.
+            # API. See ``request_gate.py`` for the rationale.
             self._client = IrishRailClient(
                 async_get_clientsession(self.hass),
                 gate=async_get_request_gate(self.hass),
+                movement_cache=async_get_movement_cache(self.hass),
             )
         return self._client
 
@@ -548,20 +565,21 @@ class IrishRailConfigFlow(ConfigFlow, domain=DOMAIN):
             # duplicate-identity detection.
             self._abort_if_unique_id_configured()
 
+        # The "stops at" filter is not editable here (the options flow owns
+        # it), so it survives the identity rewrite by being carried across
+        # from ``entry.data`` rather than rebuilt from three keys.
+        #
         # Reload ownership belongs to the integration's update listener since
         # HA 2026.6 (hard error in 2026.12): a flow-scheduled reload alongside
         # an existing listener can double-reload or race. The entry is updated
         # here and the listener detects the data change, scheduling the single
         # required reload itself; option-only changes keep applying in place.
         new_data: dict[str, Any] = {
+            **entry.data,
             CONF_STATION: selected_station.name,
             CONF_STATION_CODE: station_code,
             CONF_DIRECTION: direction,
         }
-        # The "stops at" filter is not editable here (the options flow owns
-        # it), so any existing value must survive the identity rewrite.
-        if preserved_stops_at := entry.data.get(CONF_STOPS_AT):
-            new_data[CONF_STOPS_AT] = preserved_stops_at
 
         # Only forward the identity when this flow actually claimed a new
         # one: HA 2026.8's ``async_update_entry`` treats an explicit
@@ -595,10 +613,11 @@ class IrishRailOptionsFlow(OptionsFlow):
             # Share the per-HA request gate with the coordinator's
             # client and the user config flow so the options flow's
             # discovery lookups do not displace live polling. See
-            # ``gate.py`` for the rationale.
+            # ``request_gate.py`` for the rationale.
             self._client = IrishRailClient(
                 async_get_clientsession(self.hass),
                 gate=async_get_request_gate(self.hass),
+                movement_cache=async_get_movement_cache(self.hass),
             )
         return self._client
 
@@ -607,6 +626,50 @@ class IrishRailOptionsFlow(OptionsFlow):
         if not self._stations:
             self._stations = await self._get_client().async_get_all_stations()
         return self._stations
+
+    async def _async_reachable_stops(
+        self, entry: IrishRailConfigEntry
+    ) -> list[str]:
+        """Return the stops a train from this entry can actually reach.
+
+        Sourced in order of freshness: this install's learned matrix, the
+        bundled seed, then a live sample. Every source is scoped to the
+        entry's own station and direction, so an option offered from it can
+        match a train.
+
+        The full station list is deliberately *not* a source here: it lets
+        the user pick a stop upstream of their own station, which no train
+        from that station can ever satisfy, and such a filter prunes every
+        train on every poll while looking perfectly reasonable in the UI.
+        See docs/architecture.md §13.
+        """
+        station_code = str(entry.data[CONF_STATION_CODE])
+        direction = entry.data.get(CONF_DIRECTION)
+
+        stops = await get_stops_store(self.hass).async_lookup(station_code, direction)
+        if stops:
+            return stops
+
+        stops = lookup_in_matrix(
+            await async_load_bundled_stops_matrix(), station_code, direction
+        )
+        if stops:
+            return stops
+
+        try:
+            return await self._get_client().async_get_station_stops_at_options(
+                station_code,
+                direction=direction,
+                exclude=str(entry.data.get(CONF_STATION) or station_code),
+            )
+        except IrishRailError as err:
+            _LOGGER.warning(
+                "Could not discover stops for %s (%s): %s",
+                station_code,
+                direction,
+                err,
+            )
+            return []
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -625,15 +688,28 @@ class IrishRailOptionsFlow(OptionsFlow):
             or NO_FILTER_SENTINEL
         )
 
-        try:
-            stations = await self._async_fetch_stations()
-        except IrishRailError as err:
-            _LOGGER.warning(
-                "Could not load station list for options flow, "
-                "falling back to free-text filter: %s",
-                err,
-            )
-            stations = []
+        # Each source inside handles its own failure (the store tolerates a
+        # corrupt file, the seed load degrades to empty, live discovery is
+        # guarded), so an empty result here means "nothing is known", not
+        # "something broke".
+        reachable = await self._async_reachable_stops(entry)
+
+        if reachable:
+            stops_field = build_reachable_stops_field(reachable, current_stops_at)
+        else:
+            # Nothing is known about this station yet. Offer the full
+            # station list rather than a dead end; the field's
+            # data_description says the list is unverified.
+            try:
+                stations = await self._async_fetch_stations()
+            except IrishRailError as err:
+                _LOGGER.warning(
+                    "Could not load station list for options flow, "
+                    "falling back to free-text filter: %s",
+                    err,
+                )
+                stations = []
+            stops_field = build_stops_at_schema_field(stations, current_stops_at)
 
         schema = vol.Schema(
             {
@@ -644,7 +720,7 @@ class IrishRailOptionsFlow(OptionsFlow):
                         max=MAX_SCAN_INTERVAL_SECONDS,
                     ),
                 ),
-                **build_stops_at_schema_field(stations, current_stops_at),
+                **stops_field,
             }
         )
 

@@ -2,7 +2,7 @@
 
 Integration-level service entity registered exactly once per Home
 Assistant session by whichever config entry claims providership first
-(see ``health.py``). One press samples the whole network in-process
+(see ``_runtime.py``). One press samples the whole network in-process
 (a port of ``scripts/build_stops_matrix.py`` merged gap-fill style
 into the per-install ``stops_matrix.json`` under
 ``.storage/``) and refreshes the bundled-seed cache, all
@@ -34,11 +34,12 @@ from homeassistant.components.persistent_notification import (
 # typeshed re-exports it from there but not from ``homeassistant.helpers.entity``.
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from ._runtime import (
-    claim_service_entities,
+    elect_provider,
     get_health_monitor,
     get_session_value,
     pop_session_value,
@@ -104,7 +105,7 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
     _attr_entity_category = EntityCategory.CONFIG
     # The rebuild button and the API connectivity binary sensor share
     # a single fixed-identifier service device so they render together
-    # on the integration page (see ``health.py`` for the matching
+    # on the integration page (see ``_runtime.py`` for the matching
     # orphan-purge on ownership transfer).
     _attr_device_info = DeviceInfo(
         identifiers={GLOBAL_SERVICES_IDENTIFIER},
@@ -123,6 +124,21 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
         self.running = False
         self.last_result: RebuildResult | None = None
         self._rebuild_task: asyncio.Task[None] | None = None
+
+    async def async_cancel(self) -> None:
+        """Cancel an in-flight rebuild and wait for it to unwind.
+
+        Public so the owner entry's unload path never has to reach into
+        the private task attribute.
+        """
+        if self._rebuild_task is None:
+            return
+        self._rebuild_task.cancel()
+        try:
+            await self._rebuild_task
+        except asyncio.CancelledError:
+            pass
+        self._rebuild_task = None
 
     @property
     def available(self) -> bool:
@@ -145,7 +161,14 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
             _LOGGER.warning(
                 "Stops-matrix rebuild is already running; ignoring this press"
             )
-            raise RuntimeError("The Irish Rail stops-matrix rebuild is already running")
+            # Translated so the service caller sees the integration's own
+            # wording rather than a bare English exception string. The
+            # button's UI path never reaches here (``available`` is False
+            # while running), so this is the service/automation surface.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="rebuild_already_running",
+            )
 
         # Start the rebuild as a background task
         self._rebuild_task = self.hass.async_create_background_task(
@@ -250,19 +273,15 @@ def _runtime_client(entry: IrishRailConfigEntry) -> IrishRailClient | None:
     return getattr(runtime, "client", None)
 
 
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: IrishRailConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up the global rebuild button exactly once per session."""
-    if not claim_service_entities(hass, entry):
-        _LOGGER.debug(
-            "%s does not own the global Irish Rail entities; skipping",
-            entry.title,
-        )
-        return
-    # Prefer the setting-up entry's client; fall back to the singleton
+def build_rebuild_button(
+    hass: HomeAssistant, entry: IrishRailConfigEntry
+) -> IrishRailRebuildStopsMatrixButton | None:
+    """Construct the rebuild button, or ``None`` without a client.
+
+    Shared by the platform setup and by provider promotion so both paths
+    build the entity identically. See docs/architecture.md §11.
+    """
+    # Prefer the elected entry's client; fall back to the singleton
     # monitor's client when a later entry without runtime data claims first.
     client = _runtime_client(entry)
     if client is None:
@@ -270,36 +289,76 @@ async def async_setup_entry(
         client = monitor.client if monitor is not None else None
     if client is None:
         _LOGGER.warning("No Irish Rail API client available; rebuild button skipped")
+        return None
+    return IrishRailRebuildStopsMatrixButton(hass, client)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: IrishRailConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up the global rebuild button for the elected owner."""
+    if not elect_provider(hass, entry):
+        _LOGGER.debug(
+            "%s does not own the global Irish Rail entities; skipping",
+            entry.title,
+        )
         return
 
-    entity = IrishRailRebuildStopsMatrixButton(hass, client)
+    entity = build_rebuild_button(hass, entry)
+    if entity is None:
+        return
+
     async_add_entities([entity])
 
     # Keep a session-wide handle so the service alias can reach the same
     # guarded job even though providership pins the entity to one entry.
     set_session_value(hass, GLOBAL_REBUILD_ENTITY_KEY, entity)
+    register_rebuild_service(hass)
 
-    # Drop the service/handle and dismiss any leftover notification when
-    # this entry is removed, so a re-add (or a sibling entry's claim)
-    # always starts from a clean slate and the user never sees a stale
-    # "rebuild finished" toast for an integration that is no longer loaded.
+    # Cancel any in-flight rebuild when this entry goes away, and dismiss
+    # a leftover notification so the user never sees a stale "rebuild
+    # finished" toast for an integration that is no longer loaded.
+    # The service and the handle are *not* dropped here: after a
+    # promotion the handle deliberately points at the survivor's button
+    # and the service must outlive this entry. The runtime layer tears
+    # both down on the zero-survivors path
+    # (RuntimeRegistry.async_release). See docs/architecture.md §11.
     async def _async_cleanup() -> None:
-        # Cancel any running rebuild task
-        if entity._rebuild_task is not None:
-            entity._rebuild_task.cancel()
-            try:
-                await entity._rebuild_task
-            except asyncio.CancelledError:
-                pass
-            entity._rebuild_task = None
-
-        if get_session_value(hass, GLOBAL_REBUILD_ENTITY_KEY) is entity:
-            pop_session_value(hass, GLOBAL_REBUILD_ENTITY_KEY)
-        if hass.services.has_service(DOMAIN, SERVICE_REBUILD):
-            hass.services.async_remove(DOMAIN, SERVICE_REBUILD)
+        await entity.async_cancel()
         _dismiss_notification(hass)
 
     entry.async_on_unload(_async_cleanup)
+
+
+@callback
+def unregister_rebuild_service(hass: HomeAssistant) -> None:
+    """Remove the rebuild service and its entity handle.
+
+    Called from the runtime layer when the last station entry unloads, so
+    the service lifetime tracks the loaded set rather than any single
+    config entry's lifecycle. See docs/architecture.md §11.
+    """
+    if hass.services.has_service(DOMAIN, SERVICE_REBUILD):
+        hass.services.async_remove(DOMAIN, SERVICE_REBUILD)
+    pop_session_value(hass, GLOBAL_REBUILD_ENTITY_KEY)
+    _dismiss_notification(hass)
+
+
+@callback
+def register_rebuild_service(hass: HomeAssistant) -> None:
+    """Register the automation-facing alias for the rebuild button.
+
+    Idempotent: the handler resolves the live button through
+    ``GLOBAL_REBUILD_ENTITY_KEY`` on every call, so registration is tied
+    to the loaded set rather than to one config entry. Called from both
+    the owning entry's platform setup and the promotion path so the
+    service survives the original owner being removed. See
+    docs/architecture.md §11.
+    """
+    if hass.services.has_service(DOMAIN, SERVICE_REBUILD):
+        return
 
     async def _async_handle_rebuild_service(call: ServiceCall) -> None:
         """Forward a service call onto the live button instance."""
@@ -311,7 +370,6 @@ async def async_setup_entry(
             return
         await button.async_press()
 
-    if not hass.services.has_service(DOMAIN, SERVICE_REBUILD):
-        hass.services.async_register(
-            DOMAIN, SERVICE_REBUILD, _async_handle_rebuild_service
-        )
+    hass.services.async_register(
+        DOMAIN, SERVICE_REBUILD, _async_handle_rebuild_service
+    )

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -73,7 +74,40 @@ async def test_coordinator_update_success(
         data = await coordinator._async_update_data()
 
     assert data == expected
-    mock_fetch.assert_awaited_once_with("PEARS", direction="Northbound", stops_at=None)
+    mock_fetch.assert_awaited_once_with(
+        "PEARS",
+        direction="Northbound",
+        stops_at=None,
+        observed_stops=ANY,
+        service_date=ANY,
+    )
+
+
+async def test_poll_pins_the_dublin_service_date(
+    hass: HomeAssistant, mock_api_client: MagicMock, mock_config_entry: Any
+) -> None:
+    """The movement lookup is pinned to Irish civil time.
+
+    The client's own default is the *host's* local date, so a host in
+    another zone would ask for yesterday's schedule between 00:00 and
+    05:00 Dublin time and prune every train.
+    """
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, mock_config_entry
+    )
+    with (
+        _service_hours(12),
+        patch.object(
+            mock_api_client,
+            "async_get_station_by_code",
+            new=AsyncMock(return_value=[]),
+        ) as mock_fetch,
+    ):
+        await coordinator._async_update_data()
+
+    assert mock_fetch.await_args is not None
+    # 12:00Z on 23 Aug 2026 is 13:00 the same day in Dublin (IST).
+    assert mock_fetch.await_args.kwargs["service_date"] == "23 Aug 2026"
 
 
 async def test_coordinator_update_retains_only_two_trains(
@@ -303,13 +337,26 @@ async def test_backoff_widens_the_public_update_interval(
 async def test_configured_interval_update_rearms_scheduler(
     hass: HomeAssistant, mock_api_client: MagicMock
 ) -> None:
-    """``async_set_configured_interval`` pushes the new base to the scheduler."""
+    """``async_set_configured_interval`` re-arms the timer, not just the cache.
+
+    Assigning ``update_interval`` only mirrors the base class' seconds
+    cache; the already-armed ``loop.call_at`` keeps the old spacing. The
+    assertion reads what HA will actually schedule from.
+    """
     coordinator = IrishRailDataUpdateCoordinator(
         hass, mock_api_client, _entry_with(options={"scan_interval": 300})
     )
-    coordinator.async_set_configured_interval(timedelta(seconds=45))
-    assert coordinator.update_interval == timedelta(seconds=45)
+    # HA only schedules while something listens (mirrors entity setup).
+    remove_listener = coordinator.async_add_listener(lambda: None)
+    with patch.object(hass.loop, "call_at", wraps=hass.loop.call_at) as mock_call_at:
+        coordinator.async_set_configured_interval(timedelta(seconds=45))
 
+    assert coordinator.update_interval == timedelta(seconds=45)
+    assert mock_call_at.call_count == 1
+    delta = mock_call_at.call_args.args[0] - hass.loop.time()
+    assert 45 - 1 < delta < 45 + 1
+
+    remove_listener()
     coordinator._unschedule_refresh()
 
 
@@ -529,7 +576,11 @@ async def test_coordinator_passes_stops_at_filter(
         await coordinator._async_update_data()
 
     mock_fetch.assert_awaited_once_with(
-        "PEARS", direction="Northbound", stops_at="Bray"
+        "PEARS",
+        direction="Northbound",
+        stops_at="Bray",
+        observed_stops=ANY,
+        service_date=ANY,
     )
 
 
@@ -943,7 +994,6 @@ async def test_learn_downstream_stops_survives_storage_failure(
     coordinator = IrishRailDataUpdateCoordinator(
         hass, mock_api_client, _stops_at_entry(hass)
     )
-    mock_api_client.last_downstream_stop_names = {"Greystones"}
 
     failing_store = MagicMock()
     failing_store.async_record = AsyncMock(side_effect=OSError("disk full"))
@@ -955,7 +1005,7 @@ async def test_learn_downstream_stops_survives_storage_failure(
         ),
         caplog.at_level(logging.WARNING),
     ):
-        await coordinator._async_learn_downstream_stops()
+        await coordinator._async_learn_downstream_stops({"Greystones"})
 
     failing_store.async_record.assert_awaited_once()
     call_args = failing_store.async_record.await_args.args
@@ -974,7 +1024,6 @@ async def test_learn_downstream_stops_logs_matrix_updates(
     coordinator = IrishRailDataUpdateCoordinator(
         hass, mock_api_client, _stops_at_entry(hass)
     )
-    mock_api_client.last_downstream_stop_names = {"Bray", "Greystones"}
 
     changing_store = MagicMock()
     changing_store.async_record = AsyncMock(return_value=True)
@@ -986,7 +1035,7 @@ async def test_learn_downstream_stops_logs_matrix_updates(
         ),
         caplog.at_level(logging.DEBUG),
     ):
-        await coordinator._async_learn_downstream_stops()
+        await coordinator._async_learn_downstream_stops({"Bray", "Greystones"})
 
     changing_store.async_record.assert_awaited_once()
     call_args = changing_store.async_record.await_args.args
@@ -998,6 +1047,32 @@ async def test_learn_downstream_stops_logs_matrix_updates(
     assert call_args[0] == "PEARS"
     assert call_args[2] == ["Bray", "Greystones"]
     assert "Stops matrix updated" in caplog.text
+
+
+async def test_learn_with_no_observations_writes_nothing(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A poll that resolved no journey carries nothing to learn from."""
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, _stops_at_entry(hass)
+    )
+    store = MagicMock()
+    store.async_record = AsyncMock(return_value=True)
+
+    with (
+        patch(
+            "custom_components.irish_rail.coordinator.get_stops_store",
+            return_value=store,
+        ),
+        caplog.at_level(logging.DEBUG),
+    ):
+        await coordinator._async_learn_downstream_stops(set())
+
+    store.async_record.assert_not_awaited()
+    assert coordinator._pending_stops == set()
+    assert "No downstream stops observed" in caplog.text
 
 
 # ── Downstream-stop learning debounce (storage-I/O reduction) ────────────────
@@ -1023,18 +1098,16 @@ async def test_learn_debounce_accumulates_within_window(
     store = MagicMock()
     store.async_record = AsyncMock(return_value=False)
 
-    mock_api_client.last_downstream_stop_names = {"Greystones"}
     with patch(
         "custom_components.irish_rail.coordinator.get_stops_store",
         return_value=store,
     ):
-        await coordinator._async_learn_downstream_stops()
-    mock_api_client.last_downstream_stop_names = {"Bray"}
+        await coordinator._async_learn_downstream_stops({"Greystones"})
     with patch(
         "custom_components.irish_rail.coordinator.get_stops_store",
         return_value=store,
     ):
-        await coordinator._async_learn_downstream_stops()
+        await coordinator._async_learn_downstream_stops({"Bray"})
 
     # No storage write inside the window, and both observations queued.
     store.async_record.assert_not_awaited()
@@ -1061,12 +1134,11 @@ async def test_learn_debounce_flushes_after_window(
     store = MagicMock()
     store.async_record = AsyncMock(return_value=True)
 
-    mock_api_client.last_downstream_stop_names = {"Greystones"}
     with patch(
         "custom_components.irish_rail.coordinator.get_stops_store",
         return_value=store,
     ):
-        await coordinator._async_learn_downstream_stops()
+        await coordinator._async_learn_downstream_stops({"Greystones"})
 
     # The expired window flushed the first observation immediately.
     store.async_record.assert_awaited_once()
@@ -1079,8 +1151,7 @@ async def test_learn_debounce_flushes_after_window(
     assert coordinator._last_learn_time is not None
 
     # The next poll is inside the fresh window: it queues only.
-    mock_api_client.last_downstream_stop_names = {"Bray"}
-    await coordinator._async_learn_downstream_stops()
+    await coordinator._async_learn_downstream_stops({"Bray"})
     store.async_record.assert_awaited_once()
     assert coordinator._pending_stops == {"Bray"}
 
@@ -1104,12 +1175,11 @@ async def test_learn_debounce_batches_multiple_polls_into_one_write(
     store.async_record = AsyncMock(return_value=True)
 
     for stops in ({"Greystones"}, {"Bray", "Greystones"}):
-        mock_api_client.last_downstream_stop_names = stops
         with patch(
             "custom_components.irish_rail.coordinator.get_stops_store",
             return_value=store,
         ):
-            await coordinator._async_learn_downstream_stops()
+            await coordinator._async_learn_downstream_stops(stops)
     store.async_record.assert_not_awaited()
     assert coordinator._pending_stops == {"Bray", "Greystones"}
 
@@ -1117,12 +1187,11 @@ async def test_learn_debounce_batches_multiple_polls_into_one_write(
     coordinator._last_learn_time = datetime.now(UTC) - timedelta(
         seconds=LEARN_DEBOUNCE_SECONDS + 1
     )
-    mock_api_client.last_downstream_stop_names = {"Bray"}
     with patch(
         "custom_components.irish_rail.coordinator.get_stops_store",
         return_value=store,
     ):
-        await coordinator._async_learn_downstream_stops()
+        await coordinator._async_learn_downstream_stops({"Bray"})
 
     store.async_record.assert_awaited_once()
     call_args = store.async_record.await_args.args
@@ -1149,12 +1218,11 @@ async def test_learn_debounce_restores_pending_on_storage_failure(
     failing_store = MagicMock()
     failing_store.async_record = AsyncMock(side_effect=OSError("disk full"))
 
-    mock_api_client.last_downstream_stop_names = {"Greystones", "Bray"}
     with patch(
         "custom_components.irish_rail.coordinator.get_stops_store",
         return_value=failing_store,
     ):
-        await coordinator._async_learn_downstream_stops()
+        await coordinator._async_learn_downstream_stops({"Greystones", "Bray"})
 
     failing_store.async_record.assert_awaited_once()
     # The batch was restored for the next flush attempt.
@@ -1162,3 +1230,67 @@ async def test_learn_debounce_restores_pending_on_storage_failure(
     # A failed write must not advance the debounce clock, so the very
     # next poll retries instead of silently waiting another window.
     assert coordinator._last_learn_time is stale_flush_time
+
+
+async def test_cancelled_learn_write_restores_the_batch(
+    hass: HomeAssistant, mock_api_client: MagicMock
+) -> None:
+    """A cancellation mid-write must not lose the poll's observations.
+
+    The batch was already taken out of ``_pending_stops`` before the
+    write, so a ``CancelledError`` landing on the await has to put it
+    back - otherwise an unload or a shutdown mid-write drops the stops
+    for good.
+    """
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, _stops_at_entry(hass)
+    )
+    stale_flush_time = datetime.now(UTC) - timedelta(
+        seconds=LEARN_DEBOUNCE_SECONDS + 1
+    )
+    coordinator._last_learn_time = stale_flush_time
+    cancelled_store = MagicMock()
+    cancelled_store.async_record = AsyncMock(side_effect=asyncio.CancelledError)
+
+    with patch(
+        "custom_components.irish_rail.coordinator.get_stops_store",
+        return_value=cancelled_store,
+    ), pytest.raises(asyncio.CancelledError):
+        await coordinator._async_learn_downstream_stops({"Greystones", "Bray"})
+
+    assert coordinator._pending_stops == {"Greystones", "Bray"}
+    # The debounce clock did not advance, so the next poll retries.
+    assert coordinator._last_learn_time is stale_flush_time
+
+
+async def test_an_unchanged_matrix_is_flushed_without_an_update_line(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A write that adds nothing still consumes the batch, quietly.
+
+    ``async_record`` reports how many stops were new, so re-observing
+    stops the matrix already holds returns 0. The batch must still be
+    flushed, or the same stops would be rewritten on every poll forever,
+    but nothing is reported as an update.
+    """
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, _stops_at_entry(hass)
+    )
+
+    unchanged_store = MagicMock()
+    unchanged_store.async_record = AsyncMock(return_value=0)
+
+    with (
+        patch(
+            "custom_components.irish_rail.coordinator.get_stops_store",
+            return_value=unchanged_store,
+        ),
+        caplog.at_level(logging.DEBUG),
+    ):
+        await coordinator._async_learn_downstream_stops({"Bray"})
+
+    unchanged_store.async_record.assert_awaited_once()
+    assert coordinator._pending_stops == set()
+    assert "Stops matrix updated" not in caplog.text

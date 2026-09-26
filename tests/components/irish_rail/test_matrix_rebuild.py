@@ -50,9 +50,9 @@ class _RecordingStore:
 
     Mirrors the real store's gap-fill union semantics: stops never
     disappear, new stops are unioned in, first-seen casing wins, and
-    ``async_record`` returns ``True`` only when the bucket actually
-    changed. Tests assert on the recorded call list to verify the
-    rebuild hit the shared write path.
+    ``async_record`` returns how many stops were new so the rebuild
+    reports the real progress. Tests assert on the recorded call list to
+    verify the rebuild hit the shared write path.
     """
 
     def __init__(self) -> None:
@@ -61,7 +61,7 @@ class _RecordingStore:
 
     async def async_record(
         self, station_code: str, direction: str | None, stops: list[str]
-    ) -> bool:
+    ) -> int:
         self.records.append((station_code, direction, list(stops)))
         key = (station_code, normalize_direction_key(direction))
         existing_map: dict[str, str] = {}
@@ -74,9 +74,10 @@ class _RecordingStore:
                 existing_map.setdefault(stop.casefold(), stop)
         merged = sorted(existing_map.values(), key=str.casefold)
         if merged == existing:
-            return False
+            return 0
+        added = len(set(merged) - set(existing))
         self._buckets[key] = merged
-        return True
+        return added
 
     async def async_lookup(
         self, station_code: str, direction: str | None
@@ -99,7 +100,7 @@ class _FlakyRecordingStore(_RecordingStore):
 
     async def async_record(
         self, station_code: str, direction: str | None, stops: list[str]
-    ) -> bool:
+    ) -> int:
         self.calls += 1
         if self.calls == 1:
             raise OSError("storage went away")
@@ -361,7 +362,7 @@ async def test_rebuild_with_existing_observations_unions(
     The recording store is pre-seeded with one stop. The rebuild then
     observes the same stop plus a brand-new one. The bucket must end
     up with both, and the rebuild must report zero stops added for the
-    already-known one (the store returns ``False`` on a no-op).
+    already-known one (the store returns ``0`` on a no-op).
     """
     stations = [MagicMock(code="PEARS", name="Dublin Pearse")]
     client = _client_mock(stations)
@@ -373,7 +374,7 @@ async def test_rebuild_with_existing_observations_unions(
 
     recording = _RecordingStore()
     # Pre-seed: Cherrywood is already known for PEARS Northbound.
-    assert await recording.async_record("PEARS", "Northbound", ["Cherrywood"]) is True
+    assert await recording.async_record("PEARS", "Northbound", ["Cherrywood"]) == 1
 
     with (
         patch(
@@ -388,19 +389,60 @@ async def test_rebuild_with_existing_observations_unions(
         result = await async_run_matrix_rebuild(hass, client)
 
     # Cherrywood is a no-op; Greystones joins in both the direction
-    # bucket and the _all union. The final buckets contain both
-    # stops, and the rebuild reports the total stops in each changed
-    # bucket as ``stops_added`` (the user-facing attribute on the
-    # button's entity).
+    # bucket and the _all union. The final buckets contain both stops.
     north = await recording.async_lookup("PEARS", "Northbound")
     assert north == ["Cherrywood", "Greystones"]
     all_dirs = await recording.async_lookup("PEARS", None)
     assert all_dirs == ["Cherrywood", "Greystones"]
-    # Both the direction bucket and the _all bucket changed.
+    # Both buckets changed. The direction bucket only gained Greystones
+    # (Cherrywood was already known there); the ``_all`` union was empty
+    # and gained both.
     assert result.buckets_updated == 2
-    # ``stops_added`` is the sum of stops in each changed bucket:
-    # 2 (Cherrywood, Greystones) × 2 buckets = 4.
-    assert result.stops_added == 4
+    assert result.stops_added == 3
+
+
+async def test_unexpected_station_failure_does_not_end_the_sweep(
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One station raising something unexpected must not discard the rest.
+
+    A single non-IrishRailError bug on one row would otherwise abort the
+    whole sweep and report the ~150 stations already sampled as never
+    visited.
+    """
+    stations = [
+        MagicMock(code="KENT", name="Cork Kent"),
+        MagicMock(code="PEARS", name="Dublin Pearse"),
+    ]
+    client = _client_mock(stations)
+    client.async_get_station_by_code = AsyncMock(
+        side_effect=[
+            RuntimeError("parse bug"),
+            [MagicMock(code="E001", destination="Bray", direction="Northbound")],
+        ]
+    )
+    recording = _RecordingStore()
+
+    with (
+        patch(
+            "custom_components.irish_rail.matrix_rebuild.get_stops_store",
+            return_value=recording,
+        ),
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
+            side_effect=_scoped_factory(["Howth"]),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = await async_run_matrix_rebuild(hass, client)
+
+    assert result.error is None
+    assert result.skipped == 1
+    assert result.sampled == 1
+    assert result.buckets_updated == 2
+    assert {code for code, _, _ in recording.records} == {"PEARS"}
+    assert "unexpected sampling failure" in caplog.text
 
 
 async def test_rebuild_persists_through_real_storage(
@@ -698,3 +740,104 @@ async def test_sample_stops_matrix_limit_slices_station_list() -> None:
     assert result.total_stations == 3
     assert result.sampled == 2
     assert client.async_get_station_by_code.await_count == 2
+
+
+async def test_a_train_code_shared_by_two_stations_is_fetched_once() -> None:
+    """The per-run movement cache is what keeps the sweep off the API twice.
+
+    A through service is due at many stations on the same corridor; the
+    route only has to be resolved the first time.
+    """
+    stations = [
+        MagicMock(code="PEARS", name="Dublin Pearse"),
+        MagicMock(code="KENT", name="Cork Kent"),
+    ]
+    client = _client_mock(stations)
+    shared = MagicMock(code="E001", destination="Bray", direction="Northbound")
+    client.async_get_station_by_code = AsyncMock(side_effect=[[shared], [shared]])
+    client.async_get_train_stops = AsyncMock(return_value=[])
+
+    recording = _RecordingStore()
+    with (
+        patch(
+            "custom_components.irish_rail.matrix_rebuild.get_stops_store",
+            return_value=recording,
+        ),
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
+            side_effect=_scoped_factory(["Bray"]),
+        ),
+    ):
+        result = await sample_stops_matrix(
+            client, gap_fill=True, atomic_dump=False, priority="background", hass=MagicMock()
+        )
+
+    assert client.async_get_train_stops.await_count == 1
+    assert result.sampled == 2
+
+
+async def test_a_bucket_that_learns_nothing_reports_no_progress() -> None:
+    """Re-sampling stops the matrix already holds reports zero progress.
+
+    ``async_record`` returns the count of *newly* added stops, so a
+    station whose every stop is already known must not inflate the
+    rebuild's progress counters.
+    """
+    stations = [MagicMock(code="PEARS", name="Dublin Pearse")]
+    client = _client_mock(stations)
+    client.async_get_station_by_code = AsyncMock(
+        return_value=[MagicMock(code="E001", destination="Bray", direction="Northbound")]
+    )
+
+    class _NoNewStore(_RecordingStore):
+        """Store that always reports its write as adding nothing."""
+
+        async def async_record(
+            self, station_code: str, direction: str | None, stops: list[str]
+        ) -> int:
+            self.records.append((station_code, direction, list(stops)))
+            return 0
+
+    recording = _NoNewStore()
+    with (
+        patch(
+            "custom_components.irish_rail.matrix_rebuild.get_stops_store",
+            return_value=recording,
+        ),
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
+            side_effect=_scoped_factory(["Bray"]),
+        ),
+    ):
+        result = await sample_stops_matrix(
+            client, gap_fill=True, atomic_dump=False, priority="background", hass=MagicMock()
+        )
+
+    assert recording.records
+    assert result.buckets_updated == 0
+    assert result.stops_added == 0
+
+
+async def test_in_memory_only_mode_samples_without_writing_anything() -> None:
+    """Neither a store nor a document: the sweep still visits every station.
+
+    The in-memory mode exists so sampling can be exercised without I/O;
+    a station with nothing to persist must not be reported as an error.
+    """
+    stations = [MagicMock(code="PEARS", name="Dublin Pearse")]
+    client = _client_mock(stations)
+    client.async_get_station_by_code = AsyncMock(
+        return_value=[MagicMock(code="E001", destination="Bray", direction="Northbound")]
+    )
+
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
+        side_effect=_scoped_factory(["Bray"]),
+    ):
+        result = await sample_stops_matrix(
+            client, gap_fill=False, atomic_dump=False, priority="background"
+        )
+
+    assert result.sampled == 1
+    assert result.skipped == 0
+    assert result.error is None

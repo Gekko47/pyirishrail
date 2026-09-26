@@ -1544,8 +1544,9 @@ async def test_stops_at_options_exclude_upstream_and_other_direction() -> None:
 async def test_prune_ignores_target_stop_on_other_journey() -> None:
     """A target only visited by the train's other journey prunes the train."""
     client = IrishRailClient(MagicMock())
-    # A stale observation set must be replaced, never merged into.
-    client.last_downstream_stop_names = frozenset({"STALE"})
+    # The caller's set is pre-seeded: a stale observation must be replaced,
+    # never merged into.
+    observed: set[str] = {"STALE"}
 
     async def fake_stops(
         train_code: str,
@@ -1566,16 +1567,18 @@ async def test_prune_ignores_target_stop_on_other_journey() -> None:
             [_due_train("E777")],
             stops_at="Greystones",
             station_code="PEARS",
+            observed_stops=observed,
         )
 
     assert result == []
     # Only the current journey's downstream stops were observed.
-    assert client.last_downstream_stop_names == frozenset({"Dun Laoghaire"})
+    assert observed == {"Dun Laoghaire"}
 
 
 async def test_prune_keeps_target_on_current_journey_and_records_observation() -> None:
     """Journey-scoped matching keeps the train and learns its stops."""
     client = IrishRailClient(MagicMock())
+    observed: set[str] = set()
 
     async def fake_stops(
         train_code: str,
@@ -1593,25 +1596,72 @@ async def test_prune_keeps_target_on_current_journey_and_records_observation() -
             [_due_train("E777")],
             stops_at="Greystones",
             station_code="PEARS",
+            observed_stops=observed,
         )
 
     assert [train.code for train in result] == ["E777"]
-    assert client.last_downstream_stop_names == frozenset({"Greystones", "Bray"})
+    assert observed == {"Greystones", "Bray"}
 
 
 async def test_prune_without_stops_at_resets_observations() -> None:
     """Passes without a stops_at filter carry no stale observations."""
     client = IrishRailClient(MagicMock())
-    client.last_downstream_stop_names = frozenset({"STALE"})
+    observed: set[str] = {"STALE"}
 
     with patch.object(
         client,
         "async_get_train_stops",
         new=AsyncMock(side_effect=AssertionError("must not look up")),
     ):
-        await client._async_prune_trains([_due_train("E777")], direction="Southbound")
+        await client._async_prune_trains(
+            [_due_train("E777")],
+            direction="Southbound",
+            observed_stops=observed,
+        )
 
-    assert client.last_downstream_stop_names == frozenset()
+    assert observed == set()
+
+
+async def test_prune_observations_stay_with_their_own_caller() -> None:
+    """Two concurrent passes cannot read each other's observations.
+
+    The observation set is the caller's, so overlapping polls on one
+    shared client (two config entries) stay independent: the second
+    pass overwrites only its own set.
+    """
+    client = IrishRailClient(MagicMock())
+
+    async def fake_stops(
+        train_code: str,
+        date: str | None = None,
+        priority: str = "normal",
+    ) -> list[TrainMovement]:
+        return [
+            _journey_movement("Dublin Pearse", "PEARS", destination="Bray"),
+            _journey_movement(train_code, "XXXX", destination="Bray"),
+        ]
+
+    first: set[str] = set()
+    second: set[str] = set()
+
+    with patch.object(client, "async_get_train_stops", new=fake_stops):
+        await asyncio.gather(
+            client._async_prune_trains(
+                [_due_train("E111")],
+                stops_at="Nowhere",
+                station_code="PEARS",
+                observed_stops=first,
+            ),
+            client._async_prune_trains(
+                [_due_train("E222")],
+                stops_at="Nowhere",
+                station_code="PEARS",
+                observed_stops=second,
+            ),
+        )
+
+    assert first == {"E111"}
+    assert second == {"E222"}
 
 
 async def test_stops_at_options_skip_blank_and_excluded_locations() -> None:
@@ -1658,3 +1708,90 @@ async def test_stops_at_options_skip_blank_and_excluded_locations() -> None:
         )
 
     assert options == ["Bray"]
+
+
+EMPTY_MOVEMENTS_XML = """
+<ArrayOfObjTrainMovements xmlns="http://api.irishrail.ie/realtime/">
+</ArrayOfObjTrainMovements>
+"""
+
+EMPTY_STATION_DATA_XML = """
+<ArrayOfObjTrainTimes xmlns="http://api.irishrail.ie/realtime/">
+</ArrayOfObjTrainTimes>
+"""
+
+
+async def test_an_empty_movement_response_is_never_cached(
+    aresponses: ResponsesMockServer,
+) -> None:
+    """A train with no movement rows yet is re-requested, not cached.
+
+    An empty list usually means the service has not reached its first
+    stop, so caching it would hide its route for the rest of the day.
+    """
+    for _ in range(2):
+        aresponses.add(
+            "api.irishrail.ie",
+            "/realtime/realtime.asmx/getTrainMovementsXML",
+            "GET",
+            aresponses.Response(text=EMPTY_MOVEMENTS_XML, status=200),
+        )
+
+    cache: dict[tuple[str, str], list[TrainMovement]] = {}
+    async with aiohttp.ClientSession() as session:
+        client = IrishRailClient(session, movement_cache=cache)
+        assert await client.async_get_train_stops("E999", date="01 Jan 2026") == []
+        # Only a network round-trip can satisfy the second call, so its
+        # success is itself the proof that nothing was cached.
+        assert await client.async_get_train_stops("E999", date="01 Jan 2026") == []
+
+    assert cache == {}
+
+
+async def test_a_direction_filtered_train_is_never_resolved_for_stops_at(
+    aresponses: ResponsesMockServer,
+) -> None:
+    """A train the direction filter drops costs no movement lookup.
+
+    The sample train reports ``Southbound``; asking for ``Northbound``
+    leaves no candidate, so the pruning fan-out must not fire. The
+    station-data response is the only request queued, which is what
+    proves no journey was resolved.
+    """
+    aresponses.add(
+        "api.irishrail.ie",
+        "/realtime/realtime.asmx/getStationDataByCodeXML",
+        "GET",
+        aresponses.Response(text=SAMPLE_STATION_DATA_XML, status=200),
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = IrishRailClient(session)
+        trains = await client.async_get_station_by_code(
+            "PEARS", direction="Northbound", stops_at="Greystones"
+        )
+
+    assert trains == []
+
+
+async def test_pruning_an_empty_due_list_returns_nothing(
+    aresponses: ResponsesMockServer,
+) -> None:
+    """A stops-at filter with no due trains is empty, not a failure.
+
+    "Reachable but nothing scheduled" and "unreachable" must stay
+    distinguishable, so the filtered path has to tolerate an empty
+    candidate list rather than treat it as an error.
+    """
+    aresponses.add(
+        "api.irishrail.ie",
+        "/realtime/realtime.asmx/getStationDataByCodeXML",
+        "GET",
+        aresponses.Response(text=EMPTY_STATION_DATA_XML, status=200),
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = IrishRailClient(session)
+        trains = await client.async_get_station_by_code("PEARS", stops_at="Greystones")
+
+    assert trains == []

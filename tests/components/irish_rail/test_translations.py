@@ -1,10 +1,8 @@
 """Translation completeness guards (roadmap Phase 3 Gold rules).
 
-The integration raises no ``HomeAssistantError`` toward users (read-only
-integration, no service actions), satisfying Gold rule
-``exception-translations`` vacuously; every user-facing failure surface is
-translation-keyed instead:
+Every user-facing failure surface is translation-keyed:
 
+- the rebuild service's ``HomeAssistantError`` (``exceptions`` section)
 - config-flow ``errors``/``abort`` bases referenced from ``config_flow.py``
 - repair issues created via ``ir.async_create_issue`` (translation_key)
 - entity names via entity translation keys
@@ -53,19 +51,28 @@ def _flatten_keys(value: Any, prefix: str = "") -> set[str]:
     return keys
 
 
-def test_no_homeassistanterror_raised_to_users() -> None:
-    """No module raises HomeAssistantError, so no English can leak to users.
+def test_exception_keys_raised_toward_users_resolve() -> None:
+    """Every ``HomeAssistantError`` a module raises is translation-keyed.
 
-    Evidence for treating ``exception-translations`` as satisfied-by-design:
-    the integration registers no service actions and its typed API
-    exceptions surface only in logs, never in the UI.
+    Behavioural counterpart to Gold rule ``exception-translations``: a
+    raised exception must name a ``translation_key`` that resolves in
+    both translation files, so a user never sees a bare English message
+    from a service or an entity press.
     """
-    offenders = [
-        py_file.name
-        for py_file in sorted(INTEGRATION_DIR.glob("*.py"))
-        if "HomeAssistantError" in py_file.read_text(encoding="utf-8")
-    ]
+    offenders: list[str] = []
+    for py_file in sorted(INTEGRATION_DIR.glob("*.py")):
+        source = py_file.read_text(encoding="utf-8")
+        for match in re.finditer(
+            r"raise HomeAssistantError\((?P<args>[^)]*)\)", source, re.DOTALL
+        ):
+            args = match.group("args")
+            if "translation_key=" not in args:
+                offenders.append(py_file.name)
     assert offenders == []
+
+    for file_name in ("strings.json", "translations/en.json"):
+        defined = set(_load_json(file_name)["exceptions"])
+        assert "rebuild_already_running" in defined, file_name
 
 
 def test_strings_and_translations_are_structurally_aligned() -> None:

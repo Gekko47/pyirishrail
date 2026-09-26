@@ -10,7 +10,8 @@ departures from the public, unauthenticated RTPI feed
 (`api.irishrail.ie`). Each configured station/direction becomes a
 device with two sensors showing the next and following train due in;
 one integration-level device ("Irish Rail Services") exposes an API
-connectivity binary sensor and a stops-matrix rebuild button.
+connectivity binary sensor and a stops-matrix rebuild button, and
+exists exactly while at least one station entry is loaded.
 
 | | |
 |---|---|
@@ -40,8 +41,10 @@ directory and restart Home Assistant.
 
 1. **Settings → Devices & Services → Irish Rail** → click each station
    entry → ⋮ menu → **Delete**. Removing the last station entry
-   automatically tears down the API-health probe, the stops-matrix
-   rebuild button, and the `irish_rail.rebuild_stops_matrix` service.
+   automatically tears down the API-health probe, the "Irish Rail
+   Services" device with its connectivity sensor and rebuild button,
+   and the `irish_rail.rebuild_stops_matrix` service. Removing one
+   of several stations moves them to a surviving entry instead.
 2. Optional: delete `irish_rail.stops_matrix.json` from HA storage to
    drop the per-install learned matrix. Keep the bundled
    `stops_matrix.seed.json` inside the integration folder.
@@ -74,9 +77,9 @@ station list is fetched live.
 
 | Setting | Menu action | Behaviour |
 |---|---|---|
-| Scan interval (30 s – 10 min, default 60 s) | **Configure** | Applies immediately, no reload |
-| Stops-at filter | **Configure** | Applies immediately; `All` disables it |
-| Direction filter | **Reconfigure** | Rewrites the entry identity; one reload |
+| Scan interval (30 s – 10 min, default 60 s) | **Configure** | Applies immediately, no reload — the polling timer is re-armed, not left on the old spacing until the next tick |
+| Stops-at filter | **Configure** | Applies immediately; `All` disables it. The dropdown offers only stops your station and direction actually reach. |
+| Direction filter | **Reconfigure** | Rewrites the entry identity; one reload. Transactional: your entity names, ids, icons and disabled states carry across, and a reload that fails leaves the old entry untouched. |
 
 Reconfiguring the direction changes the entry's identity: combinations
 another entry already monitors are rejected, the previous direction's
@@ -124,8 +127,13 @@ overridable per entity from the UI.
 
 ### Irish Rail Services device
 
-One device per Home Assistant instance, independent of how many
-station entries are configured:
+**This device exists if and only if at least one station entry is
+configured and loaded.** Add a station and it appears; remove the last
+one and it goes away with the `rebuild_stops_matrix` service. It is
+never tied to a particular station: ownership moves to a surviving
+entry automatically, so removing one of several stations does not take
+the connectivity sensor or the rebuild button with it, and no
+per-station device ever carries them.
 
 | Entity | Type | Notes |
 |---|---|---|
@@ -133,7 +141,8 @@ station entries are configured:
 | `button.rebuild_stops_matrix` | `EntityCategory.CONFIG` | One press rebuilds the "stops at" matrix (≈150 stations, several minutes, background-priority HTTP). See [Stops-at filter](#stops-at-filter). |
 
 The `irish_rail.rebuild_stops_matrix` service is the automation-facing
-alias of the rebuild button.
+alias of the rebuild button. Pressing it while a sweep is already in
+flight raises a translated error rather than starting a second one.
 
 Sensors ship with domain-appropriate default icons defined in the integration's `icons.json`; override any icon per entity from the UI as usual.
 
@@ -236,8 +245,12 @@ Replace the entity IDs with those of your own station/direction entries.
   raises a *No train data received for {station}* repair issue
   pointing at this README's [Troubleshooting](#troubleshooting)
   section. The issue clears itself on the first refresh that returns
-  real trains, or immediately when the shared API-health probe
-  confirms the upstream is reachable.
+  real trains, or — for a station with no direction or stops-at
+  filter — immediately when the shared API-health probe confirms the
+  upstream is reachable. A **filtered** station is never cleared that
+  way: the probe polls a different, unfiltered station, so "the API
+  answered" says nothing about whether your filter is satisfiable. An
+  impossible filter value is exactly the case this issue is for.
 
 ## "Stops at" filter
 
@@ -245,17 +258,24 @@ When configuring a station, you can enable a **"stops at"** filter
 (combined with a direction filter or alone) so only trains that
 actually call at a chosen downstream station are exposed. The
 dropdown never offers arbitrary free text; it lists stations the
-selected services genuinely reach *after* yours. The matrix behind
-it has three sources, applied in order of freshness:
+selected services genuinely reach *after* yours, scoped to your own
+station **and** direction. Sources, in order of freshness:
 
-1. **Live sampling** (source of truth) — trains currently due are
-   resolved to their current journey; only stops reached after your
-   station on that journey are offered.
-2. **Learned matrix** — every successful discovery (including
+1. **Learned matrix** — every successful discovery (including
    ordinary polling while a filter is active) is merged into a
    per-install cache that survives restarts and refreshes itself.
-3. **Bundled seed** — a reference snapshot ships with the integration
-   so setup still works when no services are currently due (overnight).
+2. **Bundled seed** — a reference snapshot ships with the integration
+   so setup still works when nothing is currently due (overnight).
+3. **Live sampling** (source of truth) — trains currently due are
+   resolved to their current journey; only stops reached after your
+   station on that journey are offered.
+4. **The full national station list** — shown only when all three
+   above come up empty, and labelled in the form, because a station
+   chosen from it may never be reached. Prefer the first three.
+
+Your currently stored value stays selectable and submittable even when
+it is not in the list, so a filter you already have is never silently
+dropped or reset.
 
 To refresh the matrix without the integration's normal live learning,
 press the **Rebuild stops at matrix** button on the Irish Rail Services

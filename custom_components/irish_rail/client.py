@@ -67,13 +67,8 @@ __all__ = [
 def _strip_namespaces(root: Element) -> Element:
     """Strip all namespaces from an element tree, in place.
 
-    The RTPI endpoints have historically alternated between documents whose
-    elements sit in the default namespace and namespace-free documents.
-    Normalizing once, immediately after parsing, lets every lookup below use
-    plain tag names instead of dual namespace-or-not fallbacks (roadmap
-    item 4.4). The transformation is idempotent, so normalizing an
-    already-clean tree is a no-op. Non-element nodes such as comments and
-    processing instructions (whose tags are not strings) are left untouched.
+    Idempotent, and non-element nodes (whose tags are not strings) are left
+    untouched. See docs/architecture.md §4.
     """
     for elem in root.iter():
         if isinstance(elem.tag, str) and "}" in elem.tag:
@@ -94,8 +89,7 @@ strip_namespaces = _strip_namespaces
 def _find_tag_text(element: Element, tag_name: str) -> str | None:
     """Return the stripped text of the first matching child, or None.
 
-    ``element`` must come from a namespace-normalized tree (see
-    :func:`_strip_namespaces`), so a plain tag name always matches.
+    ``element`` must come from a namespace-normalized tree.
     """
     elem = element.find(tag_name)
     if elem is not None and elem.text is not None:
@@ -111,36 +105,12 @@ def _scoped_journey_stops(
 ) -> list[TrainMovement]:
     """Return the stops of the train's current journey past the station.
 
-    ``getTrainMovementsXML`` reports every movement of a train code for the
-    whole day. A train code routinely operates several journeys per day —
-    including return legs in the opposite direction — so using the raw list
-    as "where does this service go?" wrongly offers upstream stops and stops
-    belonging to other journeys entirely.
-
-    Three case-insensitive cuts fix that:
-
-    1. **Journey scoping** — movement rows carrying the same ``TrainDestination``
-       the due-train record reports, so rows whose destination matches the
-       candidate train's due destination isolate the current journey. When no
-       row matches, all rows are kept rather than returning nothing; correctness
-       degrades gracefully to the pre-scoping behavior instead of inventing
-       semantics.
-    2. **Downstream cut** — within the matched rows, everything up to and
-       including the monitored station is dropped by matching the station's
-       code first and its display name second. Only stations reached *after*
-       the monitored station remain.
-    3. **Contiguous-run scoping** — a train code routinely operates the *same*
-       route several times a day, so several runs of rows can share the
-       destination. The downstream cut is therefore additionally limited to the
-       contiguous run (a single journey) containing the matched station, so the
-       stops of later same-day journeys never leak into the result. Rows of one
-       run are adjacent in the ``movements`` history; rows belonging to
-       separate runs are separated there by the other direction's now filtered
-       rows.
-
-    If the monitored station cannot be located at all, the (journey-scoped)
-    rows are returned uncut: an unmatched station must not silently empty
-    the result.
+    Cuts the whole-day movement history three ways: keep only rows sharing the
+    due train's ``TrainDestination``, drop everything up to and including the
+    monitored station, and bound the result to the contiguous run holding that
+    station so a later same-day journey cannot leak in. A destination with no
+    matching row, or a station that is not found, degrades to the unscoped
+    result rather than to an empty one. See docs/architecture.md §5.
     """
     rows = list(movements)
     # Position of each retained row within ``movements`` (the whole-day
@@ -189,32 +159,28 @@ class IrishRailClient:
     """Client for fetching data from the Irish Rail RTPI API."""
 
     def __init__(
-        self, session: aiohttp.ClientSession, *, gate: RequestGate | None = None
+        self,
+        session: aiohttp.ClientSession,
+        *,
+        gate: RequestGate | None = None,
+        movement_cache: dict[tuple[str, str], list[TrainMovement]] | None = None,
     ) -> None:
         """Initialize the client.
 
-        ``gate`` lets several clients share one admission gate: pass the
-        same :class:`RequestGate` instance to each client
-        whose requests must draw from the same pacing budget. The
-        Home Assistant integration passes one per-``HomeAssistant``
-        gate (see ``gate.py``) to every
-        client it creates, so the coordinator, both config flows, the
-        rebuild button and the health probe all share a single rate
-        budget against the public ``api.irishrail.ie`` endpoints. When
-        ``gate`` is omitted, the client creates its own gate with the
-        documented defaults (2 concurrent, 0.25 s spacing); pass an
-        explicit gate to share pacing across instances.
+        ``gate`` and ``movement_cache`` are the sharing seams: the Home
+        Assistant integration hands every client it creates the same
+        per-instance gate and movement cache, so the coordinator, both
+        config flows, the rebuild button and the health probe draw on one
+        rate budget and one route cache. Omitted, the client owns private
+        ones. See docs/architecture.md §3.
         """
         self._session = session
         self._gate = gate if gate is not None else RequestGate()
         # Movement histories keyed by ``(train_code, date)``; see
         # MOVEMENT_CACHE_MAX_ENTRIES in const.py.
-        self._movement_cache: dict[tuple[str, str], list[TrainMovement]] = {}
-        # Downstream stop names observed during the most recent stops-at
-        # pruning pass (empty unless a pass ran). The coordinator merges
-        # these into the persistent "stops at" matrix so option discovery
-        # keeps healing itself from ordinary polling; see store.py.
-        self.last_downstream_stop_names: frozenset[str] = frozenset()
+        self._movement_cache: dict[tuple[str, str], list[TrainMovement]] = (
+            movement_cache if movement_cache is not None else {}
+        )
 
     async def _request(
         self,
@@ -224,10 +190,8 @@ class IrishRailClient:
     ) -> Element:
         """Make an HTTP GET request to the Irish Rail RTPI API.
 
-        Every outbound request crosses the client's :class:`RequestGate`
-        (concurrency cap + minimum spacing), so callers cannot bypass
-        the pacing by hitting this method directly. Cached lookups never
-        reach this method and therefore never cross the gate.
+        Every outbound request crosses the client's request gate, so callers
+        cannot bypass the pacing; cached lookups never reach here at all.
         """
         url = f"{API_BASE_URL}{endpoint}"
         try:
@@ -279,10 +243,8 @@ class IrishRailClient:
     ) -> list[Station]:
         """Get all stations, optionally filtered by station type.
 
-        ``priority`` is forwarded to the shared request gate; bulk callers
-        (e.g. the stops-matrix rebuild sweep) pass ``"background"`` so they
-        yield to live polling without being starved when no normal traffic
-        is queued.
+        Bulk callers pass ``priority="background"`` so they yield to live
+        polling without being starved when no normal traffic is queued.
         """
         params = None
         if station_type and station_type in STATION_TYPE_TO_CODE_DICT:
@@ -325,8 +287,13 @@ class IrishRailClient:
         direction: str | None = None,
         destination: str | None = None,
         stops_at: str | None = None,
+        observed_stops: set[str] | None = None,
     ) -> list[TrainDueTime]:
-        """Get station realtime data by station name."""
+        """Get station realtime data by station name.
+
+        ``observed_stops``, when supplied, is cleared then filled with the
+        downstream stop names the pruning pass resolved.
+        """
         endpoint = "getStationDataByNameXML"
         params = {"StationDesc": station_name}
         if num_minutes:
@@ -343,6 +310,7 @@ class IrishRailClient:
                 destination=destination,
                 stops_at=stops_at,
                 station_name=station_name,
+                observed_stops=observed_stops,
             )
 
         return trains
@@ -355,13 +323,15 @@ class IrishRailClient:
         destination: str | None = None,
         stops_at: str | None = None,
         priority: str = "normal",
+        observed_stops: set[str] | None = None,
+        service_date: str | None = None,
     ) -> list[TrainDueTime]:
         """Get station realtime data by station code.
 
-        ``priority`` is forwarded to the shared request gate; bulk callers
-        (e.g. the stops-matrix rebuild sweep) pass ``"background"`` so they
-        yield to live polling without being starved when no normal traffic
-        is queued.
+        ``priority="background"`` yields to live polling;
+        ``observed_stops`` is cleared then filled with the downstream stop
+        names the pruning pass resolved; ``service_date`` pins the
+        movement-history lookups to an Irish civil date.
         """
         endpoint = "getStationDataByCodeXML"
         params = {"StationCode": station_code}
@@ -379,6 +349,8 @@ class IrishRailClient:
                 destination=destination,
                 stops_at=stops_at,
                 station_code=station_code,
+                observed_stops=observed_stops,
+                service_date=service_date,
             )
 
         return trains
@@ -386,17 +358,10 @@ class IrishRailClient:
     async def async_get_station_directions(self, station_code: str) -> list[str]:
         """Return the distinct direction values currently due at a station.
 
-        The RTPI API exposes no static per-station direction directory: on
-        the Dundalk-Rosslare and Sligo-Dublin corridors trains report
-        ``Northbound`` / ``Southbound``, while every other station reports
-        free-text values such as ``To Cork`` that only appear in live
-        due-train records. The only authoritative source for valid filter
-        values is therefore a query of the station's own due-trains list.
-
-        Values are deduplicated case-insensitively (first-seen casing wins)
-        and sorted case-insensitively. An empty result simply means no
-        trains are due within the API's lookahead window right now (e.g.
-        overnight); it never indicates an error.
+        The API has no static direction directory, so the station's own
+        due-trains list is the only authoritative source. Values are
+        deduplicated and sorted case-insensitively; an empty result means no
+        trains are due inside the lookahead window, never an error.
         """
         trains = await self.async_get_station_by_code(station_code)
         seen: dict[str, str] = {}
@@ -416,39 +381,13 @@ class IrishRailClient:
     ) -> list[TrainMovement]:
         """Return a movement list scoped to one journey and cut downstream of a station.
 
-        Pure transformation on the supplied rows: no I/O, no gate, no
-        shared state. Delegates to the module-private
-        :func:`_scoped_journey_stops` helper, which carries the algorithm
-        and its full regression coverage. This thin public wrapper exists
-        so cross-package consumers (notably the integration's stops-matrix
-        rebuild button and the offline ``scripts/build_stops_matrix.py``
-        seed generator) can call the same scoping logic the client uses
-        internally without reaching for a leading-underscore symbol.
-
-        Args:
-            movements: The full day's movement rows for a train code, as
-                returned by :meth:`async_get_train_stops`. Order matters:
-                rows of one journey are adjacent in the list, and the
-                downstream cut is bounded to the contiguous run containing
-                the matched station.
-            journey_destination: The candidate journey's destination as
-                reported on the due-train record (used for journey
-                scoping). A blank/``None`` value degrades to the unscoped
-                day history rather than emptying the result.
-            station_code: The monitored station's code; the first match
-                on ``movement.location_code`` is the cut point. Takes
-                precedence over ``station_name`` when both match.
-            station_name: The monitored station's display name; the
-                first match on ``movement.location`` is the cut point
-                when no ``station_code`` hit exists. If neither matches
-                anything in the journey-scoped rows, the rows are
-                returned uncut (an unmatched station must never silently
-                empty the result).
-
-        Returns:
-            The journey-scoped rows cut downstream of the matched
-            station. May be empty if the candidate train's journey has
-            no downstream stops past the monitored station.
+        Pure transformation on the supplied rows — no I/O, no gate, no shared
+        state — delegating to the module-private helper, which carries the
+        algorithm and its regression coverage. This public wrapper exists so
+        the rebuild button and the offline seed generator can reuse the same
+        scoping without reaching for a leading-underscore symbol. The cut
+        point is the first ``station_code`` match, else the first
+        ``station_name`` match; no match returns the rows uncut.
         """
         return _scoped_journey_stops(
             movements,
@@ -465,20 +404,12 @@ class IrishRailClient:
     ) -> list[str]:
         """Return the stops served by trains currently due at a station.
 
-        Candidate routes come from the due-train records for
-        ``station_code`` (optionally narrowed to one direction); each
-        distinct train code is resolved to its route through the per-day
-        cached :meth:`async_get_train_stops` at background priority, so
-        the fan-out is paced by the client's shared request gate and
-        yields to concurrent live polling.
-        Routes are scoped to each train's current journey and cut
-        downstream of ``station_code`` via :meth:`scope_journey_stops`, so
-        the union only contains stations the selected services actually
-        reach after this station. A route whose history cannot be fetched is
-        skipped rather than failing the union. The departure station itself
-        is excluded when its name is supplied via ``exclude`` (every route
-        trivially contains it), and remaining stop names are deduplicated
-        case-insensitively (first casing wins) and sorted case-insensitively.
+        Each distinct due train's route is resolved at background priority
+        and cut downstream of this station, so the union holds only stops
+        the selected services actually reach. A route that cannot be fetched
+        is skipped rather than failing the union; ``exclude`` drops the
+        departure station; names are deduplicated and sorted
+        case-insensitively.
         """
         trains = await self.async_get_station_by_code(station_code, direction=direction)
 
@@ -572,16 +503,11 @@ class IrishRailClient:
     ) -> list[TrainMovement]:
         """Get route/stop details for a train code.
 
-        Results are cached per ``(train code, date)`` pair: a running
-        train's stop list only grows during its journey, so a cached route
-        stays valid for "does this train stop at X?" filtering. Failed
-        lookups are never cached, so transient errors retry naturally on
-        the next poll; empty results are likewise not cached because they
-        may simply mean the train has not reached its first stop yet.
-        Cache hits never cross the request gate; only the outbound
-        request does. Bulk callers (e.g. pruning fan-outs) pass
-        ``priority="background"`` so they yield to live polling on a
-        shared gate.
+        Cached per ``(train code, date)``: a running train's stop list only
+        grows, so a cached route stays valid for filtering. Failures and
+        empty results are never cached, so they retry on the next poll.
+        Cache hits never cross the request gate; bulk callers pass
+        ``priority="background"``.
         """
         if date is None:
             # Use the local timezone's current date (Ireland for typical
@@ -632,12 +558,9 @@ class IrishRailClient:
     def _evict_movement_cache(self, current_date: str) -> None:
         """Drop entries for other dates when the cache exceeds its cap.
 
-        Eviction is lazy: it only runs once ``MOVEMENT_CACHE_MAX_ENTRIES``
-        is exceeded and removes historical-date entries first, so today's
-        routes stay warm. If the cache is still over the cap afterwards
-        (every remaining entry matches ``current_date``), the oldest
-        remaining entries are evicted until the size is within the cap;
-        dicts preserve insertion order, so iteration order is age order.
+        Lazy, and historical dates go first so today's routes stay warm;
+        if every remaining entry is today's, the oldest are dropped until
+        the cap holds. See docs/architecture.md §6.
         """
         if len(self._movement_cache) <= MOVEMENT_CACHE_MAX_ENTRIES:
             return
@@ -655,6 +578,8 @@ class IrishRailClient:
         stops_at: str | None = None,
         station_code: str | None = None,
         station_name: str | None = None,
+        observed_stops: set[str] | None = None,
+        service_date: str | None = None,
     ) -> list[TrainDueTime]:
         """Filter list of due trains based on options.
 
@@ -673,13 +598,23 @@ class IrishRailClient:
         candidate only counts as "stopping at" the target when the target is
         reached *after* the monitored station on its current journey, not
         merely somewhere in the train code's whole-day history. Successfully
-        resolved journeys are recorded in ``last_downstream_stop_names`` so
-        callers can learn the monitored station's reachable stops from
-        ordinary polling.
+        resolved journeys are reported through the caller's
+        ``observed_stops`` set so it can learn the monitored station's
+        reachable stops from ordinary polling.
+
+        ``service_date`` is the ``%d %b %Y`` schedule date the movement
+        lookup should use. It must be derived in *Irish* civil time: the
+        default inside :meth:`async_get_train_stops` is the host's local
+        date, so a host configured to another zone queries between 00:00
+        and 05:00 Dublin time would ask for yesterday's schedule and
+        prune every train. Callers in the integration pass
+        ``DUBLIN_TZ``-derived dates; the standalone library default is
+        unchanged.
         """
-        # Reset per pass: the observations must describe this poll only, so a
-        # stale set from an earlier poll can never be merged by callers.
-        self.last_downstream_stop_names = frozenset()
+        # Cleared per pass: the observations must describe this pass only,
+        # so a stale set from an earlier poll can never be merged by callers.
+        if observed_stops is not None:
+            observed_stops.clear()
 
         async def _journey_stops(
             train_code: str, journey_destination: str
@@ -687,7 +622,7 @@ class IrishRailClient:
             """Return the train's current-journey stops past the station."""
             try:
                 movements = await self.async_get_train_stops(
-                    train_code, priority="background"
+                    train_code, date=service_date, priority="background"
                 )
             except IrishRailError:
                 # A movement-history failure prunes this train only; the
@@ -751,8 +686,8 @@ class IrishRailClient:
             )
             observed.update(stop.location for stop in outcome if stop.location)
 
-        if observed:
-            self.last_downstream_stop_names = frozenset(observed)
+        if observed and observed_stops is not None:
+            observed_stops.update(observed)
 
         pruned_data: list[TrainDueTime] = []
         for train in trains:

@@ -9,7 +9,8 @@ key. These tests verify the lifecycle end-to-end:
 * the gate singleton survives an unload/reload cycle (the only
   writer is the registry, not the call site);
 * two config entries on one HA instance share one gate (the
-  release only happens at zero loaded entries);
+  release only happens at zero loaded entries) and one movement-history
+  cache (so a train code serving both stations is resolved once);
 * the lazy ``async_get_request_gate`` is safe to call before any
   entry is loaded (the config flow and options flow both rely on
   this);
@@ -35,14 +36,20 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irish_rail._runtime import (
     ConnectivityMonitor,
+    async_get_movement_cache,
     async_get_request_gate,
     async_note_entry_loaded,
     async_note_entry_unloaded,
+    async_promote_on_removal,
+    async_promote_provider,
     async_release_request_gate,
-    claim_service_entities,
+    disown_provider_if,
+    elect_provider,
     get_health_monitor,
     get_request_gate,
     get_runtime,
+    pop_session_value,
+    set_session_value,
 )
 from custom_components.irish_rail.config_flow import (
     IrishRailConfigFlow,
@@ -149,6 +156,46 @@ async def test_second_entry_reuses_the_same_shared_gate(
     assert second_gate is first_gate
     assert entry_a.runtime_data.client._gate is first_gate
     assert entry_b.runtime_data.client._gate is first_gate
+
+
+async def test_second_entry_reuses_the_same_movement_cache(
+    hass: HomeAssistant,
+) -> None:
+    """Two entries on one HA instance share one route cache.
+
+    A train code serving both monitored stations is resolved once per
+    HA instance instead of once per entry, and the cache is dropped with
+    the last entry like every other shared singleton.
+    """
+    entry_a = _add_entry(hass, unique_id="PEARS_northbound")
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
+        new=AsyncMock(return_value=[]),
+    ):
+        assert await hass.config_entries.async_setup(entry_a.entry_id)
+        await hass.async_block_till_done()
+        shared = async_get_movement_cache(hass)
+        assert entry_a.runtime_data.client._movement_cache is shared
+
+        entry_b = _add_entry(hass, unique_id="PEARS_southbound")
+        assert await hass.config_entries.async_setup(entry_b.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry_b.runtime_data.client._movement_cache is shared
+
+    # A route warmed by one entry is served from cache for the other.
+    shared[("E123", "01 Jan 2026")] = [MagicMock()]
+    assert shared[("E123", "01 Jan 2026")] in (
+        entry_a.runtime_data.client._movement_cache.values()
+    )
+
+    # The cache is released with the last entry, not the first.
+    assert await hass.config_entries.async_unload(entry_a.entry_id)
+    await hass.async_block_till_done()
+    assert shared
+    assert await hass.config_entries.async_unload(entry_b.entry_id)
+    await hass.async_block_till_done()
+    assert not shared
 
 
 async def test_unload_last_entry_drops_the_shared_gate(
@@ -387,32 +434,260 @@ async def test_unload_without_any_registry_reports_true(
 async def test_first_setup_claims_global_provider(
     hass: HomeAssistant,
 ) -> None:
-    """The first claiming entry wins; siblings are denied, owner sticky."""
+    """The first loaded entry wins; siblings are denied, owner sticky.
+
+    Ownership is decided against ``loaded_entry_ids``, and
+    ``async_setup_entry`` notes an entry loaded *before* forwarding
+    platforms, so the first entry to reach ``elect_provider`` is always
+    already in the set.
+    """
     entry_one = _entry(hass)
     entry_two = _entry(hass, unique_id="KENT_all")
+    client = _client()
 
-    assert claim_service_entities(hass, entry_one) is True
-    assert claim_service_entities(hass, entry_two) is False
+    assert await async_note_entry_loaded(hass, entry_one.entry_id, client) is True
+    assert elect_provider(hass, entry_one) is True
+    assert await async_note_entry_loaded(hass, entry_two.entry_id, client) is False
+    assert elect_provider(hass, entry_two) is False
     # Owner re-claiming stays True.
-    assert claim_service_entities(hass, entry_one) is True
+    assert elect_provider(hass, entry_one) is True
 
 
-async def test_claim_is_freed_when_owner_is_removed(
+async def test_elect_provider_sweeps_a_departed_owner_s_rows(
     hass: HomeAssistant,
 ) -> None:
-    """Removing the owning entry (not merely unloading) frees the claim."""
+    """Re-electing over a departed owner purges that owner's rows first.
+
+    When the recorded owner is no longer loaded but is still recorded
+    (the state a removal leaves behind), the new owner must clear the old
+    entity/device rows before adding its own, or the additions collide
+    with the departed owner's.
+    """
     entry_one = _entry(hass)
     entry_two = _entry(hass, unique_id="KENT_all")
+    client = _client()
+    assert await async_note_entry_loaded(hass, entry_one.entry_id, client) is True
+    assert elect_provider(hass, entry_one) is True
 
-    assert claim_service_entities(hass, entry_one) is True
+    # entry_one is no longer loaded, but the key still names it: the
+    # state a departed-but-recorded owner leaves behind.
+    await async_note_entry_unloaded(hass, entry_one.entry_id)
+    set_session_value(hass, GLOBAL_PROVIDER_KEY, entry_one.entry_id)
 
-    # Unload must NOT transfer ownership mid-session.
-    assert await hass.config_entries.async_unload(entry_one.entry_id)
-    assert claim_service_entities(hass, entry_two) is False
+    with patch(
+        "custom_components.irish_rail._runtime._purge_orphan_global_entities"
+    ) as purge:
+        assert elect_provider(hass, entry_two) is True
 
-    # Full removal frees the claim for the next setup.
-    await hass.config_entries.async_remove(entry_one.entry_id)
-    assert claim_service_entities(hass, entry_two) is True
+    assert purge.call_count == 1
+    assert purge.call_args.kwargs["expected_owner"] == entry_one.entry_id
+    assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_two.entry_id
+
+
+async def test_elect_provider_replaces_an_unloaded_owner(
+    hass: HomeAssistant,
+) -> None:
+    """A loaded owner wins; an owner no longer loaded does not block.
+
+    This is the HIGH-1 fix. The previous check asked
+    ``hass.config_entries.async_entries(DOMAIN)`` whether the recorded
+    owner was still *installed*, which ignores load state, so an owner
+    that had been unloaded pinned the key for the rest of the session
+    even though nothing owned the globals any more.
+    """
+    entry_one = _entry(hass)
+    entry_two = _entry(hass, unique_id="KENT_all")
+    client = _client()
+
+    assert elect_provider(hass, entry_one) is True
+    assert await async_note_entry_loaded(hass, entry_one.entry_id, client) is True
+    assert await async_note_entry_loaded(hass, entry_two.entry_id, client) is False
+
+    # entry_one is now unloaded but still installed, so the old check
+    # would have kept denying the sibling.
+    await async_note_entry_unloaded(hass, entry_one.entry_id)
+
+    assert elect_provider(hass, entry_two) is True
+    assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_two.entry_id
+
+
+async def test_promotion_on_removal_ignores_unrelated_and_unknown_entries(
+    hass: HomeAssistant,
+) -> None:
+    """Only a provider awaiting promotion triggers one, and only once.
+
+    A removal of an entry that never owned the globals, or a removal with
+    no runtime at all, must be a no-op rather than promoting a stranger.
+    """
+    # No registry has ever existed: nothing to do, and no state created.
+    async_promote_on_removal(hass, "NEVER_LOADED")
+    assert get_runtime(hass) is None
+
+    entry_one = _entry(hass)
+    entry_two = _entry(hass, unique_id="KENT_all")
+    client = _client()
+    assert await async_note_entry_loaded(hass, entry_one.entry_id, client) is True
+    assert await async_note_entry_loaded(hass, entry_two.entry_id, client) is False
+    assert elect_provider(hass, entry_one) is True
+
+    # A sibling that was never the provider is removed: no promotion.
+    async_promote_on_removal(hass, entry_two.entry_id)
+    assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_one.entry_id
+
+    # The provider unloads, which arms a pending promotion...
+    await async_note_entry_unloaded(hass, entry_one.entry_id)
+    registry = get_runtime(hass)
+    assert registry is not None
+    assert entry_one.entry_id in registry.pending_promotions
+
+    # ...and is then removed, which promotes the survivor exactly once.
+    async_promote_on_removal(hass, entry_one.entry_id)
+    await hass.async_block_till_done()
+    assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_two.entry_id
+
+    # The pending marker is consumed, so a repeat is inert.
+    async_promote_on_removal(hass, entry_one.entry_id)
+    await hass.async_block_till_done()
+    assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_two.entry_id
+
+
+async def test_promotion_without_a_registry_is_a_no_op(
+    hass: HomeAssistant,
+) -> None:
+    """No runtime means no owner, so promotion declines rather than raises."""
+    assert await async_promote_provider(hass) is False
+    assert get_runtime(hass) is None
+
+
+async def test_promotion_is_skipped_when_the_owner_already_reclaimed(
+    hass: HomeAssistant,
+) -> None:
+    """A reload that re-claims first must not be overtaken.
+
+    ``ConfigEntryChange.REMOVED`` only fires for removals, but the
+    provider key can already be repopulated by a re-entering entry; the
+    guard makes that case a no-op rather than a second election.
+    """
+    entry_one = _entry(hass)
+    entry_two = _entry(hass, unique_id="KENT_all")
+    client = _client()
+    assert await async_note_entry_loaded(hass, entry_one.entry_id, client) is True
+    assert await async_note_entry_loaded(hass, entry_two.entry_id, client) is False
+    assert elect_provider(hass, entry_one) is True
+
+    await async_note_entry_unloaded(hass, entry_one.entry_id)
+    registry = get_runtime(hass)
+    assert registry is not None
+    assert entry_one.entry_id in registry.pending_promotions
+
+    # The owner comes back and re-claims before the removal signal lands.
+    assert await async_note_entry_loaded(hass, entry_one.entry_id, client) is False
+    assert elect_provider(hass, entry_one) is True
+
+    async_promote_on_removal(hass, entry_one.entry_id)
+    await hass.async_block_till_done()
+
+    # Ownership stayed with the returning owner.
+    assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_one.entry_id
+
+
+async def test_promotion_gives_up_when_the_survivor_vanished(
+    hass: HomeAssistant,
+) -> None:
+    """A loaded-set member with no config entry is reported, not crashed.
+
+    Defensive: the loaded set and the config-entry store are updated by
+    separate calls, so a mismatch must degrade to a warning rather than
+    an AttributeError raised inside the removal signal.
+    """
+    entry_one = _entry(hass)
+    client = _client()
+    assert await async_note_entry_loaded(hass, entry_one.entry_id, client) is True
+    assert elect_provider(hass, entry_one) is True
+
+    await async_note_entry_unloaded(hass, entry_one.entry_id)
+    registry = get_runtime(hass)
+    assert registry is not None
+
+    # A "loaded" survivor that has no config entry: promotion cannot
+    # elect it, so it warns and leaves the globals unowned.
+    registry.loaded_entry_ids.add("GHOST")
+    assert await async_promote_provider(hass) is False
+    assert GLOBAL_PROVIDER_KEY not in hass.data[DOMAIN]
+
+
+async def test_disown_only_clears_the_named_owner(
+    hass: HomeAssistant,
+) -> None:
+    """``disown_provider_if`` is a no-op for a non-owner."""
+    entry_one = _entry(hass)
+    entry_two = _entry(hass, unique_id="KENT_all")
+    assert elect_provider(hass, entry_one) is True
+
+    assert disown_provider_if(hass, entry_two.entry_id) is False
+    assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_one.entry_id
+
+    assert disown_provider_if(hass, entry_one.entry_id) is True
+    assert DOMAIN in hass.data
+    assert GLOBAL_PROVIDER_KEY not in hass.data[DOMAIN]
+
+
+async def test_promotion_is_deterministic_and_skipped_when_owned(
+    hass: HomeAssistant,
+) -> None:
+    """Promotion picks the lowest loaded id and never steals an owner."""
+    entry_one = _entry(hass)
+    entry_two = _entry(hass, unique_id="KENT_all")
+    client = _client()
+
+    # No loaded entries yet: nothing to promote.
+    assert await async_promote_provider(hass) is False
+
+    assert await async_note_entry_loaded(hass, entry_two.entry_id, client) is True
+    assert await async_note_entry_loaded(hass, entry_one.entry_id, client) is False
+
+    # The invariant is min() over the loaded set, so the winner does not
+    # depend on which entry happened to load first.
+    assert await async_promote_provider(hass) is True
+    assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == min(
+        entry_one.entry_id, entry_two.entry_id
+    )
+
+    # An existing owner is never displaced.
+    assert await async_promote_provider(hass) is False
+    assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == min(
+        entry_one.entry_id, entry_two.entry_id
+    )
+
+
+async def test_promotion_is_skipped_when_the_departing_entry_returns(
+    hass: HomeAssistant,
+) -> None:
+    """A plain reload re-claims for itself instead of being shunted.
+
+    ``async_note_entry_unloaded`` fires for a reload too. The deferred
+    promotion must not hand the globals to a sibling in that window; the
+    returning entry simply re-claims when its platforms forward again.
+    """
+    entry_one = _entry(hass)
+    entry_two = _entry(hass, unique_id="KENT_all")
+    client = _client()
+
+    assert await async_note_entry_loaded(hass, entry_one.entry_id, client) is True
+    assert await async_note_entry_loaded(hass, entry_two.entry_id, client) is False
+    assert elect_provider(hass, entry_one) is True
+
+    # Reload: unload, then the same entry re-registers before the
+    # deferred promotion task gets to run.
+    await async_note_entry_unloaded(hass, entry_one.entry_id)
+    assert await async_note_entry_loaded(hass, entry_one.entry_id, client) is False
+    await hass.async_block_till_done()
+
+    # No promotion happened, so ownership is unclaimed and entry_one
+    # takes it straight back on its next platform setup.
+    assert GLOBAL_PROVIDER_KEY not in hass.data[DOMAIN]
+    assert elect_provider(hass, entry_one) is True
+    assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_one.entry_id
 
 
 async def test_claim_is_idempotent_for_the_owner(
@@ -426,16 +701,17 @@ async def test_claim_is_idempotent_for_the_owner(
     re-invoke it.
     """
     entry_one = _entry(hass)
-    assert claim_service_entities(hass, entry_one) is True
+    assert elect_provider(hass, entry_one) is True
     for _ in range(5):
-        assert claim_service_entities(hass, entry_one) is True
+        assert elect_provider(hass, entry_one) is True
     assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_one.entry_id
 
-    # An installed sibling can never steal the claim, however often it
-    # retries - only removal of the owner frees it.
+    # A *loaded* sibling can never steal the claim, however often it
+    # retries - only the owner's departure frees it.
     entry_two = _entry(hass, unique_id="KENT_all")
+    await async_note_entry_loaded(hass, entry_one.entry_id, _client())
     for _ in range(3):
-        assert claim_service_entities(hass, entry_two) is False
+        assert elect_provider(hass, entry_two) is False
     assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_one.entry_id
 
 
@@ -638,3 +914,84 @@ async def test_monitor_does_not_steal_client_from_loaded_entry(
 
     assert get_health_monitor(hass) is monitor
     assert monitor.client is owner_client
+
+
+async def test_release_without_a_monitor_still_drops_the_gate(
+    hass: HomeAssistant,
+) -> None:
+    """A registry that never started a probe releases cleanly.
+
+    ``async_release`` is called on the last unload; a registry whose
+    monitor was never created (setup failed after the gate was handed
+    out) must not raise on the way down.
+    """
+    # ``async_get_request_gate`` is the public way to create the registry.
+    assert isinstance(async_get_request_gate(hass), RequestGate)
+    registry = get_runtime(hass)
+    assert registry is not None
+    registry.movement_cache[("E1", "01 Jan 2026")] = []
+
+    await registry.async_release()
+
+    assert registry.request_gate is None
+    assert registry.movement_cache == {}
+    assert registry.loaded_entry_ids == set()
+
+
+async def test_popping_a_session_value_without_a_domain_bucket_is_a_no_op(
+    hass: HomeAssistant,
+) -> None:
+    """Tearing down before anything was stored must not raise."""
+    assert DOMAIN not in hass.data
+
+    pop_session_value(hass, GLOBAL_PROVIDER_KEY)
+
+    assert DOMAIN not in hass.data
+
+
+async def test_releasing_the_gate_without_a_registry_is_a_no_op(
+    hass: HomeAssistant,
+) -> None:
+    """An instance that never created a registry has no gate to drop."""
+    assert get_runtime(hass) is None
+
+    async_release_request_gate(hass)
+
+    assert get_runtime(hass) is None
+
+
+async def test_promotion_registers_the_service_even_without_global_entities(
+    hass: HomeAssistant,
+) -> None:
+    """Ownership transfers even when the entity builders yield nothing.
+
+    ``build_rebuild_button`` / ``build_connectivity_sensor`` return None
+    when their platform is not loaded on the survivor. The service alias
+    must still be (re)registered, otherwise a surviving station loses
+    the rebuild action the removed owner used to provide.
+    """
+    entry_one = _entry(hass)
+    entry_two = _entry(hass, unique_id="KENT_all")
+    client = _client()
+    assert await async_note_entry_loaded(hass, entry_one.entry_id, client) is True
+    assert await async_note_entry_loaded(hass, entry_two.entry_id, client) is False
+    assert elect_provider(hass, entry_one) is True
+    await async_note_entry_unloaded(hass, entry_one.entry_id)
+
+    with (
+        patch(
+            "custom_components.irish_rail.button.build_rebuild_button",
+            return_value=None,
+        ),
+        patch(
+            "custom_components.irish_rail.binary_sensor.build_connectivity_sensor",
+            return_value=None,
+        ),
+        patch(
+            "custom_components.irish_rail.button.register_rebuild_service"
+        ) as register,
+    ):
+        assert await async_promote_provider(hass) is True
+
+    register.assert_called_once_with(hass)
+    assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_two.entry_id

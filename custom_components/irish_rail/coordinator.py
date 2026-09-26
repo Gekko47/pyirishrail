@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -146,10 +146,9 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
     def async_set_configured_interval(self, value: timedelta) -> None:
         """Store a new base interval and re-arm the scheduler.
 
-        Called by the update listener for option-only changes. Assigns
-        through the base class' public ``update_interval`` property, whose
-        setter keeps the scheduler's own seconds cache in sync, so no
-        private state is mirrored here. See docs/architecture.md §9.
+        Called by the update listener for option-only changes; the
+        effective interval is re-armed on the scheduler so the new
+        spacing takes effect immediately. See docs/architecture.md §9.
         """
         self._configured_interval = value
         self._async_apply_effective_interval()
@@ -159,14 +158,20 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
         """Number of consecutive failed refreshes driving the backoff."""
         return self._failure_streak
 
+    @callback
     def _async_apply_effective_interval(self) -> None:
         """Push the current effective interval onto HA's scheduler.
 
-        The base class derives its seconds cache from the public
-        ``update_interval`` property, so assigning it re-arms the timer
-        without touching private attributes.
+        Assigning ``update_interval`` only mirrors the base class' seconds
+        cache; the already-armed timer keeps the old spacing until it
+        fires, so a changed interval would not take effect until the next
+        poll. HA 2026.8 exposes no public re-arm, so the base class' own
+        reschedule pair is used here - the same two calls its
+        add/remove-listener paths make.
         """
         self.update_interval = self._effective_interval()
+        self._unschedule_refresh()
+        self._schedule_refresh()
 
     def _register_refresh_failure(self) -> None:
         """Advance the consecutive-failure streak and widen the schedule."""
@@ -210,6 +215,19 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
         hour = dt_util.now(DUBLIN_TZ).hour
         return SERVICE_HOURS_START_HOUR <= hour < SERVICE_HOURS_END_HOUR
 
+    @property
+    def is_unfiltered(self) -> bool:
+        """True when the entry applies neither a direction nor a stops-at filter.
+
+        Only an unfiltered entry can attribute an empty result to the API
+        answering "nothing scheduled". With a filter in play, "the API
+        answered" says nothing about whether *this* entry's filter is
+        satisfiable, so the empty-data issue must still be able to fire.
+        Reports exactly the two filters ``_async_update_data`` sends.
+        See docs/architecture.md §9.
+        """
+        return self.direction is None and resolve_stops_at(self.config_entry) is None
+
     def _health_monitor_is_healthy(self) -> bool:
         """Return True when a shared health probe recently succeeded.
 
@@ -248,8 +266,10 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
         # A confirmed-recently-healthy API means the empty result reflects
         # scheduling reality (nothing due inside the look-ahead window),
         # not an integration or schema problem: suppress the repair issue,
-        # clear any stale one right away, and reset the streak.
-        if self._health_monitor_is_healthy():
+        # clear any stale one right away, and reset the streak. The probe
+        # queries a different station with no filters, so this reasoning
+        # only carries for an unfiltered entry.
+        if self.is_unfiltered and self._health_monitor_is_healthy():
             self._empty_streak = 0
             self._empty_issue_reported = False
             issue_id = empty_data_issue_id(self.config_entry)
@@ -313,11 +333,22 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
 
     async def _async_update_data(self) -> list[TrainDueTime]:
         """Fetch real-time due train data from Irish Rail."""
+        # The client fills this in with the downstream stops it resolved
+        # while pruning; the caller owns the set, so two entries sharing a
+        # client can never read each other's observations.
+        observed_stops: set[str] = set()
+        # The schedule date is Irish civil time, not the host's: a host
+        # configured to another zone would otherwise ask for yesterday's
+        # movements between 00:00 and 05:00 Dublin time and prune every
+        # train. See docs/architecture.md §9.
+        service_date = dt_util.now(DUBLIN_TZ).strftime("%d %b %Y")
         try:
             trains = await self.client.async_get_station_by_code(
                 self.station_code,
                 direction=self.direction,
                 stops_at=resolve_stops_at(self.config_entry),
+                observed_stops=observed_stops,
+                service_date=service_date,
             )
         except IrishRailError as err:
             self._register_refresh_failure()
@@ -349,15 +380,20 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
         trains = trains[:MAX_RETAINED_TRAINS]
 
         self._async_update_empty_data_issue(trains)
-        await self._async_learn_downstream_stops()
+        await self._async_learn_downstream_stops(observed_stops)
         return trains
 
-    async def _async_learn_downstream_stops(self) -> None:
+    async def _async_learn_downstream_stops(self, observed_stops: set[str]) -> None:
         """Merge stops observed this poll into the persistent stops matrix.
 
         Uses debouncing to reduce storage I/O - stops are accumulated in
         _pending_stops and written in batches no more than every
         LEARN_DEBOUNCE_SECONDS.
+
+        ``observed_stops`` is the caller's own set, filled by the client
+        during this poll's pruning pass; passing it in (rather than reading
+        it off the client) is what keeps two entries sharing a client from
+        observing each other's stations.
 
         See docs/architecture.md §9 (downstream-stops learning) and §10
         (stops-matrix store).
@@ -366,7 +402,7 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
             return
         # Only polls that actually pruned candidates carry observations; an
         # empty due-list has nothing new to learn either way.
-        downstream = self.client.last_downstream_stop_names
+        downstream = observed_stops
         if not downstream:
             _LOGGER.debug(
                 "No downstream stops observed for %s (%s) this poll",
@@ -385,15 +421,12 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
             if elapsed < LEARN_DEBOUNCE_SECONDS:
                 return
 
-        if not self._pending_stops:
-            return
-
         # Write accumulated stops
         stops_to_write = sorted(self._pending_stops)
         self._pending_stops.clear()
 
         try:
-            changed = await get_stops_store(self.hass).async_record(
+            added = await get_stops_store(self.hass).async_record(
                 self.station_code,
                 self.direction,
                 stops_to_write,
@@ -411,7 +444,13 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
                 exc_info=True,
             )
             return
-        if changed:
+        except BaseException:
+            # Cancellation lands here: the batch was already taken out of
+            # ``_pending_stops``, so it has to go back or an unload or
+            # shutdown mid-write loses the poll's observations for good.
+            self._pending_stops.update(stops_to_write)
+            raise
+        if added:
             _LOGGER.debug(
                 "Stops matrix updated for %s (%s, direction=%s)",
                 self.station_name,

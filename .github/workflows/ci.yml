@@ -1,12 +1,17 @@
 name: CI
 
-# Single-job CI: lint + strict mypy + pytest with 100% line coverage.
-# The async client library is part of the integration
+# Single-job CI: lint + strict mypy + pytest with 100% line and branch
+# coverage. The async client library is part of the integration
 # (``custom_components/irish_rail/client.py``,
 # ``request_gate.py``, ``models.py``, ``errors.py``, ``lib_const.py``)
 # and is tested as part of the integration suite
 # (see tests/components/irish_rail/test_client.py and test_client_gate.py).
 # ``hassfest`` validates manifest.json.
+#
+# The source-hygiene gate (docstring density, project-internal
+# cross-references, backticked module pointers) lives in
+# ``scripts/check_streamline_a4.py`` so it is runnable, typed and
+# covered outside CI rather than embedded in a heredoc here.
 
 on:
   push:
@@ -28,8 +33,32 @@ jobs:
         with:
           persist-credentials: false
 
+      # NOT YET SHA-PINNED: this is the one mutable action reference left
+      # in the repository. Pinning it needs the commit id of the tag,
+      # which cannot be resolved without network access to the upstream
+      # repository; it is recorded as an open item in the active roadmap
+      # rather than guessed at.
       - name: hassfest
         uses: home-assistant/actions/hassfest@master
+
+  release:
+    name: release version consistency (tags only)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      # A tag that disagrees with manifest.json ships a version the user
+      # sees and a version that was tested being two different things.
+      - name: manifest / CHANGELOG / tag agree
+        run: python scripts/check_release_version.py "$GITHUB_REF_NAME"
 
   integration:
     name: irish_rail (integration)
@@ -45,19 +74,27 @@ jobs:
         with:
           python-version: "3.14"
 
+      # Every tool is pinned exactly. 0.13.356 is the first
+      # pytest-homeassistant-custom-component whose own requirement
+      # (``homeassistant==2026.8.2``) is at or above the ``hacs.json``
+      # floor; the previous pin (0.13.290) required
+      # ``homeassistant==2025.11.0b0`` — a 2025.11 *beta*, so CI was not
+      # exercising the HA version this integration declares support for.
+      # pytest-timeout is not optional: without it a wedged gate or a
+      # sleeping fake clock hangs the run instead of failing it.
       - name: Install dev tooling
         run: |
           python -m pip install --upgrade pip
-          # 0.13.356 is the first pin whose own requirement
-          # (``homeassistant==2026.8.2``) is at or above the
-          # ``hacs.json`` floor of 2026.8.0. The previous pin
-          # (0.13.290) required ``homeassistant==2025.11.0b0`` — a
-          # 2025.11 *beta*, so CI was not exercising the HA version
-          # this integration actually declares support for.
           pip install \
-            pytest pytest-asyncio pytest-cov aresponses \
+            "pytest==9.0.3" \
+            "pytest-asyncio==1.4.0" \
+            "pytest-cov==7.1.0" \
+            "pytest-timeout==2.4.0" \
+            "aresponses==3.0.0" \
+            "coverage==7.15.2" \
             "pytest-homeassistant-custom-component==0.13.356" \
-            "ruff>=0.16" mypy
+            "ruff==0.16.4" \
+            "mypy==2.3.1"
 
       # D4: the stale-patch-target grep guard. Phase 1 of the v0.3.0
       # Clean Baseline retargeted 117 ``patch("pyirishrail.*"...)`` test
@@ -97,72 +134,31 @@ jobs:
           fi
           echo "OK: hass.data[DOMAIN] is only touched by _runtime.py"
 
-      - name: Ruff lint (integration + tests)
-        run: ruff check custom_components/irish_rail tests/components/irish_rail scripts
+      - name: Ruff lint (integration + tests + scripts)
+        run: ruff check custom_components/irish_rail tests/components/irish_rail tests/test_scripts.py scripts
 
-      # Streamline roadmap gate (Phase A acceptance):
-      # docstring density must stay at or below 0.20 lines per source
-      # LOC during Phase A and 0.21 after Phase A completes. The
-      # streamline-roadmap also bans "Skill N" / "Phase N" / "roadmap N"
-      # cross-references in source (those are project-internal
-      # scratchpad breadcrumbs that belong in the active roadmap file).
-      # See .cline/streamline-roadmap.md Phase A and
-      # .cline/skills/10-streamline-execution.md §1.
-      - name: Docstring density + project-internal reference gate
-        run: |
-          python - <<'PY'
-          import re, sys
-          from pathlib import Path
-          root = Path("custom_components/irish_rail")
-          py_files = [p for p in root.rglob("*.py") if "__pycache__" not in p.parts]
-          total_loc = 0
-          total_doc = 0
-          for p in py_files:
-              text = p.read_text(encoding="utf-8")
-              loc = sum(1 for _ in text.splitlines() if _.strip())
-              doc = sum(
-                  len(m.group(1).splitlines())
-                  for m in re.finditer(r'"""(.*?)"""', text, re.DOTALL)
-              )
-              total_loc += loc
-              total_doc += doc
-          density = total_doc / total_loc if total_loc else 0
-          print(f"docstring lines: {total_doc}  source LOC: {total_loc}  density: {density:.3f}")
-          # once Phase A lands.
-          if density > 0.21:
-              sys.exit(
-                  f"docstring density {density:.3f} exceeds the Phase A gate of 0.20; "
-                  f"see .cline/streamline-roadmap.md Phase A"
-              )
-          # Project-internal cross-references belong in the active
-          # roadmap file, not in source.
-          offenders: list[str] = []
-          for p in py_files:
-              for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
-                  if re.search(r"\b(Skill\s+\d+|Phase\s+\d|roadmap\s+\d\.\d|roadmap\s+\d\.)", line):
-                      offenders.append(f"{p}:{i}: {line.rstrip()}")
-          if offenders:
-              for o in offenders:
-                  print(o)
-              sys.exit(
-                  "project-internal cross-reference(s) found in source; "
-                  "delete the reference or replace with a docs/architecture.md pointer"
-              )
-          PY
+      # Docstring density, project-internal cross-references and
+      # backticked module pointers. See scripts/check_streamline_a4.py
+      # and .cline/streamline-roadmap.md Phase A.
+      - name: Source hygiene (density, cross-references, module pointers)
+        run: python scripts/check_streamline_a4.py
 
-      # mypy covers the integration *and* its tests, mirroring the
-      # home-assistant/core ``.strict-typing`` convention. The
-      # framework-agnostic client modules
+      # mypy covers the integration, its tests and the build gates,
+      # mirroring the home-assistant/core ``.strict-typing``
+      # convention. The framework-agnostic client modules
       # (``client.py`` / ``request_gate.py`` / ``models.py`` /
       # ``errors.py`` / ``lib_const.py``) are included in the
       # strict run via the package root.
-      - name: Mypy strict (integration + tests)
-        run: mypy custom_components/irish_rail tests/components/irish_rail
+      - name: Mypy strict (integration + tests + scripts)
+        run: mypy custom_components/irish_rail tests/components/irish_rail tests/test_scripts.py scripts
 
       - name: Pytest (integration) with coverage
         run: |
           pytest \
             tests/components/irish_rail \
+            tests/test_scripts.py \
             tests/test_win_stubs.py \
             --cov=custom_components/irish_rail \
+            --cov=scripts \
+            --cov-branch \
             --cov-fail-under=100

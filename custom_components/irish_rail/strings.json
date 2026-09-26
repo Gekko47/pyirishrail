@@ -1,4 +1,7 @@
 {
+  "exceptions": {
+    "rebuild_already_running": "The Irish Rail stops-matrix rebuild is already running. Wait for it to finish before starting another."
+  },
   "config": {
     "step": {
       "user": {
@@ -81,7 +84,7 @@
         },
         "data_description": {
           "scan_interval": "How often to poll the Irish Rail API, between 30 seconds and 10 minutes (default 60 seconds).",
-          "stops_at": "Only show trains that stop at this station en route. Choose All to disable the filter."
+          "stops_at": "Only show trains that stop at this station en route. Choose All to disable the filter. The list is scoped to the stops a train from this station can actually reach, taken from services already observed for this station and direction, the bundled reference data, or a live sample. Only when none of those are available is the full station list offered, and a station from it may never be reached by a train from yours."
         }
       }
     }

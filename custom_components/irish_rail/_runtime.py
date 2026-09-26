@@ -16,9 +16,12 @@ from contextlib import suppress
 from datetime import datetime
 from typing import Any
 
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import async_get_platforms
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
@@ -36,6 +39,7 @@ from .const import (
     STOPS_STORE_INSTANCE,
 )
 from .errors import IrishRailError
+from .models import TrainMovement
 from .request_gate import RequestGate
 from .types import IrishRailConfigEntry
 
@@ -61,8 +65,15 @@ class RuntimeRegistry:
         """Initialize the registry with a fresh gate and no monitor."""
         self.hass = hass
         self.loaded_entry_ids: set[str] = set()
+        # Providers that unloaded while siblings remained and are waiting
+        # to be confirmed removed. See async_promote_on_removal.
+        self.pending_promotions: set[str] = set()
         self.request_gate: RequestGate | None = RequestGate()
         self.health_monitor: ConnectivityMonitor | None = None
+        # One movement-history cache per Home Assistant instance, handed to
+        # every client the integration builds, so a train code serving two
+        # monitored stations is fetched once rather than once per entry.
+        self.movement_cache: dict[tuple[str, str], list[TrainMovement]] = {}
 
     @callback
     def ensure_health_monitor(
@@ -93,10 +104,18 @@ class RuntimeRegistry:
         unload/reload cycle.
         """
         self.request_gate = None
+        self.movement_cache.clear()
         if self.health_monitor is not None:
             await self.health_monitor.async_stop()
         self.loaded_entry_ids.clear()
         _drop_session_keys(self.hass)
+        # The globals exist iff at least one entry is loaded, so the last
+        # unload takes the rebuild service and its handle with it. A
+        # promotion (owner removed, sibling survives) never reaches here,
+        # so the service correctly outlives the original owner.
+        from .button import unregister_rebuild_service
+
+        unregister_rebuild_service(self.hass)
 
 
 # ── Session-scoped key accessors (single writer, see §11) ────────────────────
@@ -364,6 +383,18 @@ def async_release_request_gate(hass: HomeAssistant) -> None:
         registry.request_gate = None
 
 
+def async_get_movement_cache(
+    hass: HomeAssistant,
+) -> dict[tuple[str, str], list[TrainMovement]]:
+    """Return the per-hass movement-history cache, creating it on demand.
+
+    Shared by every client the integration builds so a train code that
+    serves two monitored stations is resolved once. Cleared when the last
+    entry unloads, like the request gate.
+    """
+    return _ensure_runtime(hass).movement_cache
+
+
 # ── Health-monitor accessors (thin delegates onto the registry) ─────────────
 
 
@@ -411,6 +442,11 @@ async def async_note_entry_unloaded(hass: HomeAssistant, entry_id: str) -> bool:
     stops-matrix store singleton) are also dropped to avoid holding
     references after the last entry is gone; each is recreated lazily on
     demand.
+
+    When the departing entry was the global-entity provider but others
+    remain, the globals are re-elected onto a survivor so the
+    connectivity sensor, the rebuild button and the service survive the
+    owner's removal. See docs/architecture.md §11.
     """
     registry = get_runtime(hass)
     if registry is None:
@@ -426,45 +462,166 @@ async def async_note_entry_unloaded(hass: HomeAssistant, entry_id: str) -> bool:
         # next use, and the stops matrix itself is persisted on disk, so
         # dropping is lossless.
         await registry.async_release()
+    elif disown_provider_if(hass, entry_id):
+        # The provider left while siblings are still loaded. Disowning
+        # alone would leave the globals with nobody, so remember the
+        # departed id; ``async_promote_on_removal`` re-elects a
+        # survivor when (and only when) the entry is actually removed.
+        # Promotion is deliberately *not* attempted here: an unload is
+        # also the first half of a reload, and re-electing during that
+        # window would hand the globals to a sibling for the duration
+        # of a routine reload.
+        registry.pending_promotions.add(entry_id)
 
     return not registry.loaded_entry_ids
+
+
+@callback
+def async_promote_on_removal(hass: HomeAssistant, removed_entry_id: str) -> None:
+    """Re-elect the global-entity provider after an entry is removed.
+
+    Driven by ``ConfigEntryChange.REMOVED``, which Home Assistant
+    dispatches only once the entry has left the store — so this never
+    races a reload. Returns immediately unless the removed entry was a
+    provider waiting for a survivor. See docs/architecture.md §11.
+    """
+    registry = get_runtime(hass)
+    if registry is None:
+        return
+    if removed_entry_id not in registry.pending_promotions:
+        return
+    registry.pending_promotions.discard(removed_entry_id)
+    if get_session_value(hass, GLOBAL_PROVIDER_KEY) is not None:
+        # Already re-claimed by the departing entry's own reload.
+        return
+    hass.async_create_task(
+        async_promote_provider(hass),
+        name=f"irish_rail_promote_provider_{removed_entry_id}",
+        eager_start=False,
+    )
+
+
+async def async_promote_provider(hass: HomeAssistant) -> bool:
+    """Re-elect the global-entity provider onto a surviving entry.
+
+    Picks the lowest loaded entry id for determinism, so the same
+    survivor wins regardless of unload order. Re-adds the two entities to
+    that entry's already-running platforms rather than reloading it, so a
+    station that did nothing wrong does not see its own sensors blink out.
+
+    Returns True when a promotion happened.
+    """
+    if get_session_value(hass, GLOBAL_PROVIDER_KEY) is not None:
+        return False
+    registry = get_runtime(hass)
+    if registry is None or not registry.loaded_entry_ids:
+        return False
+
+    survivor_id = min(registry.loaded_entry_ids)
+    survivor = hass.config_entries.async_get_entry(survivor_id)
+    if survivor is None:
+        _LOGGER.warning(
+            "Cannot promote the global Irish Rail entities: entry %s is gone",
+            survivor_id,
+        )
+        return False
+
+    set_session_value(hass, GLOBAL_PROVIDER_KEY, survivor_id)
+    _LOGGER.info(
+        "Promoted the global Irish Rail entities to %s after its owner left",
+        survivor.title,
+    )
+
+    from .binary_sensor import build_connectivity_sensor
+    from .button import build_rebuild_button, register_rebuild_service
+
+    connectivity = build_connectivity_sensor(hass, survivor)
+    button = build_rebuild_button(hass, survivor)
+    if button is not None:
+        set_session_value(hass, GLOBAL_REBUILD_ENTITY_KEY, button)
+    register_rebuild_service(hass)
+    if button is not None:
+        await _async_add_to_platforms(
+            hass, survivor, button, Platform.BUTTON
+        )
+    if connectivity is not None:
+        await _async_add_to_platforms(
+            hass, survivor, connectivity, Platform.BINARY_SENSOR
+        )
+    return True
+
+
+async def _async_add_to_platforms(
+    hass: HomeAssistant,
+    entry: IrishRailConfigEntry,
+    entity: Entity,
+    domain: Platform,
+) -> None:
+    """Add one entity to ``entry``'s live platform for ``domain``.
+
+    Entities are added to the platform rather than rebuilt, so the
+    survivor's existing entities are untouched. A platform that is gone
+    (the entry is mid-reload) is logged and skipped; the next full setup
+    claims and registers normally.
+    """
+    # ``async_get_platforms`` is keyed by the *integration* name
+    # (the config entry's domain) and returns every platform of that
+    # integration, so the entity's own platform domain is the filter.
+    for platform in async_get_platforms(hass, DOMAIN):
+        if platform.config_entry is not entry or platform.domain != domain:
+            continue
+        await platform.async_add_entities([entity])
+        return
+    _LOGGER.debug(
+        "No live %s platform for %s; skipping promotion of %s",
+        domain,
+        entry.title,
+        entity.entity_id or entity.unique_id,
+    )
 
 
 # ── Global-entity providership arbitration ──────────────────────────────────
 
 
 @callback
-def claim_service_entities(hass: HomeAssistant, entry: IrishRailConfigEntry) -> bool:
-    """Claim providership of the global entities (see docs/architecture.md §11).
+def elect_provider(hass: HomeAssistant, entry: IrishRailConfigEntry) -> bool:
+    """Return True when ``entry`` owns the global entities after this call.
 
-    This function is idempotent and safe to call from multiple config
-    entries. The first entry to claim ownership wins; subsequent calls
-    from other entries return False until the owner is unloaded.
-
-    Returns:
-        True if this entry now owns the global entities, False if another
-        entry owns them.
+    Ownership is *derived* from ``loaded_entry_ids`` rather than cached
+    at first claim, so it is self-healing: a departed owner is detected
+    because it is no longer in the loaded set. Idempotent, and safe to
+    call from any number of entries. See docs/architecture.md §11.
     """
-    # Fast path: already the owner
+    registry = _ensure_runtime(hass)
     current_owner = get_session_value(hass, GLOBAL_PROVIDER_KEY)
+
+    # Fast path: already the owner, or the entry is not loaded yet (the
+    # caller is mid-setup, before async_note_entry_loaded runs).
     if current_owner == entry.entry_id:
         return True
 
-    # Check if current owner is still installed
-    if isinstance(current_owner, str):
-        owner_still_installed = any(
-            candidate.entry_id == current_owner
-            for candidate in hass.config_entries.async_entries(DOMAIN)
-        )
-        if owner_still_installed:
-            return False
+    # A *loaded* owner keeps the globals. The previous check consulted
+    # hass.config_entries.async_entries(DOMAIN), which ignores load state
+    # and so pinned ownership to a dead entry for the rest of the
+    # session; that was the HIGH-1 defect.
+    if isinstance(current_owner, str) and current_owner in registry.loaded_entry_ids:
+        return False
 
-    # Claim ownership and purge any orphan entities from previous owner
+    # No owner, or the recorded owner is no longer loaded: elect this
+    # entry, sweeping any rows the departed owner still holds.
     if isinstance(current_owner, str):
-        # Wipe orphan entity rows from previous dead owner before re-claiming.
         _purge_orphan_global_entities(hass, expected_owner=current_owner)
 
     set_session_value(hass, GLOBAL_PROVIDER_KEY, entry.entry_id)
+    return True
+
+
+@callback
+def disown_provider_if(hass: HomeAssistant, entry_id: str) -> bool:
+    """Clear providership when it names ``entry_id``; report whether it did."""
+    if get_session_value(hass, GLOBAL_PROVIDER_KEY) != entry_id:
+        return False
+    pop_session_value(hass, GLOBAL_PROVIDER_KEY)
     return True
 
 

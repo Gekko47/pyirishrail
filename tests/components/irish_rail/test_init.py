@@ -17,6 +17,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.irish_rail import (
     _async_capture_identity_customisations,
     _async_restore_identity_customisations,
+    _async_update_listener,
 )
 from custom_components.irish_rail._runtime import get_health_monitor
 from custom_components.irish_rail.const import DOMAIN, EMPTY_DATA_ISSUE_THRESHOLD
@@ -344,6 +345,119 @@ async def test_global_provider_purges_orphan_entities_when_owner_removed(
     await hass.async_block_till_done()
 
 
+async def test_globals_survive_the_owner_being_removed(
+    hass: HomeAssistant,
+) -> None:
+    """The invariant: globals exist iff at least one station entry is loaded.
+
+    Removing the entry that *owned* the "Irish Rail Services" device used
+    to strand the connectivity sensor, the rebuild button and the
+    ``rebuild_stops_matrix`` service for the rest of the session: the
+    provider key was only cleared at zero loaded entries, and the
+    surviving sibling had already skipped platform setup. Ownership is
+    now re-elected onto the survivor, which re-registers all three.
+    """
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.helpers import entity_registry as er
+
+    from custom_components.irish_rail.button import SERVICE_REBUILD
+    from custom_components.irish_rail.const import (
+        DOMAIN as IRISH_RAIL_DOMAIN,
+    )
+    from custom_components.irish_rail.const import (
+        GLOBAL_HEALTH_UNIQUE_ID,
+        GLOBAL_PROVIDER_KEY,
+        GLOBAL_REBUILD_UNIQUE_ID,
+        GLOBAL_SERVICES_IDENTIFIER,
+    )
+
+    def _entry_for(unique_id: str, station_code: str) -> MockConfigEntry:
+        return MockConfigEntry(
+            domain=IRISH_RAIL_DOMAIN,
+            title=f"Station {station_code}",
+            data={
+                "station": f"Station {station_code}",
+                "station_code": station_code,
+            },
+            unique_id=unique_id,
+        )
+
+    owner = _entry_for("PEARS_all", "PEARS")
+    sibling = _entry_for("KENT_all", "KENT")
+    owner.add_to_hass(hass)
+    sibling.add_to_hass(hass)
+
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
+        return_value=[],
+    ):
+        # Setting up one entry sets up the whole domain, so both are
+        # loaded here; the owner is whichever claimed providership first.
+        assert await hass.config_entries.async_setup(owner.entry_id)
+        await hass.async_block_till_done()
+        assert owner.state is ConfigEntryState.LOADED
+        assert sibling.state is ConfigEntryState.LOADED
+
+        registry = er.async_get(hass)
+        devices = dr.async_get(hass)
+
+        def _global_owner(unique_id: str) -> str | None:
+            for candidate in registry.entities.values():
+                if candidate.unique_id == unique_id:
+                    return candidate.config_entry_id
+            return None
+
+        assert hass.data[IRISH_RAIL_DOMAIN][GLOBAL_PROVIDER_KEY] == owner.entry_id
+        assert _global_owner(GLOBAL_HEALTH_UNIQUE_ID) == owner.entry_id
+        assert _global_owner(GLOBAL_REBUILD_UNIQUE_ID) == owner.entry_id
+        assert hass.services.has_service(IRISH_RAIL_DOMAIN, SERVICE_REBUILD)
+
+        # Remove the owner outright while the sibling stays loaded.
+        await hass.config_entries.async_remove(owner.entry_id)
+        await hass.async_block_till_done()
+
+        survivor = sibling.entry_id
+        assert hass.data[IRISH_RAIL_DOMAIN][GLOBAL_PROVIDER_KEY] == survivor
+        assert _global_owner(GLOBAL_HEALTH_UNIQUE_ID) == survivor
+        assert _global_owner(GLOBAL_REBUILD_UNIQUE_ID) == survivor
+        assert hass.services.has_service(IRISH_RAIL_DOMAIN, SERVICE_REBUILD)
+        assert hass.states.async_entity_ids("binary_sensor")
+        assert hass.states.async_entity_ids("button")
+
+        # The globals live on their own fixed-identifier device, never on
+        # a station's: neither global's device carries a station
+        # identifier, and the device belongs to the current provider.
+        global_entity_ids = {
+            entity_id
+            for entity_id, entity in registry.entities.items()
+            if entity.unique_id
+            in (GLOBAL_HEALTH_UNIQUE_ID, GLOBAL_REBUILD_UNIQUE_ID)
+        }
+        assert global_entity_ids
+        services_devices = {
+            registry.entities[entity_id].device_id for entity_id in global_entity_ids
+        }
+        assert len(services_devices) == 1
+        services_device_id = services_devices.pop()
+        assert services_device_id is not None
+        services_device = devices.devices[services_device_id]
+        assert services_device.identifiers == {GLOBAL_SERVICES_IDENTIFIER}
+        assert services_device.config_entry_id == survivor
+
+        # Removing the last station takes the globals and the service with it.
+        await hass.config_entries.async_remove(sibling.entry_id)
+        await hass.async_block_till_done()
+
+        assert GLOBAL_PROVIDER_KEY not in hass.data[IRISH_RAIL_DOMAIN]
+        assert _global_owner(GLOBAL_HEALTH_UNIQUE_ID) is None
+        assert _global_owner(GLOBAL_REBUILD_UNIQUE_ID) is None
+        assert not hass.services.has_service(IRISH_RAIL_DOMAIN, SERVICE_REBUILD)
+        assert not any(
+            device.identifiers == {GLOBAL_SERVICES_IDENTIFIER}
+            for device in devices.devices.values()
+        )
+
+
 async def test_connectivity_sensor_is_unavailable_before_first_probe(
     hass: HomeAssistant,
 ) -> None:
@@ -378,3 +492,31 @@ async def test_connectivity_sensor_is_unavailable_before_first_probe(
     monitor.healthy = False
     assert sensor.available is True
     assert sensor.is_on is False
+
+
+async def test_a_data_change_without_an_applied_identity_still_reloads(
+    hass: HomeAssistant,
+) -> None:
+    """A reload that has no previous identity to preserve still happens.
+
+    ``applied_unique_id`` is None for an entry with no station code, so
+    there is nothing to capture. The reload must still be scheduled:
+    skipping it would leave the entry running its old data forever.
+    """
+    mock_entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Dublin Pearse",
+        data={"station": "Dublin Pearse", "station_code": "PEARS"},
+        unique_id="PEARS_northbound",
+    )
+    mock_entry.add_to_hass(hass)
+    entry = cast(IrishRailConfigEntry, mock_entry)
+    coordinator = MagicMock()
+    coordinator.requires_reload.return_value = True
+    coordinator.applied_unique_id.return_value = None
+    entry.runtime_data = MagicMock(coordinator=coordinator)
+
+    with patch.object(hass.config_entries, "async_schedule_reload") as schedule:
+        await _async_update_listener(hass, entry)
+
+    schedule.assert_called_once_with(entry.entry_id)

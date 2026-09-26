@@ -3,7 +3,7 @@
 Integration-level service entity reporting whether the Irish Rail
 RTPI API answered its latest reachability probe. Registered exactly
 once per Home Assistant session by whichever config entry claims
-providership first (see ``health.py``); the ``DIAGNOSTIC`` entity
+providership first (see ``_runtime.py``); the ``DIAGNOSTIC`` entity
 category keeps it out of primary UI surfaces so per-station devices
 never have to carry it. The entity is attached to a fixed
 "Irish Rail Services" device (shared with the stops-matrix rebuild
@@ -31,7 +31,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from ._runtime import (
     ConnectivityMonitor,
-    claim_service_entities,
+    elect_provider,
     ensure_health_monitor_started,
     get_health_monitor,
 )
@@ -68,7 +68,7 @@ class IrishRailApiConnectivitySensor(BinarySensorEntity):
     _attr_unique_id = GLOBAL_HEALTH_UNIQUE_ID
     # The connectivity sensor and the stops-matrix rebuild button share
     # a single fixed-identifier service device so they render together
-    # on the integration page (see ``health.py`` for the matching
+    # on the integration page (see ``_runtime.py`` for the matching
     # orphan-purge on ownership transfer).
     _attr_device_info = DeviceInfo(
         identifiers={GLOBAL_SERVICES_IDENTIFIER},
@@ -124,18 +124,14 @@ class IrishRailApiConnectivitySensor(BinarySensorEntity):
         return attrs
 
 
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: IrishRailConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up the global connectivity sensor exactly once per session."""
-    if not claim_service_entities(hass, entry):
-        _LOGGER.debug(
-            "%s does not own the global Irish Rail entities; skipping",
-            entry.title,
-        )
-        return
+def build_connectivity_sensor(
+    hass: HomeAssistant, entry: IrishRailConfigEntry
+) -> IrishRailApiConnectivitySensor | None:
+    """Construct the connectivity sensor, or ``None`` without a client.
+
+    Shared by the platform setup and by provider promotion so both paths
+    build the entity identically. See docs/architecture.md §11.
+    """
     monitor = get_health_monitor(hass)
     if monitor is None:
         # Normal setups already started the monitor before platforms are
@@ -146,6 +142,23 @@ async def async_setup_entry(
             _LOGGER.warning(
                 "No Irish Rail API client available; global health sensor skipped"
             )
-            return
+            return None
         monitor = ensure_health_monitor_started(hass, client)
-    async_add_entities([IrishRailApiConnectivitySensor(hass, monitor)])
+    return IrishRailApiConnectivitySensor(hass, monitor)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: IrishRailConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up the global connectivity sensor for the elected owner."""
+    if not elect_provider(hass, entry):
+        _LOGGER.debug(
+            "%s does not own the global Irish Rail entities; skipping",
+            entry.title,
+        )
+        return
+    sensor = build_connectivity_sensor(hass, entry)
+    if sensor is not None:
+        async_add_entities([sensor])

@@ -4,6 +4,12 @@ The coordinator must stop warning about stations that simply have no
 scheduled services inside the RTPI look-ahead window whenever the shared
 health probe proves the API is reachable, while keeping every historical
 warning behaviour when the API genuinely looks broken.
+
+The probe queries a *different* station with no filters, so "the API
+answered" only explains an empty result for an entry that applies no
+filter of its own. A filtered entry that stays empty is exactly the case
+the repair issue exists to catch, so probe health never suppresses it
+there.
 """
 
 from __future__ import annotations
@@ -57,16 +63,28 @@ def _active_issue(hass: HomeAssistant, entry: MockConfigEntry) -> Any:
     return ir.async_get(hass).async_get_issue(DOMAIN, empty_data_issue_id(entry))
 
 
-async def _setup_entry(hass: HomeAssistant) -> MockConfigEntry:
-    """Set up one entry whose API answers successfully but with no trains."""
+async def _setup_entry(
+    hass: HomeAssistant,
+    *,
+    direction: str | None = None,
+    stops_at: str | None = None,
+) -> MockConfigEntry:
+    """Set up one entry whose API answers successfully but with no trains.
+
+    Unfiltered by default: probe health may only suppress the repair
+    issue for an entry that filters nothing.
+    """
+    data: dict[str, Any] = {
+        "station": "Dublin Pearse",
+        "station_code": "PEARS",
+        "direction": direction,
+    }
+    if stops_at is not None:
+        data["stops_at"] = stops_at
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Dublin Pearse",
-        data={
-            "station": "Dublin Pearse",
-            "station_code": "PEARS",
-            "direction": "Northbound",
-        },
+        data=data,
         unique_id="PEARS_Northbound",
     )
     entry.add_to_hass(hass)
@@ -218,3 +236,73 @@ async def test_absent_monitor_preserves_legacy_behavior(
         await _refresh_empty(hass, coordinator, EMPTY_DATA_ISSUE_THRESHOLD)
 
     assert _active_issue(hass, mock_config_entry) is not None
+
+
+@pytest.mark.parametrize(
+    "entry_kwargs",
+    [{"direction": "Northbound"}, {"stops_at": "Bray"}],
+    ids=["direction-filtered", "stops-at-filtered"],
+)
+async def test_healthy_api_does_not_suppress_a_filtered_entry(
+    hass: HomeAssistant,
+    entry_kwargs: dict[str, Any],
+) -> None:
+    """A filter in play keeps the repair issue able to fire.
+
+    The probe answers for a different, unfiltered station, so its health
+    says nothing about whether *this* entry's filter can ever be
+    satisfied. Suppressing here is what let an impossible ``stops_at``
+    value stay silent for the rest of the session.
+    """
+    entry = await _setup_entry(hass, **entry_kwargs)
+    coordinator = entry.runtime_data.coordinator
+    assert coordinator.is_unfiltered is False
+
+    monitor = get_health_monitor(hass)
+    assert monitor is not None
+    assert monitor.recently_confirmed_healthy is True
+
+    with _dublin_service_hours():
+        await _refresh_empty(hass, coordinator, EMPTY_DATA_ISSUE_THRESHOLD)
+
+    issue = _active_issue(hass, entry)
+    assert issue is not None
+    assert issue.translation_key == "empty_data_during_service_hours"
+    assert coordinator._empty_issue_reported is True
+    assert coordinator._empty_streak >= EMPTY_DATA_ISSUE_THRESHOLD
+
+
+async def test_unfiltered_entry_is_still_suppressed(
+    hass: HomeAssistant,
+) -> None:
+    """The precondition itself: no direction and no stops-at filter."""
+    entry = await _setup_entry(hass)
+    assert entry.runtime_data.coordinator.is_unfiltered is True
+
+
+async def test_is_unfiltered_reflects_both_applied_filters(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    mock_config_entry: Any,
+) -> None:
+    """Either filter alone is enough; neither may be ignored."""
+    mock_config_entry.add_to_hass(hass)
+
+    # The shared fixture carries a direction filter.
+    direction_only = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, mock_config_entry
+    )
+    assert direction_only.is_unfiltered is False
+
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        data={**mock_config_entry.data, "direction": None},
+    )
+    neither = IrishRailDataUpdateCoordinator(hass, mock_api_client, mock_config_entry)
+    assert neither.is_unfiltered is True
+
+    hass.config_entries.async_update_entry(
+        mock_config_entry, data={**mock_config_entry.data, "stops_at": "Bray"}
+    )
+    stops_only = IrishRailDataUpdateCoordinator(hass, mock_api_client, mock_config_entry)
+    assert stops_only.is_unfiltered is False

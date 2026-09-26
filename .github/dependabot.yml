@@ -1,11 +1,30 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
+# Dependabot version updates.
 # Please see the documentation for all configuration options:
 # https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 
 version: 2
 updates:
-  - package-ecosystem: "github-actions" # See documentation for possible values
+  - package-ecosystem: "github-actions"
     directory: "/" # Location of package manifests
     schedule:
       interval: "weekly"
+
+  # The integration ships no runtime requirements, but the CI gate is
+  # only as trustworthy as the toolchain it runs. pyproject.toml is the
+  # single source of truth for the dev tooling, so a pytest or mypy
+  # release that changes behaviour is worth knowing about.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # CI pins every tool exactly, so a Dependabot bump and a workflow
+    # edit have to land together.
+    open-pull-requests-limit: 3
+    groups:
+      dev-tooling:
+        patterns:
+          - "pytest*"
+          - "mypy"
+          - "ruff"
+          - "aresponses"
+          - "coverage"
