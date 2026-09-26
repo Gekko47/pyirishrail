@@ -86,8 +86,8 @@ def _async_capture_identity_customisations(
 
     A direction reconfigure changes the entry's unique ID, so the entities
     are re-created under new unique IDs. Deleting the old rows outright
-    destroyed the user's entity name, icon and area for good; capturing
-    them first lets the post-reload restore put them back.
+    destroyed the user's entity name, icon, area and disabled state for
+    good; capturing them first lets the post-reload restore put them back.
     """
     entity_registry = er.async_get(hass)
     old_prefix = f"{previous_uid}_"
@@ -105,6 +105,7 @@ def _async_capture_identity_customisations(
             "entity_category": registry_entry.entity_category,
             "area_id": registry_entry.area_id,
             "hidden_by": registry_entry.hidden_by,
+            "disabled_by": registry_entry.disabled_by,
             "translation_key": registry_entry.translation_key,
         }
     return captured
@@ -159,6 +160,7 @@ def _async_restore_identity_customisations(
             entity_category=saved["entity_category"],
             area_id=saved["area_id"],
             hidden_by=saved["hidden_by"],
+            disabled_by=saved["disabled_by"],
         )
 
 

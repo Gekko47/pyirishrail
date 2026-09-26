@@ -713,28 +713,73 @@ async def test_gate_repeated_cancellation_never_strands_a_slot() -> None:
     once; the gate must return exactly one slot and stay usable. This is
     the deterministic counterpart to the randomised churn test: no
     monkeypatching, no deadlock, same invariant.
+
+    The holder parks on an event in a ``finally`` **inside** the gate body,
+    so it is still holding its slot and has not yet run the gate's release
+    path when the repeat cancellations are delivered. Cancelling an
+    already-finished task is a silent no-op, and a cleanup point outside
+    the ``async with`` would unwind the gate first and make the repeats
+    vacuous.
     """
     gate, _clock, _sleep = _make_gate(max_concurrent=1, min_interval_seconds=0)
 
     started = asyncio.Event()
+    body_released = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cancels_in_cleanup = 0
 
     async def holder() -> None:
+        nonlocal cancels_in_cleanup
         async with gate.acquire():
             started.set()
-            await asyncio.sleep(10)
+            try:
+                await body_released.wait()
+            finally:
+                # Controlled cleanup await point: the task stays alive
+                # here, still holding the slot. Each cancel interrupts
+                # the wait, so loop until the test lets us go.
+                cleanup_started.set()
+                while not release_cleanup.is_set():
+                    try:
+                        await release_cleanup.wait()
+                    except asyncio.CancelledError:
+                        cancels_in_cleanup += 1
 
     holder_task = asyncio.create_task(holder())
     await started.wait()
     assert gate._in_flight == 1
 
-    # Deliver several cancellations in quick succession.
-    for _ in range(5):
-        holder_task.cancel()
-        await asyncio.sleep(0)
+    # First cancellation unwinds the body into the cleanup await point.
+    body_released.set()
+    holder_task.cancel()
+    async with asyncio.timeout(1.0):
+        await cleanup_started.wait()
+    assert not holder_task.done(), "holder finished before the repeats"
+    assert gate._in_flight == 1, "slot released before the repeats ran"
 
+    # Later cancellations are delivered to the live cleanup path, one at a
+    # time, each provably observed by the still-running holder.
+    repeats = 4
+    for expected in range(1, repeats + 1):
+        holder_task.cancel()
+        for _ in range(5):
+            if cancels_in_cleanup == expected:
+                break
+            await asyncio.sleep(0)
+        assert cancels_in_cleanup == expected, (
+            f"cancel {expected} never reached the live cleanup path"
+        )
+    assert not holder_task.done(), "repeats finished the holder early"
+    # A swallowed repeat must not release the slot early.
+    assert gate._in_flight == 1, "a repeat released the slot early"
+
+    # Let the body unwind for real: the gate's release path now runs once.
+    release_cleanup.set()
     async with asyncio.timeout(1.0):
         await asyncio.gather(holder_task, return_exceptions=True)
 
+    # The slot is released exactly once, not once per cancellation.
     assert gate._in_flight == 0, "slot leaked by repeat cancellation"
     assert not gate._waiters
 

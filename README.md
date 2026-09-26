@@ -178,7 +178,9 @@ so the countdown is accurate to within one poll rather than live.
 
 ### Following train alert
 
-Notify when the following train is due within 15 minutes:
+Notify when the following train is due within 15 minutes. The sensor is
+`unknown` whenever fewer than two trains are scheduled, so guard the
+state before converting it — `as_timestamp` raises on a non-date value:
 
 ```yaml
 - alias: "Irish Rail - following train approaching"
@@ -186,8 +188,10 @@ Notify when the following train is due within 15 minutes:
   triggers:
     - trigger: template
       value_template: >-
-        {% set arrival = as_timestamp(as_datetime(states(
-           'sensor.dublin_pearse_northbound_following_train_due'))) | float(0) %}
+        {% set state = states(
+           'sensor.dublin_pearse_northbound_following_train_due') %}
+        {% set arrival = as_timestamp(as_datetime(state)) | float(0)
+           if state not in ['unknown', 'unavailable', 'none'] else 0 %}
         {{ arrival > as_timestamp(now()) and arrival <= (as_timestamp(now()) + 900) }}
       for: "00:01:00"
   actions:

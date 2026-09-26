@@ -14,7 +14,10 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.irish_rail import _async_restore_identity_customisations
+from custom_components.irish_rail import (
+    _async_capture_identity_customisations,
+    _async_restore_identity_customisations,
+)
 from custom_components.irish_rail._runtime import get_health_monitor
 from custom_components.irish_rail.const import DOMAIN, EMPTY_DATA_ISSUE_THRESHOLD
 from custom_components.irish_rail.coordinator import empty_data_issue_id
@@ -169,6 +172,44 @@ async def test_restore_customisations_is_a_noop_without_a_capture(
     live = er.async_entries_for_config_entry(ent_reg, entry.entry_id)
     assert live, "entities should still be registered"
     assert all(e.name is None for e in live), "no entity should have been renamed"
+
+
+async def test_restore_customisations_carries_disabled_state(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """A user's disabled state survives the identity reconfigure.
+
+    A user who disabled the following-train sensor must not find it back
+    after a direction reconfigure re-creates the entity rows.
+    """
+    mock_config_entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
+        return_value=[],
+    ):
+        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    entry = cast(IrishRailConfigEntry, mock_config_entry)
+    ent_reg = er.async_get(hass)
+    target = next(
+        e
+        for e in er.async_entries_for_config_entry(ent_reg, entry.entry_id)
+        if e.unique_id.endswith("_following_train_due")
+    )
+    ent_reg.async_update_entity(
+        target.entity_id, disabled_by=er.RegistryEntryDisabler.USER
+    )
+    assert ent_reg.entities[target.entity_id].disabled_by is er.RegistryEntryDisabler.USER
+
+    captured = _async_capture_identity_customisations(hass, entry, "PEARS_northbound")
+    assert captured["following_train_due"]["disabled_by"] is er.RegistryEntryDisabler.USER
+
+    _async_restore_identity_customisations(hass, entry, "PEARS_northbound", captured)
+    assert (
+        ent_reg.entities[target.entity_id].disabled_by is er.RegistryEntryDisabler.USER
+    ), "disabled state was lost across the identity change"
 
 
 async def test_unload_removes_pending_empty_data_repair_issue(

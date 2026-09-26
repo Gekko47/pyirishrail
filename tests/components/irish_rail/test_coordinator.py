@@ -361,7 +361,11 @@ async def test_failure_logs_one_debug_per_poll_and_one_recovery(
     duplicate recovery line.
     """
     coordinator = IrishRailDataUpdateCoordinator(hass, mock_api_client, _entry_with())
+    # Pin DEBUG on the coordinator logger itself: the assertions below
+    # count DEBUG records, so they must not depend on the repository-wide
+    # logging configuration pytest happens to inherit.
     caplog.clear()
+    caplog.set_level(logging.DEBUG, logger="custom_components.irish_rail.coordinator")
 
     for _ in range(3):
         with (

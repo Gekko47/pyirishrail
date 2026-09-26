@@ -211,16 +211,26 @@ releases the shared singletons when the entry set empties.
 - `get_runtime` is for reads; the accessor functions are for mutating access.
   Nothing else is public surface.
 
-### 3.4 Sensor consolidation
+### 3.4 Sensor surface
 
-- One `IrishRailDueTrainSensor` class, not three. (Check `sensor.py` for the
-  current class name before adding entities.)
-- All user-visible state lives on that one sensor. The removed sensors are not
-  re-introduced as deprecation aliases — the integration has no users, and
-  migration shims are forbidden by the baseline's ground rules.
-- The attribute surface is fixed and small. New attributes require a
-  `quality_scale.yaml` evidence update, a `strings.json` translation key, and
-  a test that pins the new key. Adding attributes ad-hoc is a regression.
+The active roadmap (Decision S4) settled on **two** per-station sensors, both
+instantiated from the one `IrishRailDueTrainSensor` class:
+
+- `next_train_due` — the next train's expected arrival (TIMESTAMP).
+- `following_train_due` — the following train's expected arrival (TIMESTAMP),
+  `unknown` when fewer than two trains are scheduled.
+
+Both are created in `sensor.py`'s `async_setup_entry`. The dropped
+`next_train_destination` and `next_train_delay` sensors are not re-introduced
+as deprecation aliases — the integration has no users, and migration shims are
+forbidden by the baseline's ground rules. Do not add a third per-station
+sensor; new arrival detail goes on an existing sensor's
+`extra_state_attributes`.
+
+- The attribute surface is fixed and small (7 keys on `next_train_due`, 5 on
+  `following_train_due`). New attributes require a `quality_scale.yaml`
+  evidence update, a `strings.json` translation key, and a test that pins the
+  new key. Adding attributes ad-hoc is a regression.
 
 ### 3.5 Quality scale discipline
 
@@ -236,11 +246,15 @@ must not weaken it:
 
 ### 3.6 Test discipline
 
-The 100% line coverage gate does not drop. New tests are added only when a
-refactor introduces a new branch; the streamline plan calls for no new
-features and so should need few new tests. The test phase may reduce the
-*count* of tests by merging duplicate cases, but the *coverage* of the source
-must not regress.
+The 100% line coverage gate does not drop. Coverage is the floor, not the
+trigger: a new test is required whenever **behaviour changes or a roadmap
+acceptance item is met** — including a behaviour fix that adds no new branch
+(the changed line may already be covered, but the corrected behaviour is not
+yet pinned). New branches, new entities, new config-flow branches and
+behaviour fixes all need tests. The streamline plan calls for no new
+features and so should need few new tests beyond those. The test phase may
+reduce the *count* of tests by merging duplicate cases, but the *coverage* of
+the source must not regress.
 
 When a refactor moves code:
 - Existing tests follow the move (import path updates).
@@ -368,13 +382,17 @@ even if ruff/mypy/coverage are green.**
    stops-matrix rebuild implementation.
 6. **`RuntimeRegistry` discipline.** Reads and writes to `hass.data[DOMAIN]`
    go through the registry; its keys are private to `_runtime.py`.
-7. **Sensor surface stable.** No new per-station sensor. New arrival detail
-   goes on the existing sensor's `extra_state_attributes` and requires the
-   full attribute pipeline (string translation, test, evidence note).
+7. **Sensor surface stable.** The two per-station sensors
+   (`next_train_due`, `following_train_due`) are the fixed surface — no third
+   per-station sensor. New arrival detail goes on an existing sensor's
+   `extra_state_attributes` and requires the full attribute pipeline (string
+   translation, test, evidence note).
 8. **`docs/architecture.md` updated alongside code** in the same commit when
    an invariant changes.
-9. **Test discipline.** No tests pinning prose; the 100% coverage gate is
-   preserved; test *count* may drop but test *coverage* may not regress.
+9. **Test discipline.** No tests pinning prose; every behaviour change and
+   roadmap acceptance item is pinned by a test (including fixes that add no
+   new branch); the 100% coverage gate is preserved; test *count* may drop but
+   test *coverage* may not regress.
 10. **No new public attributes on existing classes** beyond
     `RuntimeRegistry`.
 

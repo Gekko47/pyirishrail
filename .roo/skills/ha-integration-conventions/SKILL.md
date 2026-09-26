@@ -346,7 +346,10 @@ Verify each field against the current manifest documentation before finalizing:
 https://developers.home-assistant.io/docs/creating_integration_manifest/
 
 Current values: `quality_scale: platinum`, `iot_class: cloud_polling`,
-`integration_type: service`, `version: 0.4.0`.
+`integration_type: service`. The `version` field is release metadata
+owned by the maintainer at release time — read it from
+`manifest.json` rather than copying it from here, so this skill cannot
+go stale.
 
 ### Dependencies
 
