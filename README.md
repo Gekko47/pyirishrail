@@ -80,9 +80,9 @@ station list is fetched live.
 
 Reconfiguring the direction changes the entry's identity: combinations
 another entry already monitors are rejected, the previous direction's
-two sensors and device are removed from the registries, and the
-original entity IDs return (with names and areas kept) if you switch
-back.
+two sensors and device are removed from the registries, and your
+entity names, icons and areas are carried over to the new entities.
+Entity IDs are regenerated because they derive from the new unique ID.
 
 ## Sensors
 
@@ -94,8 +94,8 @@ station (and direction filter) with two sensors:
 | `next_train_due` | `SensorDeviceClass.TIMESTAMP` (datetime) | The API's expected arrival of the next train; HA's Time card shows "in 5 min" / "5 min ago" automatically |
 | `following_train_due` | `SensorDeviceClass.TIMESTAMP` (datetime) | The API's expected arrival of the following train; `unknown` when fewer than two trains are scheduled |
 
-Train type (DART, Suburban, Intercity, etc.) lives on the device's
-`extra_state_attributes` — no separate dedicated entity.
+Only the fields listed below are published as attributes; train type
+is not currently exposed, and there is no separate dedicated entity.
 
 ### `next_train_due` attributes
 
@@ -107,7 +107,7 @@ Train type (DART, Suburban, Intercity, etc.) lives on the device's
 | `train_code` | Irish Rail identifier of the next train. |
 | `api_reachable` | `True` when readable. See [Behaviour](#behaviour) for how this separates "no trains scheduled" from "API unreachable". |
 | `expected_arrival` | ISO 8601 string mirroring the `next_train_due` state. |
-| `time_until_arrival` | Whole-second countdown to `next_train_due`; recomputed on every read. |
+| `time_until_arrival` | Whole-second countdown to `next_train_due`, recomputed on each poll (not continuously between polls). |
 
 ### `following_train_due` attributes
 
@@ -134,7 +134,6 @@ station entries are configured:
 
 The `irish_rail.rebuild_stops_matrix` service is the automation-facing
 alias of the rebuild button.
-| `scheduled_arrival_time`, `scheduled_departure_time` | Timetabled times at the monitored station. |
 
 Sensors ship with domain-appropriate default icons defined in the integration's `icons.json`; override any icon per entity from the UI as usual.
 
@@ -142,15 +141,21 @@ Sensors ship with domain-appropriate default icons defined in the integration's 
 
 ### Departure alert
 
-Notify when the next train is due within 10 minutes on weekdays:
+Notify when the next train is due within 10 minutes on weekdays.
+
+`next_train_due` is a TIMESTAMP sensor, so a `numeric_state` trigger
+cannot compare it to a number; use the `time_until_arrival` attribute
+with a template trigger instead:
 
 ```yaml
 - alias: "Irish Rail - time to leave"
   mode: single
   triggers:
-    - trigger: numeric_state
-      entity_id: sensor.dublin_pearse_northbound_next_train_due
-      below: 10
+    - trigger: template
+      value_template: >-
+        {{ states('sensor.dublin_pearse_northbound_next_train_due')
+           | float(9999) < 600 }}
+      for: "00:01:00"
   conditions:
     - condition: time
       weekday: [mon, tue, wed, thu, fri]
@@ -161,11 +166,14 @@ Notify when the next train is due within 10 minutes on weekdays:
         message: >-
           The {{ state_attr('sensor.dublin_pearse_northbound_next_train_due',
           'direction') }} service departs in about
-          {{ states('sensor.dublin_pearse_northbound_next_train_due') }}
-          minutes.
+          {{ (state_attr('sensor.dublin_pearse_northbound_next_train_due',
+          'time_until_arrival') | int(0) / 60) | round(1) }} minutes.
         data:
           tag: irish-rail-departure
 ```
+
+The attribute is recomputed on each poll (the default interval is 60 s),
+so the countdown is accurate to within one poll rather than live.
 
 ### Following train alert
 
@@ -175,18 +183,20 @@ Notify when the following train is due within 15 minutes:
 - alias: "Irish Rail - following train approaching"
   mode: single
   triggers:
-    - trigger: numeric_state
-      entity_id: sensor.dublin_pearse_northbound_following_train_due
-      below: 15
+    - trigger: template
+      value_template: >-
+        {{ as_datetime(states('sensor.dublin_pearse_northbound_following_train_due'))
+           | as_timestamp | as_local
+           | float(0) > (as_timestamp(now()) + 900) }}
+      for: "00:01:00"
   actions:
     - action: notify.mobile_app_phone
       data:
         title: "Following train soon"
         message: >-
-          The following {{ state_attr('sensor.dublin_pearse_northbound_following_train_due',
-          'direction') }} service arrives in about
-          {{ states('sensor.dublin_pearse_northbound_following_train_due') }}
-          minutes.
+          The following
+          {{ state_attr('sensor.dublin_pearse_northbound_following_train_due',
+          'direction') }} service arrives shortly.
         data:
           tag: irish-rail-following
 ```
@@ -274,21 +284,12 @@ so it is safe to attach to bug reports.
 | *No train data received for {station}* repair issue | Persistent empty responses during service hours may indicate an API or schedule-data change. Check whether other stations report data, reload the entry, and if it persists remove/re-add it or update the integration. Clears itself once real trains return. |
 | `binary_sensor.status` is `off` | The Irish Rail API itself is unreachable. Sensors may also be unavailable; check **Settings → System → Logs** for the probe's reason. |
 
-## Remove
-
-1. **Settings → Devices & Services → Irish Rail** → click each station
-   entry → ⋮ menu → **Delete**. Removing the last station entry
-   automatically tears down the API-health probe, the stops-matrix
-   rebuild button, and the `irish_rail.rebuild_stops_matrix` service.
-2. Optional: delete `irish_rail.stops_matrix.json` from HA storage to
-   drop the per-install learned matrix. Keep the bundled
-   `stops_matrix.seed.json` inside the integration folder.
-3. For a HACS install, remove the **Irish Rail** entry from HACS.
-
 ## Underlying API client
 
-The async client lives in `custom_components/irish_rail/pyirishrail/`
-as an internal, framework-agnostic module. It uses Python's standard
+The async client lives in `custom_components/irish_rail/client.py`
+as an internal, framework-agnostic module (with `request_gate.py`,
+`models.py`, `errors.py` and `lib_const.py` alongside it). It uses
+Python's standard
 library `xml.etree.ElementTree` for parsing (an explicit pre-parse
 DTD/entity guard rejects any hostile DTD before the parser is
 invoked), accepts an injected `aiohttp.ClientSession`, raises a

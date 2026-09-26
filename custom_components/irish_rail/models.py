@@ -24,14 +24,20 @@ class Station:
 
 @dataclass(frozen=True)
 class TrainDueTime:
-    """Represents a train due at a station."""
+    """Represents a train due at a station.
+
+    ``due_in_mins`` is ``None`` when the API's ``Duein`` was missing or
+    unparseable, so consumers fall back to ``expected_arrival_time``
+    instead of treating the service as due right now. See
+    docs/architecture.md §15.
+    """
 
     code: str
     origin: str
     destination: str
     origin_time: str
     destination_time: str
-    due_in_mins: int
+    due_in_mins: int | None
     late_mins: int
     expected_arrival_time: str
     expected_departure_time: str

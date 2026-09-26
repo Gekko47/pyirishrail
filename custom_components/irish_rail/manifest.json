@@ -4,11 +4,11 @@
   "codeowners": ["@Gekko47"],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/Gekko47/pyirishrail/blob/master/README.md",  
+  "documentation": "https://github.com/Gekko47/pyirishrail/blob/master/README.md",
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/Gekko47/pyirishrail/issues",
   "quality_scale": "platinum",
   "requirements": [],
-  "version": "0.4.0"
+  "version": "0.5.0"
 }

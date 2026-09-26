@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -105,8 +105,8 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
         self._applied_entry_data = dict(config_entry.data)
 
         # Adaptive-backoff state. Initialized before super().__init__()
-        # because the base class assigns update_interval, which flows
-        # through the setter below.
+        # because the base class assigns update_interval through the
+        # property below.
         self._configured_interval = resolve_scan_interval(config_entry)
         self._failure_streak = 0
 
@@ -128,12 +128,11 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
         self._last_learn_time: datetime | None = None
         self._pending_stops: set[str] = set()
 
-    @property
-    def update_interval(self) -> timedelta:
+    def _effective_interval(self) -> timedelta:
         """Return the effective (possibly backed-off) polling interval.
 
-        See docs/architecture.md §9 for the adaptive-backoff shape and
-        why the configured interval applies whenever the last refresh
+        See docs/architecture.md §9 for the adaptive-backoff shape
+        and why the configured interval applies whenever the last refresh
         succeeded.
         """
         if self._failure_streak == 0:
@@ -144,43 +143,41 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
             interval = min(interval * BACKOFF_MULTIPLIER, MAX_BACKOFF_INTERVAL)
         return interval
 
-    @update_interval.setter
-    def update_interval(self, value: timedelta) -> None:
-        """Store a newly configured base interval (e.g. options updates).
+    def async_set_configured_interval(self, value: timedelta) -> None:
+        """Store a new base interval and re-arm the scheduler.
 
-        Delegates to the base-class setter so its internal scheduler
-        bookkeeping stays in sync; the getter keeps deriving the
-        effective backed-off interval from ``_configured_interval``.
-        See docs/architecture.md §9.
+        Called by the update listener for option-only changes. Assigns
+        through the base class' public ``update_interval`` property, whose
+        setter keeps the scheduler's own seconds cache in sync, so no
+        private state is mirrored here. See docs/architecture.md §9.
         """
         self._configured_interval = value
-        # ``fset`` is invisible to mypy's class-level property view.
-        DataUpdateCoordinator.update_interval.fset(self, value)  # type: ignore[attr-defined]
+        self._async_apply_effective_interval()
 
     @property
     def failure_streak(self) -> int:
         """Number of consecutive failed refreshes driving the backoff."""
         return self._failure_streak
 
-    @callback
-    def _schedule_refresh(self) -> None:
-        """Schedule a refresh using the effective (backed-off) interval.
+    def _async_apply_effective_interval(self) -> None:
+        """Push the current effective interval onto HA's scheduler.
 
-        Mirrors the property into the base class' cached seconds value
-        before delegating; see docs/architecture.md §9.
+        The base class derives its seconds cache from the public
+        ``update_interval`` property, so assigning it re-arms the timer
+        without touching private attributes.
         """
-        self._update_interval_seconds = self.update_interval.total_seconds()
-        super()._schedule_refresh()
+        self.update_interval = self._effective_interval()
 
     def _register_refresh_failure(self) -> None:
-        """Advance the consecutive-failure streak driving adaptive backoff."""
+        """Advance the consecutive-failure streak and widen the schedule."""
         self._failure_streak += 1
+        self._async_apply_effective_interval()
         _LOGGER.debug(
             "Station %s (%s) poll failed (%d consecutive); backing off to %s",
             self.station_name,
             self.station_code,
             self._failure_streak,
-            self.update_interval,
+            self._effective_interval(),
         )
 
     def requires_reload(self) -> bool:
@@ -344,6 +341,7 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
                 self._configured_interval,
             )
             self._failure_streak = 0
+            self._async_apply_effective_interval()
 
         # Keep only the next two trains: the devices show the next train due
         # and the following train due. The API's look-ahead window can return

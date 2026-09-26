@@ -126,6 +126,11 @@ uv.lock
 # local search-ignore directory
 .ignore/
 
+# Tool caches: transient, never committed.
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
 # Roo / Zoo agent state. The skills and rules in .roo/ are committed
 # deliberately (they are the project's agent guidance); only the
 # tool's own transient state is ignored.

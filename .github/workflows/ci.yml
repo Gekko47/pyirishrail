@@ -50,7 +50,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install \
             pytest pytest-asyncio pytest-cov aresponses \
-            pytest-homeassistant-custom-component \
+            "pytest-homeassistant-custom-component==0.13.290" \
             "ruff>=0.16" mypy
 
       # D4: the stale-patch-target grep guard. Phase 1 of the v0.3.0
@@ -71,6 +71,25 @@ jobs:
             grep -Pnz 'patch\s*\(\s*["\x27]pyirishrail\.' tests/components/irish_rail
             exit 1
           fi
+
+      # Structural guard for the RuntimeRegistry invariant
+      # (docs/architecture.md §11): _runtime.py is the only module allowed
+      # to read or write hass.data[DOMAIN]. Every other module goes through
+      # the registry's session-key accessors. This makes the invariant
+      # enforced by the build rather than by convention.
+      - name: Guard the hass.data[DOMAIN] single-writer invariant
+        run: |
+          offenders=$(grep -rnE 'hass\.data(\.setdefault\(|\[)[^)]*DOMAIN' \
+            custom_components/irish_rail \
+            --include='*.py' \
+            | grep -v '_runtime\.py' \
+            | grep -vE ':\s*#' || true)
+          if [ -n "$offenders" ]; then
+            echo "::error::hass.data[DOMAIN] accessed outside _runtime.py; use the registry accessors"
+            echo "$offenders"
+            exit 1
+          fi
+          echo "OK: hass.data[DOMAIN] is only touched by _runtime.py"
 
       - name: Ruff lint (integration + tests)
         run: ruff check custom_components/irish_rail tests/components/irish_rail scripts

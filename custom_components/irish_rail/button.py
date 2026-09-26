@@ -40,6 +40,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from ._runtime import (
     claim_service_entities,
     get_health_monitor,
+    get_session_value,
+    pop_session_value,
+    set_session_value,
 )
 from .client import IrishRailClient
 from .const import (
@@ -208,9 +211,7 @@ class IrishRailRebuildStopsMatrixButton(ButtonEntity):
                 )
             finally:
                 self.running = False
-                self.hass.data.setdefault(DOMAIN, {})[GLOBAL_LAST_REBUILD_KEY] = (
-                    self.last_result
-                )
+                set_session_value(self.hass, GLOBAL_LAST_REBUILD_KEY, self.last_result)
                 self._write_state_if_added()
 
     @callback
@@ -276,8 +277,7 @@ async def async_setup_entry(
 
     # Keep a session-wide handle so the service alias can reach the same
     # guarded job even though providership pins the entity to one entry.
-    domain_data = hass.data.setdefault(DOMAIN, {})
-    domain_data[GLOBAL_REBUILD_ENTITY_KEY] = entity
+    set_session_value(hass, GLOBAL_REBUILD_ENTITY_KEY, entity)
 
     # Drop the service/handle and dismiss any leftover notification when
     # this entry is removed, so a re-add (or a sibling entry's claim)
@@ -293,8 +293,8 @@ async def async_setup_entry(
                 pass
             entity._rebuild_task = None
 
-        if domain_data.get(GLOBAL_REBUILD_ENTITY_KEY) is entity:
-            domain_data.pop(GLOBAL_REBUILD_ENTITY_KEY, None)
+        if get_session_value(hass, GLOBAL_REBUILD_ENTITY_KEY) is entity:
+            pop_session_value(hass, GLOBAL_REBUILD_ENTITY_KEY)
         if hass.services.has_service(DOMAIN, SERVICE_REBUILD):
             hass.services.async_remove(DOMAIN, SERVICE_REBUILD)
         _dismiss_notification(hass)
@@ -303,7 +303,7 @@ async def async_setup_entry(
 
     async def _async_handle_rebuild_service(call: ServiceCall) -> None:
         """Forward a service call onto the live button instance."""
-        button: Any | None = domain_data.get(GLOBAL_REBUILD_ENTITY_KEY)
+        button = get_session_value(hass, GLOBAL_REBUILD_ENTITY_KEY)
         if button is None:
             _LOGGER.warning(
                 "No Irish Rail rebuild button is currently loaded; service call ignored"

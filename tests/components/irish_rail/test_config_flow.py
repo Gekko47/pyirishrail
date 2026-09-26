@@ -24,6 +24,7 @@ from custom_components.irish_rail.const import (
     CONF_STOPS_AT,
     DOMAIN,
 )
+from custom_components.irish_rail.coordinator import resolve_stops_at
 from custom_components.irish_rail.errors import IrishRailConnectionError
 from custom_components.irish_rail.models import (
     Station,
@@ -862,7 +863,12 @@ async def test_reconfigure_flow_reload_failure_still_updates_data(
 async def test_options_flow_updates_interval(
     hass: HomeAssistant,
 ) -> None:
-    """Test valid option values are stored and applied to the coordinator."""
+    """Test valid option values are stored and applied to the coordinator.
+
+    The entry carries no ``stops_at`` filter in ``entry.data``, so there is
+    no redundant data-level value to defer to and the key is still written
+    explicitly as ``None``.
+    """
     entry = await _setup_entry(hass)
 
     with patch(
@@ -877,14 +883,85 @@ async def test_options_flow_updates_interval(
             result["flow_id"], {"scan_interval": 120}
         )
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
-    assert entry.options == {
-        "scan_interval": 120,
-        CONF_STOPS_AT: None,
-    }
+    assert entry.options == {"scan_interval": 120, CONF_STOPS_AT: None}
 
     # The update listener applies the interval to the live coordinator.
     coordinator = entry.runtime_data.coordinator
     assert coordinator.update_interval == timedelta(seconds=120)
+
+
+async def test_options_interval_change_preserves_data_level_stops_at(
+    hass: HomeAssistant,
+) -> None:
+    """Changing only the scan interval must not drop a setup-time filter.
+
+    ``resolve_stops_at`` reads options before ``entry.data``, so writing an
+    options value for a filter the user never touched would silently shadow
+    (and here, drop) the data-level filter.
+    """
+    entry = await _setup_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, CONF_STOPS_AT: "Bray"}
+    )
+
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
+        return_value=[_mock_station()],
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"scan_interval": 120}
+        )
+
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert CONF_STOPS_AT not in entry.options
+    assert resolve_stops_at(entry) == "Bray"
+
+
+async def test_options_explicit_stops_at_change_overrides_data_level_value(
+    hass: HomeAssistant,
+) -> None:
+    """An explicit filter change still wins over the data-level value."""
+    entry = await _setup_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, CONF_STOPS_AT: "Bray"}
+    )
+
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
+        return_value=[_mock_station()],
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"scan_interval": 60, "stops_at": "Dublin Pearse"}
+        )
+
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_STOPS_AT] == "Dublin Pearse"
+    assert resolve_stops_at(entry) == "Dublin Pearse"
+
+
+async def test_options_all_selection_still_clears_data_level_filter(
+    hass: HomeAssistant,
+) -> None:
+    """Choosing "All" against a data-level filter is a real change."""
+    entry = await _setup_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, CONF_STOPS_AT: "Bray"}
+    )
+
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
+        return_value=[_mock_station()],
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"scan_interval": 60, "stops_at": "All"}
+        )
+
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_STOPS_AT] is None
+    assert resolve_stops_at(entry) is None
 
 
 async def test_options_flow_rejects_out_of_range_values(
@@ -1034,6 +1111,69 @@ async def test_options_flow_stops_at_all_clears_filter(
 
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert entry.options[CONF_STOPS_AT] is None
+
+
+async def test_stops_at_dropdown_keeps_stored_value_absent_from_station_list(
+    hass: HomeAssistant,
+) -> None:
+    """A stored filter missing from the fetched list stays selectable.
+
+    Without the merge a transiently-short station list renders a select
+    whose default is not one of its options, and submitting it drops the
+    filter silently.
+    """
+    entry = _add_entry_with_options(hass, {CONF_STOPS_AT: "Bray"})
+
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
+        return_value=[_mock_station()],
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        schema = data_schema.schema
+        stops_at_key = next(
+            k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
+        )
+        assert "Bray" in schema[stops_at_key].container
+        assert stops_at_key.default() == "Bray"
+
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"scan_interval": 60, "stops_at": "Bray"},
+        )
+
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_STOPS_AT] == "Bray"
+    assert resolve_stops_at(entry) == "Bray"
+
+
+async def test_stops_at_dropdown_free_text_fallback_keeps_stored_value(
+    hass: HomeAssistant,
+) -> None:
+    """The free-text fallback still pre-fills the stored filter."""
+    entry = _add_entry_with_options(hass, {CONF_STOPS_AT: "Bray"})
+
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
+        side_effect=IrishRailConnectionError,
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        schema = data_schema.schema
+        stops_at_key = next(
+            k for k in schema if getattr(k, "schema", None) == CONF_STOPS_AT
+        )
+        assert stops_at_key.default() == "Bray"
+
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"scan_interval": 60, "stops_at": "Bray"},
+        )
+
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_STOPS_AT] == "Bray"
 
 
 async def test_options_flow_stops_at_free_text_fallback_on_connection_error(
@@ -1299,6 +1439,81 @@ async def test_reconfigure_direction_change_drops_old_entities_and_device(
         is not None
     )
     assert _no_deprecation_warning(caplog)
+
+
+async def test_reconfigure_preserves_entity_customisations(
+    hass: HomeAssistant,
+) -> None:
+    """A direction reconfigure carries the user's customisations across.
+
+    The old identity's rows are still removed (the entity IDs have to
+    change), but the name, icon and area are re-applied to the
+    re-created entities instead of being lost.
+    """
+    entry = await _setup_entry(hass)
+    ent_reg = entity_registry.async_get(hass)
+
+    before = {
+        str(registry_entry.unique_id).removeprefix("PEARS_northbound_"): (
+            registry_entry.entity_id
+        )
+        for registry_entry in entity_registry.async_entries_for_config_entry(
+            ent_reg, entry.entry_id
+        )
+        if str(registry_entry.unique_id).startswith("PEARS_northbound_")
+    }
+    assert set(before) == {"next_train_due", "following_train_due"}
+
+    ent_reg.async_update_entity(
+        before["next_train_due"],
+        name="My train",
+        icon="mdi:star",
+    )
+
+    with (
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.async_get_all_stations",
+            return_value=[_mock_station()],
+        ),
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
+            return_value=_both_direction_trains(),
+        ),
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.async_get_station_directions",
+            return_value=["Northbound", "Southbound"],
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_RECONFIGURE,
+                "entry_id": entry.entry_id,
+            },
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"direction": "Southbound"}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert entry.unique_id == "PEARS_southbound"
+
+    after = {
+        str(registry_entry.unique_id).removeprefix("PEARS_southbound_"): (
+            registry_entry
+        )
+        for registry_entry in entity_registry.async_entries_for_config_entry(
+            ent_reg, entry.entry_id
+        )
+        if str(registry_entry.unique_id).startswith("PEARS_southbound_")
+    }
+    assert set(after) == {"next_train_due", "following_train_due"}
+    # The customisation survived the identity change.
+    assert after["next_train_due"].name == "My train"
+    assert after["next_train_due"].icon == "mdi:star"
+    # An entity that was never customised stays on the translated default.
+    assert after["following_train_due"].name is None
 
 
 async def test_direction_flip_back_restores_prior_customization(

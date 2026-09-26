@@ -4,6 +4,156 @@ All notable changes to this project are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and versioning follows [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] — 2026-09-05
+
+Correctness release driven by a full audit of the integration against
+the Home Assistant integration contract. Phase F of the streamline
+roadmap; the plan, per-increment status and the five decisions taken
+during execution are recorded in
+[`.cline/streamline-roadmap.md`](.cline/streamline-roadmap.md).
+
+**The integration has no active users**, so this release carries no
+config-entry migration. Two behaviour changes are user-visible and are
+called out under **Fixed** below.
+
+### Fixed
+
+- **The "stops at" filter was silently lost on any options save.**
+  `resolve_stops_at` reads `entry.options` before `entry.data`, and the
+  options flow always wrote `stops_at` — normalising "All" to `None` —
+  even when the user had only changed the scan interval. A filter
+  configured during setup was therefore cleared the first time anyone
+  opened **Configure**. The key is now omitted only when `entry.data`
+  already supplies that exact value, so an unrelated save is
+  non-destructive while an explicit "All" still clears the filter.
+- **A stored filter could vanish from the options dropdown.** The
+  `stops_at` options were built purely from the live station list, so a
+  transient station-list fetch (or any list that omitted the stored
+  value) rendered a select whose default was not one of its options;
+  submitting dropped the filter. The stored value is now merged into
+  the options, mirroring what the direction step already did.
+- **A malformed `Duein` reported the train as "due now".** The value
+  was coerced to `0`, and `due_in_mins` was typed `int`, so the
+  documented `HH:MM` fallback could never run. `TrainDueTime.due_in_mins`
+  is now `int | None`; a missing or unparseable value resolves against
+  the supplied `Exparrival` — interpreted as **Irish civil time**
+  (`Europe/Dublin`) rather than UTC, which the previous draft of that
+  path would have done an hour wrong during IST.
+- **A direction reconfigure destroyed entity customisations.** Entity
+  names, icons and areas were deleted with the old identity's registry
+  rows and could not be recovered. They are now captured before the
+  purge and re-applied to the re-created entities. Entity IDs are still
+  regenerated (they derive from the new unique ID) — the README claim
+  that the original IDs "return with names and areas kept" was
+  inaccurate and has been corrected.
+- **The health probe could keep drawing from a discarded gate.** A
+  full unload releases the shared `RequestGate` but retains the
+  `ConnectivityMonitor`, which was never re-pointed, so the 5-minute
+  probe stopped being paced alongside live polling after a reload. The
+  monitor now rebinds the incoming entry's client when no entry owns it.
+
+### Changed
+
+- **`hass.data[DOMAIN]` has a single writer.** The providership claim,
+  the session-scoped keys and the stops-store handle all went through
+  `_runtime.py` accessors, matching what `docs/architecture.md` §11
+  already claimed. A new **CI grep gate** fails the build if any other
+  module touches that mapping, so the invariant is structural rather
+  than conventional.
+- **The coordinator no longer shadows a base-class property.** It
+  overrode `DataUpdateCoordinator.update_interval`, called the base
+  property's `fset` behind a `# type: ignore`, and wrote the private
+  `_update_interval_seconds`; it now assigns the real public property,
+  whose setter already maintains HA's own scheduler cache. This
+  removes the last `# type: ignore` from the source (making the
+  `strict_typing` quality-scale claim true) and the forward-compat
+  coupling to two private internals.
+- **The two load-bearing `assert`s became explicit errors.** The
+  entity base class formatted `config_entry.unique_id` *before*
+  asserting it was non-`None`, so a missing ID produced a
+  `"None_next_train_due"` unique ID and a `(DOMAIN, None)` device
+  identifier instead of failing.
+- **The stops-matrix rebuild bounds its movement cache.** A full sweep
+  retains every movement row for the whole run; it is now capped like
+  the client's own cache (other dates evicted first, then oldest), which
+  matters on the SD-card and Pi hosts this integration targets.
+- **CI pins `pytest-homeassistant-custom-component`.** The plugin
+  tracks Home Assistant core versions strictly, so an unpinned install
+  could break CI on any release day with no code change.
+- **The `hacs.json` Home Assistant floor is `2026.8.0`** rather than
+  the exact tested patch, since the field is a minimum.
+
+### Added
+
+- **`tests/components/irish_rail/test_quality_scale.py`** resolves
+  every evidence pointer in `quality_scale.yaml` — file names, symbol
+  references and the README headings the `docs_*` rules cite — so
+  stale evidence fails the build instead of a review. It immediately
+  caught three further stale citations.
+- **Request-gate churn coverage:** a 200-cycle admit/cancel loop
+  asserting the in-flight counter never leaks, never goes negative and
+  never exceeds `max_concurrent`, plus a repeat-cancellation test.
+- **Lifecycle cleanup verification:** `verify_cleanup` on the setup /
+  unload / reload tests, so leaked timers and un-awaited tasks fail
+  loudly.
+- **Log-volume pinning:** one debug line per failed poll, exactly one
+  info line on the transition back to success, and no repeat
+  announcement on subsequent successes.
+
+### Tests
+
+- The scheduler test that compared `loop.call_at` against wall-clock
+  time with a ±1 s tolerance is replaced by an assertion on the public
+  `update_interval` — the value HA actually arms its timer from — so it
+  cannot flake on a loaded runner.
+- `verify_cleanup` and the per-poll logging assertions close the two
+  gaps the audit identified as genuinely unpinned.
+
+### Fixed (pre-existing defects found while executing the plan)
+
+- **`quality_scale.yaml` did not parse as YAML.** An unquoted
+  `requirements:` inside the `async_dependency` comment broke the flow
+  mapping, so the file proving the Platinum claim was unreadable by a
+  standard parser. Nothing had been validating it.
+- **`action_setup` was marked `exempt`** with the justification "no
+  service actions to register", while `button.py` registers
+  `irish_rail.rebuild_stops_matrix`. Corrected to `done` with a
+  pointer.
+- Five more evidence rows pointed at code deleted in 0.4.0
+  (`next_train_delay`, `next_train_destination`, the `num_trains`
+  option) or at README sections that never existed. All corrected.
+
+### Documentation
+
+- Removed the reference to the `pyirishrail/` package deleted in
+  0.4.0, the duplicate **Removal** section, an orphaned table row, and
+  the claim that train type is exposed as an attribute (it is not).
+- **Both automation examples were rewritten.** They used
+  `numeric_state` triggers with `below:` against a **TIMESTAMP**
+  sensor, which never fires; they are now template triggers. The
+  "recomputed on every read" claim for `time_until_arrival` was also
+  corrected — it is recomputed per poll, not continuously.
+- `docs/architecture.md` §4 already documented the XML guard's CDATA
+  false-positive accurately and was verified rather than edited.
+
+### Gates
+
+- All gates green: **296 passed** (up from 267), **100.00 % coverage**,
+  ruff clean, strict mypy clean across 38 files, project-internal
+  reference gate clean.
+
+### Known limitations
+
+- The narrow window in which a caller cancelled *while* the request
+  gate's slot release is blocked on its own lock remains un-hardened.
+  It is documented in `docs/architecture.md` §3 and covered by the
+  churn test, but no production change was made: the race could not be
+  reproduced deterministically, and the existing cancellation paths are
+  well covered.
+- `hassfest` and the HACS validator run only in CI; the pinned
+  `pytest-homeassistant-custom-component` version should be confirmed
+  against the first CI run.
+
 ## [0.4.0] — 2026-09-04
 
 Maintainability release. The integration has no active users, so

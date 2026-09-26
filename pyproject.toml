@@ -31,6 +31,9 @@ exclude = [
 module = [
     "pytest_homeassistant_custom_component.*",
     "aresponses",
+    # PyYAML ships no type stubs; test_quality_scale.py validates the
+    # parsed payload explicitly rather than suppressing the check.
+    "yaml",
 ]
 ignore_missing_imports = true
 

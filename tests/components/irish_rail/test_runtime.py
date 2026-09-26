@@ -566,3 +566,75 @@ async def test_last_unload_drops_session_scoped_keys(
     assert STOPS_STORE_INSTANCE not in hass.data[DOMAIN]
     get_stops_store(hass)
     assert STOPS_STORE_INSTANCE in hass.data[DOMAIN]
+
+
+# ── Health-monitor client rebinding across a full unload ─────────────────────
+
+
+async def test_monitor_rebinds_client_after_full_unload_reload(
+    hass: HomeAssistant,
+) -> None:
+    """A reload re-points the probe at the new client's shared gate.
+
+    A full unload drops the shared gate but keeps the monitor object, so
+    without the re-point the probe would keep drawing its rate budget from
+    the discarded gate and stop being paced alongside live polling.
+    """
+    entry = _add_entry(hass)
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
+        new=AsyncMock(return_value=[]),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        first_monitor = get_health_monitor(hass)
+        assert first_monitor is not None
+        first_client = first_monitor.client
+
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+        # The gate is released at zero entries but the monitor survives.
+        assert get_runtime(hass) is not None
+        released_gate = get_request_gate(hass)
+        assert released_gate is None
+
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    rebound = get_health_monitor(hass)
+    assert rebound is not None
+    # The same monitor object is reused ...
+    assert rebound is first_monitor
+    # ... but now talks through the newly created gate.
+    assert rebound.client is not first_client
+    assert get_request_gate(hass) is rebound.client._gate
+
+
+async def test_monitor_does_not_steal_client_from_loaded_entry(
+    hass: HomeAssistant,
+) -> None:
+    """A second loaded entry must not repoint a live monitor's client.
+
+    Rebinding is only safe when no entry owns the monitor; while the first
+    entry is loaded its client is the one pacing live traffic.
+    """
+    first = _add_entry(hass)
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
+        new=AsyncMock(return_value=[]),
+    ):
+        assert await hass.config_entries.async_setup(first.entry_id)
+        await hass.async_block_till_done()
+
+        monitor = get_health_monitor(hass)
+        assert monitor is not None
+        owner_client = monitor.client
+
+        second = _add_entry(hass, unique_id="PEARS_southbound")
+        assert await hass.config_entries.async_setup(second.entry_id)
+        await hass.async_block_till_done()
+
+    assert get_health_monitor(hass) is monitor
+    assert monitor.client is owner_client

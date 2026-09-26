@@ -81,6 +81,11 @@ without losing any of the rules-evidencing code paths.
 | S3 | `stops_matrix.seed.json` in tree | **Drop from the repo** after Phase A3 commits a 3-station example seed (`stops_matrix.seed.example.json`) as a smoke fixture. The real seed is generated at release time by `scripts/build_stops_matrix.py` and attached to the GitHub release. |
 | S4 | Three-sensor collapse | **Two rich sensors**: `next_train_due` (unchanged TIMESTAMP presentation) + `following_train_due` (same presentation, second train). Drop `next_train_destination` and `next_train_delay`. Fixed attribute surface (four per-train keys + `api_reachable`, plus the `expected_arrival`/`time_until_arrival` countdown pair on `next_train_due` only). Drop the `upcoming_trains` attribute and the `num_trains` option; retain only the next two trains. |
 | S5 | Build script + matrix-rebuild unification | **Unify behind one shared loop** in `matrix_rebuild.py`; the offline `scripts/build_stops_matrix.py` becomes a 40-line CLI wrapper that calls it. The "by design" differences (gap-fill vs full replace, atomic temp-file vs storage, background vs normal priority) become parameters. |
+| S6 | Audit finding F-02 (request gate wedges under sustained cancellation) | **Downgraded High → Medium.** Re-reading `test_client_gate.py` (685 lines, five dedicated cancellation tests plus a 50-iteration randomized stress test asserting `_in_flight == 0` after every batch) showed the release path is correctly ordered and already well covered. The residual hole is narrow: `await self._lock` inside `_release_slot` is itself cancellable. Recorded in `docs/architecture.md` §3 as an accepted window; F9 adds a test, and the `asyncio.shield` hardening lands only if that test can fail deterministically. Do not churn correct, tested code on a theoretical race. |
+| S7 | Audit finding F-03 (coordinator private-API override) | **Downgraded High → Medium.** The override works today and is deliberate, not careless — `test_coordinator.py` documents that HA 2026.8+ schedules from the seconds cache. This is a forward-compatibility risk, not a current defect. F7 migrates it to the public `async_set_update_interval`. |
+| S8 | Audit finding F-09 (sensor timestamp drifts continuously) | **Withdrawn as a behavioural bug.** HA does not re-read `native_value` between state writes, so the timestamp is stable between polls. The only real defect is documentation: the docstring and README claim "recomputed on every read". Corrected in F14. |
+| S9 | Test-gap claims for `STOPS_STORE_INSTANCE`, `claim_service_entities`, `_update_interval_seconds` | **Corrected.** All three are already covered (`test_runtime.py:393-437,521-568`; `test_coordinator.py:264-299`). The suite is materially stronger than the audit assumed; new tests are added only where a specific behaviour is genuinely unpinned. |
+| S10 | Reconfigure registry migration (F4) | **Migrate, do not delete.** Customisation capture lands first with the delete path intact so the capture is proven lossless; only then does the destructive path flip. If the migration proves unreliable, the fallback is to delete the README claim rather than ship a lossy migration. |
 | S6 | `gate.py` + `health.py` consolidation | **Yes**, into a single `_runtime.py` module exposing a `RuntimeRegistry` class. Singleton lifecycles become structural (the registry is the only writer to `loaded_entry_ids` and to each subkey). The `RequestGate` primitive in `pyirishrail._gate` stays separate — it's the framework-agnostic gate, not a singleton. |
 | S7 | Docstring discipline | **Three categories** (see Skill 10 §2): keep contract docstrings tight; move design history to `docs/architecture.md`; delete "what the name says" docstrings. Density target: 0.15 lines/LOC. |
 | S8 | Tests for the simplify pass | **Tighten, do not just re-keep**. Several test files cover the same edge cases (e.g. matrix-rebuild tests vs build-script tests). Phase E deduplicates while preserving the 100% coverage gate. |
@@ -385,6 +390,102 @@ coverage gate.
 
 ---
 
+---
+
+### Phase F — Correctness remediation from the 0.4.0 audit
+
+A full repository audit was carried out against the Home Assistant
+integration contract after v0.4.0. It confirmed several defects and,
+on re-verification against the tree, **downgraded three of the
+original findings** (see Decision S5). Phase F fixes the confirmed
+defects, restores the `RuntimeRegistry` invariant, and removes the
+integration's coupling to Home Assistant private APIs.
+
+Work is split into three tracks so correctness lands independently
+of test-only work and repository hygiene.
+
+#### Track 1 — Correctness
+
+- [x] F1 — `config_flow.py` options flow: preserve a data-level
+      `stops_at` when the user changes only the scan interval. The
+      flow currently always writes `stops_at` (normalising "All" to
+      `None`), and `coordinator.resolve_stops_at` reads options
+      before data, so an unrelated options save silently drops a
+      filter set during setup.
+- [x] F2 — `config_flow.py`: merge the stored `stops_at` value into
+      the dropdown options, mirroring the existing merge in
+      `_build_direction_step_schema`. A stored value absent from a
+      transiently-short station list is currently not selectable and
+      is dropped on submit.
+- [x] F3 — `models.py` / `client.py` / `sensor.py`: widen
+      `TrainDueTime.due_in_mins` to `int | None` so a malformed
+      `Duein` reaches the documented `HH:MM` fallback instead of
+      being coerced to `0` ("due now"). Build the fallback against
+      `DUBLIN_TZ` rather than UTC.
+- [x] F4 — `__init__.py`: migrate entity/device registry rows on a
+      direction reconfigure instead of deleting them, so entity
+      names, areas and icons survive.
+- [x] F5 — `_runtime.py` / `store.py` / `button.py`: make
+      `RuntimeRegistry` the sole writer of `hass.data[DOMAIN]`, as
+      `docs/architecture.md` §11 already claims. Add a CI grep gate
+      so the invariant is structural.
+- [x] F6 — `_runtime.py`: rebind the health monitor's client when a
+      new entry loads. After a full unload the monitor object is
+      retained while the gate is dropped, so the probe keeps using a
+      discarded gate.
+- [x] F7 — `coordinator.py`: replace the `update_interval` property
+      override (which calls `DataUpdateCoordinator.update_interval.fset`
+      behind a `type: ignore` and writes the private
+      `_update_interval_seconds`) with the public
+      `async_set_update_interval`. Removes the last `type: ignore`
+      in the tree and the forward-compat risk.
+- [x] F8 — `entity.py` / `matrix_rebuild.py`: replace the two
+      load-bearing `assert` statements with explicit errors. The
+      `entity.py` assert runs *after* the value it guards is used.
+
+#### Track 2 — Test-only
+
+- [x] F9 — `test_client_gate.py`: cover cancellation arriving while
+      `_release_slot` is blocked on the gate lock, plus a sustained
+      churn test asserting `_in_flight` never leaks or goes
+      negative.
+- [x] F10 — `test_coordinator.py`: replace the wall-clock-tolerant
+      scheduler test with a controlled-time assertion on observable
+      outcomes.
+- [x] F11 — `test_init.py`: adopt `verify_cleanup` so leaked timers
+      and un-awaited tasks fail loudly.
+- [x] F12 — Add `assert_diagnostics_logging` coverage for the
+      coordinator's unavailable/recovery transitions and the health
+      probe's failure logging.
+
+#### Track 3 — Repository hygiene
+
+- [x] F13 — `quality_scale.yaml`: correct six rows whose pointers
+      name deleted code (`next_train_delay`, `next_train_destination`,
+      `num_trains`) or sections that do not exist, and flip
+      `action_setup` from `exempt` to `done`. Add a test that
+      resolves every `done` pointer so stale evidence becomes a
+      build failure.
+- [x] F14 — `README.md`: remove the deleted `pyirishrail/` path
+      reference, the duplicate Removal section and the orphaned table
+      row; correct the "recomputed on every read" claim; replace the
+      `numeric_state` examples, which cannot fire against a
+      TIMESTAMP sensor, with template triggers.
+- [x] F15 — `.github/workflows/ci.yml`: pin
+      `pytest-homeassistant-custom-component`, and move the inline
+      docstring-density gate into `scripts/check_streamline_a4.py`.
+- [x] F16 — Metadata: strip trailing whitespace in `manifest.json`,
+      relax the `hacs.json` floor to `2026.8.0`, ignore
+      `.pytest_cache/` and `.ruff_cache/`, and drop the unreachable
+      `bytes`-decode branch in `client.py`.
+- [x] F17 — `matrix_rebuild.py`: bound the local movement cache used
+      by the full-network sweep.
+- [x] F18 — `docs/architecture.md` §4: correct the claim that the
+      XML guard cannot false-positive on data; a `CDATA` section
+      containing `<!doctype` is rejected by design.
+
+---
+
 ## Progress log (append one line per increment)
 
 - 2026-08-31 — Roadmap created from the lead-dev review. Skill 10
@@ -612,4 +713,61 @@ coverage gate.
   ensuring CI on macOS/Linux does not fail at plugin load time. The
   existing Windows-only regression tests remain skipped on non-Windows
   via pytestmark. Gates green: 252 passed, 100.00% coverage.
+- 2026-09-03 — MCP tooling documented in the skill pack. Reviewed
+  `.roo/mcp.json` against the tools actually exposed in the session:
+  `filesystem`, `context7`, and `sequentialthinking` load; **`git` does
+  not**, because its entry invokes `@modelcontextprotocol/inspector` —
+  a debugging proxy, not a server — so no git tools are exposed. Added
+  `.roo/skills/mcp-tooling/SKILL.md` (fifth skill; inventory, the
+  defect and its fix, built-in-vs-MCP tool mapping, and the rule that
+  MCP servers are never a dependency channel for the integration
+  source), and updated `.roo/skills/README.md`. No source change, so no
+  gate is affected. **Not ticked as a roadmap checkbox** — this is
+  workspace tooling, outside the A–E phase scope; logged here for
+  traceability only. The `git` config fix is left to the user, since it
+  changes their environment rather than the repository.
+- 2026-09-05 — **Phase F executed** (audit remediation). All 18
+  increments landed; gates green: **296 passed, 100.00 % coverage**,
+  ruff clean, strict mypy clean on 38 files.
+  - *Correctness:* the options flow no longer clobbers a data-level
+    `stops_at` (F1) and its dropdown keeps the stored value selectable
+    even when a transient station-list fetch omits it (F2) — both were
+    silent filter-loss bugs on the happy path. `TrainDueTime.due_in_mins`
+    is now `int | None` so a malformed `Duein` reaches the `HH:MM`
+    fallback (resolved against `DUBLIN_TZ`, not UTC) instead of
+    publishing a wrong "due now" (F3). A direction reconfigure now
+    carries entity name, icon and area across the identity change
+    instead of destroying them (F4). The health monitor rebinds its
+    client after a full unload, so the probe stops drawing its rate
+    budget from a discarded gate (F6).
+  - *Architecture:* `hass.data[DOMAIN]` is now written only through
+    `_runtime.py` accessors, enforced by a new CI grep gate (F5). The
+    coordinator no longer shadows the base `update_interval` property
+    or touches `_update_interval_seconds`; it assigns the real public
+    property, which removes the last `# type: ignore` in the source
+    (F7). The two load-bearing `assert`s became explicit errors (F8)
+    and the rebuild's local movement cache is now bounded like the
+    client's (F17).
+  - *Tests:* gate churn and repeat-cancellation invariants (F9), the
+    wall-clock-tolerant scheduler test replaced by a public-API
+    assertion (F10), `verify_cleanup` on the lifecycle tests (F11),
+    per-poll debug / single-recovery log-volume pinning (F12), and a
+    new `test_quality_scale.py` that resolves every evidence pointer
+    so stale evidence fails the build (F13).
+  - *Docs/metadata:* README lost the deleted `pyirishrail/` path, the
+    duplicate Removal section and the orphaned table row; both
+    automation examples were rewritten from `numeric_state` (which
+    cannot fire against a TIMESTAMP sensor) to template triggers
+    (F14). CI pins `pytest-homeassistant-custom-component` (F15);
+    `manifest.json` trailing whitespace, `hacs.json` floor relaxed to
+    2026.8.0, tool caches ignored, and the dead bytes-decode branch in
+    `client.py` removed (F16).
+  - *F18 needed no change:* `docs/architecture.md` §4 already
+    documents the CDATA false-positive accurately; verified rather
+    than edited.
+  - Two defects were found and fixed while executing the plan, both
+    pre-existing rather than introduced: `quality_scale.yaml` did not
+    parse as YAML (an unquoted `requirements:` in the
+    `async_dependency` comment), and the coordinator's interval
+    property was shadowing a base setter that had never needed it.
 

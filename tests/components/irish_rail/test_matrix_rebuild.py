@@ -23,8 +23,10 @@ from homeassistant.core import HomeAssistant
 
 from custom_components.irish_rail.client import IrishRailClient
 from custom_components.irish_rail.errors import IrishRailConnectionError
+from custom_components.irish_rail.lib_const import MOVEMENT_CACHE_MAX_ENTRIES
 from custom_components.irish_rail.matrix_rebuild import (
     _dump_document,
+    _evict_movement_cache,
     async_run_matrix_rebuild,
     sample_stops_matrix,
 )
@@ -583,6 +585,51 @@ async def test_sample_stops_matrix_atomic_dump_is_atomic(
     assert loaded == document
     # No leftover temp file.
     assert not output.with_suffix(output.suffix + ".tmp").exists()
+
+
+def test_evict_movement_cache_drops_other_dates_first() -> None:
+    """Other-date entries go before today's, mirroring the client policy."""
+    today = "02 Jan 2026"
+    cache: dict[tuple[str, str], list[TrainMovement]] = {
+        (f"E{i:03d}", today): [] for i in range(MOVEMENT_CACHE_MAX_ENTRIES)
+    }
+    # Two historical entries push the cache two over the cap. Their codes
+    # sit outside the generated range so the assertions below are unambiguous.
+    cache[("OLD1", "01 Jan 2026")] = []
+    cache[("OLD2", "31 Dec 2025")] = []
+
+    _evict_movement_cache(cache, today)
+
+    assert len(cache) == MOVEMENT_CACHE_MAX_ENTRIES
+    # Both historical entries were sacrificed; every current-date row survived.
+    assert all(date == today for _code, date in cache)
+    remaining = {code for code, _date in cache}
+    assert "OLD1" not in remaining
+    assert "OLD2" not in remaining
+    assert len(remaining) == MOVEMENT_CACHE_MAX_ENTRIES
+
+
+def test_evict_movement_cache_bounds_size_across_one_date() -> None:
+    """With every entry on the current date, the oldest is evicted instead."""
+    cache: dict[tuple[str, str], list[TrainMovement]] = {
+        (f"E{i:03d}", "01 Jan 2026"): [] for i in range(MOVEMENT_CACHE_MAX_ENTRIES + 50)
+    }
+
+    _evict_movement_cache(cache, "01 Jan 2026")
+
+    assert len(cache) == MOVEMENT_CACHE_MAX_ENTRIES
+    # Oldest-first: the lowest codes are the ones dropped.
+    remaining = {code for code, _date in cache}
+    assert "E000" not in remaining
+
+
+def test_evict_movement_cache_is_noop_below_cap() -> None:
+    """A cache under the cap is left untouched."""
+    cache: dict[tuple[str, str], list[TrainMovement]] = {
+        ("E001", "01 Jan 2026"): [],
+    }
+    _evict_movement_cache(cache, "01 Jan 2026")
+    assert len(cache) == 1
 
 
 async def test_sample_stops_matrix_gap_fill_requires_hass() -> None:

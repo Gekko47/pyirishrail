@@ -6,6 +6,7 @@ See docs/architecture.md §12 for entry setup, update listener, and unload.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
@@ -78,6 +79,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrishRailConfigEntry) ->
 
 
 @callback
+def _async_capture_identity_customisations(
+    hass: HomeAssistant, entry: IrishRailConfigEntry, previous_uid: str
+) -> dict[str, dict[str, Any]]:
+    """Snapshot the old identity's per-entity customisations.
+
+    A direction reconfigure changes the entry's unique ID, so the entities
+    are re-created under new unique IDs. Deleting the old rows outright
+    destroyed the user's entity name, icon and area for good; capturing
+    them first lets the post-reload restore put them back.
+    """
+    entity_registry = er.async_get(hass)
+    old_prefix = f"{previous_uid}_"
+    captured: dict[str, dict[str, Any]] = {}
+    for registry_entry in er.async_entries_for_config_entry(
+        entity_registry, entry.entry_id
+    ):
+        if not registry_entry.unique_id.startswith(old_prefix):
+            continue
+        # Key by the entity-key suffix so old -> new is deterministic.
+        captured[registry_entry.unique_id[len(old_prefix) :]] = {
+            "name": registry_entry.name,
+            "original_name": registry_entry.original_name,
+            "icon": registry_entry.icon,
+            "entity_category": registry_entry.entity_category,
+            "area_id": registry_entry.area_id,
+            "hidden_by": registry_entry.hidden_by,
+            "translation_key": registry_entry.translation_key,
+        }
+    return captured
+
+
+@callback
 def _async_drop_stale_identity_registries(
     hass: HomeAssistant, entry: IrishRailConfigEntry, previous_uid: str
 ) -> None:
@@ -98,20 +131,70 @@ def _async_drop_stale_identity_registries(
             device_registry.async_remove_device(device_entry.id)
 
 
+@callback
+def _async_restore_identity_customisations(
+    hass: HomeAssistant,
+    entry: IrishRailConfigEntry,
+    new_uid: str,
+    captured: dict[str, dict[str, Any]],
+) -> None:
+    """Re-apply customisations onto the re-created entities."""
+    if not captured:
+        return
+    entity_registry = er.async_get(hass)
+    new_prefix = f"{new_uid}_"
+    for registry_entry in er.async_entries_for_config_entry(
+        entity_registry, entry.entry_id
+    ):
+        if not registry_entry.unique_id.startswith(new_prefix):
+            continue
+        saved = captured.get(registry_entry.unique_id[len(new_prefix) :])
+        if not saved:
+            continue
+        entity_registry.async_update_entity(
+            registry_entry.entity_id,
+            name=saved["name"],
+            original_name=saved["original_name"],
+            icon=saved["icon"],
+            entity_category=saved["entity_category"],
+            area_id=saved["area_id"],
+            hidden_by=saved["hidden_by"],
+        )
+
+
 async def _async_update_listener(
     hass: HomeAssistant, entry: IrishRailConfigEntry
 ) -> None:
     """Handle config-entry updates: reload on data changes, options in place."""
     coordinator = entry.runtime_data.coordinator
     if coordinator.requires_reload():
-        # Drop the previous identity's entities/device before reloading so
-        # post-reload setup registers only the new direction's entities.
         previous_uid = coordinator.applied_unique_id()
+        new_uid = entry.unique_id
+        # Capture before dropping: the rows are about to be removed, and
+        # the re-created entities inherit their customisations from here.
+        captured = (
+            _async_capture_identity_customisations(hass, entry, previous_uid)
+            if previous_uid is not None
+            else {}
+        )
         if previous_uid is not None:
             _async_drop_stale_identity_registries(hass, entry, previous_uid)
+        if captured and new_uid:
+            # Applied once the reload has re-registered the new entities.
+            async def _async_restore() -> None:
+                await hass.async_block_till_done()
+                _async_restore_identity_customisations(
+                    hass, entry, new_uid, captured
+                )
+
+            entry.async_create_task(
+                hass,
+                _async_restore(),
+                name=f"{DOMAIN}_restore_customisations_{entry.entry_id}",
+            )
         hass.config_entries.async_schedule_reload(entry.entry_id)
         return
-    coordinator.update_interval = resolve_scan_interval(entry)
+    coordinator.async_set_configured_interval(resolve_scan_interval(entry))
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: IrishRailConfigEntry) -> bool:

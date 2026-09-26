@@ -39,10 +39,12 @@ from homeassistant.util import dt as dt_util
 from .client import IrishRailClient
 from .const import DUBLIN_TZ, REBUILD_DELAY_SECONDS
 from .errors import IrishRailError
+from .lib_const import MOVEMENT_CACHE_MAX_ENTRIES
 from .models import TrainMovement
 from .store import (
     ALL_DIRECTIONS_KEY,
     STOPS_STORE_VERSION,
+    StopsMatrixStore,
     get_stops_store,
     normalize_direction_key,
     reset_bundled_seed_cache,
@@ -80,6 +82,22 @@ class RebuildResult:
         if self.error:
             out["error"] = self.error
         return out
+
+
+def _evict_movement_cache(
+    cache: dict[tuple[str, str], list[TrainMovement]], current_date: str
+) -> None:
+    """Drop oldest sweep entries once the cache exceeds its cap.
+
+    Mirrors the client's eviction policy (other dates first, then oldest
+    first) so the two caches cannot drift apart in behaviour.
+    """
+    if len(cache) <= MOVEMENT_CACHE_MAX_ENTRIES:
+        return
+    for key in [key for key in cache if key[1] != current_date]:
+        del cache[key]
+    while len(cache) > MOVEMENT_CACHE_MAX_ENTRIES:
+        del cache[next(iter(cache))]
 
 
 def _dump_document(output: Path, document: dict[str, Any]) -> None:
@@ -129,8 +147,11 @@ async def sample_stops_matrix(
     ``delay`` is the seconds to sleep between stations. ``limit`` samples
     only the first N stations (smoke testing).
     """
-    if gap_fill and hass is None:
-        raise ValueError("hass is required when gap_fill=True")
+    stops_store: StopsMatrixStore | None = None
+    if gap_fill:
+        if hass is None:
+            raise ValueError("hass is required when gap_fill=True")
+        stops_store = get_stops_store(hass)
     if atomic_dump and output_path is None:
         raise ValueError("output_path is required when atomic_dump=True")
 
@@ -149,13 +170,11 @@ async def sample_stops_matrix(
         stations = stations[:limit]
 
     today = dt_util.now(DUBLIN_TZ).strftime("%d %b %Y")
+    # Bounded like the client's own cache: a full sweep visits every station
+    # and would otherwise retain every movement row for the whole run, which
+    # is a real memory spike on the constrained hosts this integration targets.
     movement_cache: dict[tuple[str, str], list[TrainMovement]] = {}
 
-    if gap_fill:
-        assert hass is not None  # guarded by ValueError above
-        stops_store = get_stops_store(hass)
-    else:
-        stops_store = None
     document: dict[str, Any] | None = None
     if not gap_fill:
         now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -192,6 +211,7 @@ async def sample_stops_matrix(
                             "Movement lookup failed for %s: %s", train.code, err
                         )
                         movement_cache[cache_key] = []
+                    _evict_movement_cache(movement_cache, today)
                 journey = client.scope_journey_stops(
                     movement_cache[cache_key],
                     train.destination,

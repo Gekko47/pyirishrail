@@ -16,7 +16,13 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, STOPS_MATRIX_FILENAME, STOPS_MATRIX_SEED_FILENAME
+from ._runtime import get_session_value, set_session_value
+from .const import (
+    DOMAIN,
+    STOPS_MATRIX_FILENAME,
+    STOPS_MATRIX_SEED_FILENAME,
+)
+from .const import STOPS_STORE_INSTANCE as _STOPS_STORE_INSTANCE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,8 +31,10 @@ STOPS_STORE_VERSION = 1
 # Bucket holding stops observed without a usable direction value.
 ALL_DIRECTIONS_KEY = "_all"
 
-# Key under ``hass.data[DOMAIN]`` for the per-hass singleton store instance.
-STOPS_STORE_INSTANCE = "stops_matrix_store"
+# Re-exported from const so callers can keep importing the key from here;
+# the canonical definition lives in const.py to keep _runtime.py free of a
+# store.py import (see the note there).
+STOPS_STORE_INSTANCE = _STOPS_STORE_INSTANCE
 
 # Matrix shape: {"stations": {code: {"updated": iso-datetime,
 #                                     "directions": {key: [names]}}}}
@@ -142,11 +150,10 @@ class StopsMatrixStore:
 @callback
 def get_stops_store(hass: HomeAssistant) -> StopsMatrixStore:
     """Return the per-hass stops-matrix singleton, creating it on demand."""
-    domain_data = hass.data.setdefault(DOMAIN, {})
-    store = domain_data.get(STOPS_STORE_INSTANCE)
+    store = get_session_value(hass, STOPS_STORE_INSTANCE)
     if not isinstance(store, StopsMatrixStore):
         store = StopsMatrixStore(hass)
-        domain_data[STOPS_STORE_INSTANCE] = store
+        set_session_value(hass, STOPS_STORE_INSTANCE, store)
     return store
 
 

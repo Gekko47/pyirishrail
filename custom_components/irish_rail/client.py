@@ -255,11 +255,10 @@ class IrishRailClient:
             # whitespace-obfuscated forms (``<! DOCTYPE`` etc.),
             # unbalanced tags, missing references. ``ET.ParseError``
             # is mapped onto :class:`IrishRailParseError` below.
-            lowered = (
-                content.lower()
-                if isinstance(content, str)
-                else content.decode("utf-8", errors="replace").lower()
-            )
+            # The substring scan is deliberately conservative: a CDATA
+            # section whose text merely contains ``<!doctype`` is
+            # rejected too (see docs/architecture.md §4).
+            lowered = content.lower()
             for keyword in _DTD_KEYWORDS:
                 if keyword in lowered:
                     raise IrishRailParseError(
@@ -783,23 +782,22 @@ def parse_station_data(root: Element) -> list[TrainDueTime]:
     trains: list[TrainDueTime] = []
     for obj in root.findall("objStationData"):
         try:
-            due_str = _find_tag_text(obj, "Duein") or "0"
+            due_str = _find_tag_text(obj, "Duein") or ""
             late_str = _find_tag_text(obj, "Late") or "0"
 
-            # Defensive check for non-numeric or unexpectedly formatted strings
+            # A missing or malformed 'Duein' becomes None rather than 0 so
+            # consumers fall back to 'Exparrival'; coercing to 0 reported a
+            # misformatted train as "due in 0 minutes" with a wrong state
+            # and no usable signal. The warning stays because a silent
+            # coercion is what users hit when upstream changes a format.
             try:
                 due_in_mins = int(due_str)
             except ValueError:
-                # Bumped from debug to warning: silently coercing to 0
-                # misreports a misformatted train as "due in 0 minutes"
-                # in the UI with no trace in `home-assistant.log`, which
-                # is exactly the kind of silent failure users hit when
-                # the upstream API changes a field's format.
                 _LOGGER.warning(
-                    "Non-numeric 'Duein' value from Irish Rail API, coerced to 0: %r",
+                    "Non-numeric 'Duein' value from Irish Rail API, treated as unknown: %r",
                     due_str,
                 )
-                due_in_mins = 0
+                due_in_mins = None
 
             try:
                 late_mins = int(late_str)

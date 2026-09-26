@@ -14,6 +14,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
+from .const import DUBLIN_TZ
 from .coordinator import IrishRailDataUpdateCoordinator
 from .entity import IrishRailEntity
 from .models import TrainDueTime
@@ -53,13 +54,12 @@ def _parse_expected_arrival(train: TrainDueTime, now: datetime) -> datetime | No
       observed at 00:05 yields a 23:55 timestamp on the previous
       calendar day, and the UI shows it as "departed 10 min ago".
 
-    ``expected_arrival_time`` (``HH:MM``) is retained as a defensive
-    fallback: if the API omits ``due_in_mins`` but still reports an
-    arrival time, the function falls back to the ``HH:MM`` + today
-    date combination, so a partial API payload still produces a
-    timestamp rather than ``None``. The fallback is not used for the
-    overnight case (the API always sends ``due_in_mins``); it exists
-    only to keep a degraded response from breaking the sensor.
+    ``expected_arrival_time`` (``HH:MM``) is the fallback when
+    ``due_in_mins`` is ``None`` -- the API omitted ``Duein`` or sent an
+    unparseable value. That time is Irish civil time, so it is resolved
+    against Dublin dates in ``DUBLIN_TZ``. The fallback cannot
+    disambiguate a true overnight service (00:30 polled at 23:55), which
+    only the offset path handles correctly.
 
     Returns ``None`` when both fields are blank or unparseable, so the
     sensor state can fall back to ``None`` rather than publish a bogus
@@ -85,16 +85,14 @@ def _parse_expected_arrival(train: TrainDueTime, now: datetime) -> datetime | No
             expected_arrival_time,
         )
         return None
-    # Defensive fallback path: the API omitted ``due_in_mins`` but did
-    # send an ``HH:MM``. Use ``now.date()`` as the date so the
-    # timestamp sits on today's calendar; an HH:MM already in the past
-    # lands in the past (overdue), an HH:MM in the future lands in
-    # today's future. Note this fallback cannot disambiguate a true
-    # overnight service (00:30 polled at 23:55) without the offset,
-    # but the API always supplies the offset, so this is a degraded
-    # path only.
-    naive = datetime.combine(now.date(), parsed_time)
-    return naive.replace(tzinfo=now.tzinfo)
+    # Degraded path: 'Duein' was missing or unparseable but the API still
+    # sent an 'HH:MM'. Those times are Irish civil time, so they are
+    # combined against Dublin local dates and localized to DUBLIN_TZ -- not
+    # against ``now``, which is UTC and would be an hour off during IST.
+    # The fallback cannot disambiguate a true overnight service (00:30
+    # polled at 23:55); that requires the offset path above.
+    dublin_now = now.astimezone(DUBLIN_TZ)
+    return datetime.combine(dublin_now.date(), parsed_time, tzinfo=DUBLIN_TZ)
 
 
 async def async_setup_entry(

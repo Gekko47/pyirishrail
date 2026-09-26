@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
+import pytest
 from homeassistant.const import EntityStateAttribute
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.irish_rail.const import DOMAIN
+from custom_components.irish_rail.const import DOMAIN, DUBLIN_TZ
+from custom_components.irish_rail.coordinator import IrishRailDataUpdateCoordinator
 from custom_components.irish_rail.errors import IrishRailConnectionError
 from custom_components.irish_rail.models import TrainDueTime
 from custom_components.irish_rail.sensor import (
@@ -438,15 +441,12 @@ def test_parse_expected_arrival_handles_blank_and_unparseable_inputs() -> None:
 
 
 def test_parse_expected_arrival_fallback_resolves_today_from_hhmm() -> None:
-    """Well-formed ``HH:MM`` without the offset resolves onto today.
+    """Well-formed ``HH:MM`` with no offset resolves onto Dublin's today.
 
-    The defensive fallback (no signed offset, valid ``HH:MM``) must
-    still produce a timestamp: the arrival is placed on ``now``'s
-    calendar with ``now``'s timezone, so a degraded payload renders a
-    real time instead of ``unknown``.
+    The API's ``Exparrival`` is Irish civil time, so the fallback localizes
+    to ``DUBLIN_TZ`` rather than inheriting ``now``'s UTC offset (which
+    would be an hour wrong during IST).
     """
-    from datetime import UTC, datetime
-
     now = datetime(2026, 8, 28, 10, 0, tzinfo=UTC)
     base = _mock_train(due_in=10)
 
@@ -455,10 +455,33 @@ def test_parse_expected_arrival_fallback_resolves_today_from_hhmm() -> None:
         now,
     )
     assert parsed is not None
-    assert parsed.tzinfo is not None
     assert parsed.hour == 13
     assert parsed.minute == 45
-    assert parsed.date() == now.date()
+    assert parsed.tzinfo is DUBLIN_TZ
+    # August is IST (UTC+1), so 10:00Z is 11:00 Dublin; the arrival date
+    # is Dublin's calendar date.
+    assert parsed.date() == datetime(2026, 8, 28, 11, 0, tzinfo=DUBLIN_TZ).date()
+    # The instant is genuinely 13:45 Irish time, not 13:45 UTC.
+    assert parsed.utcoffset() == timedelta(hours=1)
+
+
+def test_parse_expected_arrival_fallback_handles_utc_date_boundary() -> None:
+    """Just before midnight UTC, the Dublin date is already the next day.
+
+    ``now``'s UTC calendar date would place the arrival on the wrong day
+    for an Irish-local ``HH:MM``; the fallback must use Dublin's date.
+    """
+    now = datetime(2026, 8, 28, 23, 30, tzinfo=UTC)  # 00:30 Dublin, 29 Aug
+    base = _mock_train(due_in=10)
+
+    parsed = _parse_expected_arrival(
+        _train_without_offset(base, expected_arrival_time="00:15"),
+        now,
+    )
+    assert parsed is not None
+    assert parsed.date() == now.astimezone(DUBLIN_TZ).date()
+    assert parsed.hour == 0
+    assert parsed.minute == 15
 
 
 def test_parse_expected_arrival_keeps_past_timestamp_for_overdue_display() -> None:
@@ -519,3 +542,28 @@ def test_parse_expected_arrival_handles_overnight_poll_at_00_05() -> None:
     # And it is *not* today's wall clock 23:55 (which would imply a
     # ~24 h countdown): the offset path is what fixed this.
     assert parsed.date() != now.date()
+
+
+def test_entity_requires_config_entry_unique_id(hass: HomeAssistant) -> None:
+    """A missing entry unique ID raises instead of producing "None_<key>".
+
+    Reading the identifier before validating it would silently mint a
+    unique ID of ``"None_next_train_due"`` and a ``(DOMAIN, None)`` device
+    identifier, colliding every such entry onto one device.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            "station": "Dublin Pearse",
+            "station_code": "PEARS",
+            "direction": "Northbound",
+        },
+        unique_id=None,
+    )
+    entry.add_to_hass(hass)
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, MagicMock(), cast(Any, entry)
+    )
+
+    with pytest.raises(ValueError, match="no unique_id"):
+        IrishRailDueTrainSensor(coordinator, "next_train_due")

@@ -144,6 +144,10 @@ GLOBAL_PROVIDER_KEY = "global_provider_entry_id"
 GLOBAL_LAST_REBUILD_KEY = "global_last_result"
 # The on-disk key the service handler reaches the live button through.
 GLOBAL_REBUILD_ENTITY_KEY = "global_rebuild_entity"
+# Key holding the per-hass stops-matrix store singleton. Declared here
+# rather than in store.py so _runtime.py can drain it at teardown without
+# importing store.py (which imports _runtime.py for the key accessors).
+STOPS_STORE_INSTANCE = "stops_matrix_store"
 
 # Irish civil-time zone shared by service-hours gating and rebuild dating;
 # host-installed Home Assistant instances abroad must still follow Dublin.

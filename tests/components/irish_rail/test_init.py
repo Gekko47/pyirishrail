@@ -2,23 +2,32 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from datetime import UTC, datetime
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.irish_rail import _async_restore_identity_customisations
 from custom_components.irish_rail._runtime import get_health_monitor
 from custom_components.irish_rail.const import DOMAIN, EMPTY_DATA_ISSUE_THRESHOLD
 from custom_components.irish_rail.coordinator import empty_data_issue_id
-from custom_components.irish_rail.types import IrishRailRuntimeData
+from custom_components.irish_rail.types import (
+    IrishRailConfigEntry,
+    IrishRailRuntimeData,
+)
 
 
 async def test_setup_unload_entry(
-    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    verify_cleanup: Generator[None],
 ) -> None:
     """Test setting up and unloading a config entry."""
     mock_config_entry.add_to_hass(hass)
@@ -66,7 +75,9 @@ async def test_setup_config_entry_not_ready(
 
 
 async def test_unload_and_reload_restores_entities(
-    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    verify_cleanup: Generator[None],
 ) -> None:
     """Silver rule ``config-entry-unloading``: unload + reload round-trip.
 
@@ -120,6 +131,44 @@ async def test_unload_and_reload_restores_entities(
         assert reloaded_state is not None
         # Successful-but-empty refresh => sensors available reporting unknown.
         assert reloaded_state.state == "unknown"
+
+
+async def test_restore_customisations_is_a_noop_without_a_capture(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Restoring with nothing captured must not touch the registries.
+
+    Guards the two early-outs: an empty capture, and a re-created entity
+    whose key is absent from the capture (a new sensor added since the
+    reconfigure was requested).
+    """
+    mock_config_entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.irish_rail.client.IrishRailClient.async_get_station_by_code",
+        return_value=[],
+    ):
+        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+        entry = cast(IrishRailConfigEntry, mock_config_entry)
+
+        # Empty capture: returns before reading the registry at all.
+        _async_restore_identity_customisations(hass, entry, "PEARS_northbound", {})
+
+        # Capture that does not mention one of the live entity keys: that
+        # entity is left on its defaults instead of raising or being cleared.
+        _async_restore_identity_customisations(
+            hass,
+            entry,
+            "PEARS_northbound",
+            {"some_retired_sensor": {"name": "x", "original_name": "x"}},
+        )
+
+    ent_reg = er.async_get(hass)
+    live = er.async_entries_for_config_entry(ent_reg, entry.entry_id)
+    assert live, "entities should still be registered"
+    assert all(e.name is None for e in live), "no entity should have been renamed"
 
 
 async def test_unload_removes_pending_empty_data_repair_issue(

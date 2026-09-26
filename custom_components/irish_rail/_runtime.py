@@ -14,6 +14,7 @@ import logging
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime
+from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
@@ -32,10 +33,10 @@ from .const import (
     GLOBAL_SERVICES_IDENTIFIER,
     HEALTH_CHECK_INTERVAL,
     HEALTH_PROBE_STATION_CODE,
+    STOPS_STORE_INSTANCE,
 )
 from .errors import IrishRailError
 from .request_gate import RequestGate
-from .store import STOPS_STORE_INSTANCE
 from .types import IrishRailConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
@@ -64,15 +65,23 @@ class RuntimeRegistry:
         self.health_monitor: ConnectivityMonitor | None = None
 
     @callback
-    def ensure_health_monitor(self, client: IrishRailClient) -> ConnectivityMonitor:
+    def ensure_health_monitor(
+        self, client: IrishRailClient, *, adopt_client: bool = False
+    ) -> ConnectivityMonitor:
         """Return the health monitor, creating it on first call.
 
-        Idempotent: the first-loaded entry's client wins and later
-        entries reuse the same monitor regardless of their own client.
-        The probe is *not* started here.
+        The first-loaded entry's client creates the monitor; later entries
+        reuse it. ``adopt_client`` re-points an existing monitor at a new
+        client, which the caller sets when no entry owned the monitor a
+        moment earlier: a full unload drops the shared gate but keeps the
+        monitor, so without the re-point the probe would keep drawing its
+        rate budget from the discarded gate. The probe is *not* started
+        here.
         """
         if self.health_monitor is None:
             self.health_monitor = ConnectivityMonitor(self.hass, client)
+        elif adopt_client and self.health_monitor.client is not client:
+            self.health_monitor.rebind_client(client)
         return self.health_monitor
 
     async def async_release(self) -> None:
@@ -87,6 +96,47 @@ class RuntimeRegistry:
         if self.health_monitor is not None:
             await self.health_monitor.async_stop()
         self.loaded_entry_ids.clear()
+        _drop_session_keys(self.hass)
+
+
+# ── Session-scoped key accessors (single writer, see §11) ────────────────────
+#
+# These four keys live under ``hass.data[DOMAIN]`` but are owned by the
+# modules that create them. Routing every access through here keeps the
+# registry the only module that touches that mapping, so the unload
+# teardown in :meth:`RuntimeRegistry.async_release` provably drains
+# everything it needs to.
+
+
+@callback
+def get_session_value(hass: HomeAssistant, key: str) -> Any:
+    """Return a session-scoped value, or ``None`` when absent."""
+    return hass.data.get(DOMAIN, {}).get(key)
+
+
+@callback
+def set_session_value(hass: HomeAssistant, key: str, value: Any) -> None:
+    """Create or replace a session-scoped value."""
+    hass.data.setdefault(DOMAIN, {})[key] = value
+
+
+@callback
+def pop_session_value(hass: HomeAssistant, key: str) -> None:
+    """Drop a session-scoped value if present."""
+    domain_data = hass.data.get(DOMAIN)
+    if domain_data is not None:
+        domain_data.pop(key, None)
+
+
+def _drop_session_keys(hass: HomeAssistant) -> None:
+    """Remove every session-scoped key."""
+    for key in (
+        GLOBAL_PROVIDER_KEY,
+        GLOBAL_LAST_REBUILD_KEY,
+        GLOBAL_REBUILD_ENTITY_KEY,
+        STOPS_STORE_INSTANCE,
+    ):
+        pop_session_value(hass, key)
 
 
 class ConnectivityMonitor:
@@ -108,6 +158,11 @@ class ConnectivityMonitor:
         self.last_error: str | None = None
         self.consecutive_failures = 0
         self.listeners: set[Callable[[], None]] = set()
+
+    @callback
+    def rebind_client(self, client: IrishRailClient) -> None:
+        """Point the probe at a new client, keeping the probe history."""
+        self.client = client
 
     async def async_start(self) -> None:
         """Start the periodic probe; safe to call repeatedly."""
@@ -337,7 +392,10 @@ async def async_note_entry_loaded(
     registry = _ensure_runtime(hass)
     is_first = not registry.loaded_entry_ids
     registry.loaded_entry_ids.add(entry_id)
-    monitor = registry.ensure_health_monitor(client)
+    # Sampled before the id was added: an idle registry means this entry is
+    # starting from scratch, so the retained monitor should adopt its
+    # client rather than keep one bound to the discarded gate.
+    monitor = registry.ensure_health_monitor(client, adopt_client=is_first)
     await monitor.async_start()
     return is_first
 
@@ -362,19 +420,12 @@ async def async_note_entry_unloaded(hass: HomeAssistant, entry_id: str) -> bool:
         # Release the shared gate and stop the probe. The registry itself
         # (and the monitor object) stay alive so a reload cycle reuses the
         # same monitor instance - pinned by test_runtime.py.
+        # async_release also drops the session-scoped keys, so nothing keeps
+        # referencing entity objects, results, or cached matrices after the
+        # last entry is gone. Every one of those is recreated lazily on the
+        # next use, and the stops matrix itself is persisted on disk, so
+        # dropping is lossless.
         await registry.async_release()
-
-        # Drop the session-scoped hass.data[DOMAIN] keys so nothing keeps
-        # referencing entity objects, results, or cached matrices after
-        # the last entry is gone. Every one of these is recreated lazily
-        # on the next use, and the stops matrix itself is persisted on
-        # disk, so dropping is lossless.
-        domain_data = hass.data.get(DOMAIN)
-        if domain_data is not None:
-            domain_data.pop(GLOBAL_PROVIDER_KEY, None)
-            domain_data.pop(GLOBAL_LAST_REBUILD_KEY, None)
-            domain_data.pop(GLOBAL_REBUILD_ENTITY_KEY, None)
-            domain_data.pop(STOPS_STORE_INSTANCE, None)
 
     return not registry.loaded_entry_ids
 
@@ -394,10 +445,8 @@ def claim_service_entities(hass: HomeAssistant, entry: IrishRailConfigEntry) -> 
         True if this entry now owns the global entities, False if another
         entry owns them.
     """
-    domain_data = hass.data.setdefault(DOMAIN, {})
-
     # Fast path: already the owner
-    current_owner = domain_data.get(GLOBAL_PROVIDER_KEY)
+    current_owner = get_session_value(hass, GLOBAL_PROVIDER_KEY)
     if current_owner == entry.entry_id:
         return True
 
@@ -415,7 +464,7 @@ def claim_service_entities(hass: HomeAssistant, entry: IrishRailConfigEntry) -> 
         # Wipe orphan entity rows from previous dead owner before re-claiming.
         _purge_orphan_global_entities(hass, expected_owner=current_owner)
 
-    domain_data[GLOBAL_PROVIDER_KEY] = entry.entry_id
+    set_session_value(hass, GLOBAL_PROVIDER_KEY, entry.entry_id)
     return True
 
 

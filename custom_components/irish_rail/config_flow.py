@@ -43,11 +43,20 @@ NO_FILTER_SENTINEL = "All"
 def build_stops_at_schema_field(
     stations: list[Station], current: str
 ) -> dict[Any, Any]:
-    """Build the ``stops_at`` schema field for available stations."""
+    """Build the ``stops_at`` schema field for available stations.
+
+    The currently stored value is merged into the dropdown even when the
+    fetched station list does not contain it, mirroring
+    :meth:`IrishRailConfigFlow._build_direction_step_schema`. Without the
+    merge a transiently-short station list renders a select whose default
+    is not one of its options, and submitting it drops the filter.
+    """
     if not stations:
         return {vol.Optional(CONF_STOPS_AT, default=current): str}
     options = {NO_FILTER_SENTINEL: NO_FILTER_SENTINEL}
     options.update({s.name: s.name for s in sorted(stations, key=lambda x: x.name)})
+    if current and current != NO_FILTER_SENTINEL:
+        options.setdefault(current, current)
     return {vol.Optional(CONF_STOPS_AT, default=current): vol.In(options)}
 
 
@@ -644,5 +653,18 @@ class IrishRailOptionsFlow(OptionsFlow):
         stops_at: str | None = user_input.get(CONF_STOPS_AT)
         if not stops_at or stops_at == NO_FILTER_SENTINEL:
             user_input[CONF_STOPS_AT] = None
+
+        # The one case where the key is dropped instead of written: the
+        # submitted filter is already supplied verbatim by entry.data, so an
+        # options copy is pure redundancy. resolve_stops_at reads options
+        # before data, so a redundant copy would shadow the data-level value
+        # and silently drop the filter the moment it is cleared. Dropping it
+        # is what makes an unrelated save (adjusting only the scan interval)
+        # non-destructive. In every other case the key is written
+        # explicitly, so clearing a filter here still takes effect and never
+        # resurrects from data.
+        data_stops_at = entry.data.get(CONF_STOPS_AT)
+        if data_stops_at and data_stops_at == user_input[CONF_STOPS_AT]:
+            user_input.pop(CONF_STOPS_AT, None)
 
         return self.async_create_entry(title="", data=user_input)

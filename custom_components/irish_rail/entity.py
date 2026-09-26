@@ -20,12 +20,18 @@ class IrishRailEntity(CoordinatorEntity[IrishRailDataUpdateCoordinator]):
         """Initialize the entity."""
         super().__init__(coordinator)
         self.entity_key = entity_key
-        # Build stable unique ID from unique_id of the config entry
-        self._attr_unique_id = f"{coordinator.config_entry.unique_id}_{entity_key}"
-        # The config flow always sets a unique ID for entries of this domain.
-        assert coordinator.config_entry.unique_id is not None
+        # Validated before use: the unique ID is an ``assert``-free
+        # invariant, and reading a missing one would silently produce
+        # "None_<key>" plus a (DOMAIN, None) device identifier.
+        entry_unique_id = coordinator.config_entry.unique_id
+        if not entry_unique_id:
+            raise ValueError(
+                "Irish Rail config entry has no unique_id; "
+                "reload the entry to re-establish its identity"
+            )
+        self._attr_unique_id = f"{entry_unique_id}_{entity_key}"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, coordinator.config_entry.unique_id)},
+            identifiers={(DOMAIN, entry_unique_id)},
             name=coordinator.station_name,
             manufacturer="Iarnród Éireann / Irish Rail",
             model="Irish Rail RTPI",

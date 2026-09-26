@@ -255,25 +255,26 @@ async def test_backoff_uses_new_base_after_options_change(
     assert coordinator.update_interval == timedelta(seconds=120)
 
     # Mirrors _async_update_listener applying a changed options value.
-    coordinator.update_interval = resolve_scan_interval(
-        _entry_with(options={"scan_interval": 120})
+    coordinator.async_set_configured_interval(
+        resolve_scan_interval(_entry_with(options={"scan_interval": 120}))
     )
     assert coordinator.update_interval == timedelta(seconds=240)
 
 
-async def test_schedule_refresh_mirrors_backed_off_interval_into_cache(
+async def test_backoff_widens_the_public_update_interval(
     hass: HomeAssistant, mock_api_client: MagicMock
 ) -> None:
-    """HA 2026.8+ schedules from the seconds cache, not the property.
+    """Each failure re-arms HA's scheduler with the widened interval.
 
-    ``_schedule_refresh()`` must therefore sync that cache from the
-    effective interval so consecutive failures genuinely widen polling.
+    Asserted through the public ``update_interval`` property only: the
+    coordinator no longer mirrors any private scheduler state, so the
+    effective interval and what HA schedules are the same value by
+    construction rather than by hand-synced cache.
     """
     coordinator = IrishRailDataUpdateCoordinator(
         hass, mock_api_client, _entry_with(options={"scan_interval": 300})
     )
-    # Constructor-time assignment already populated the scheduler cache.
-    assert coordinator._update_interval_seconds == 300.0
+    assert coordinator.update_interval == timedelta(seconds=300)
 
     with (
         patch.object(
@@ -285,16 +286,29 @@ async def test_schedule_refresh_mirrors_backed_off_interval_into_cache(
     ):
         await coordinator._async_update_data()
 
-    coordinator._schedule_refresh()
-    # One failure backs the effective interval off once from 300 s.
-    assert coordinator._update_interval_seconds == pytest.approx(
-        300 * BACKOFF_MULTIPLIER
+    # One failure backs the effective interval off once from 300 s, and the
+    # value HA will schedule from has moved with it.
+    assert coordinator.update_interval == timedelta(
+        seconds=300 * BACKOFF_MULTIPLIER
     )
 
-    # Recovery restores the configured interval at the next schedule point.
+    # Recovery restores the configured interval.
     coordinator._failure_streak = 0
-    coordinator._schedule_refresh()
-    assert coordinator._update_interval_seconds == 300.0
+    coordinator._async_apply_effective_interval()
+    assert coordinator.update_interval == timedelta(seconds=300)
+
+    coordinator._unschedule_refresh()
+
+
+async def test_configured_interval_update_rearms_scheduler(
+    hass: HomeAssistant, mock_api_client: MagicMock
+) -> None:
+    """``async_set_configured_interval`` pushes the new base to the scheduler."""
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, _entry_with(options={"scan_interval": 300})
+    )
+    coordinator.async_set_configured_interval(timedelta(seconds=45))
+    assert coordinator.update_interval == timedelta(seconds=45)
 
     coordinator._unschedule_refresh()
 
@@ -302,12 +316,13 @@ async def test_schedule_refresh_mirrors_backed_off_interval_into_cache(
 async def test_failed_refresh_cycle_reschedules_with_widened_interval(
     hass: HomeAssistant, mock_api_client: MagicMock
 ) -> None:
-    """A failed cycle reschedules through HA's loop with the backed-off wait.
+    """A failed cycle leaves the scheduler armed at the backed-off wait.
 
-    End-to-end through ``async_refresh``: HA's ``_async_refresh`` finally
-    block calls ``_schedule_refresh``, which must hand ``loop.call_at`` a
-    deadline one backoff step beyond now (300 s configured -> doubled once
-    after the first failure).
+    End-to-end through ``async_refresh``. The assertion is on the value HA
+    actually schedules from (the public ``update_interval``) rather than on
+    a wall-clock delta, which previously needed a +/-1 s tolerance and could
+    flake on a loaded runner. 300 s configured, doubled once after the first
+    failure.
     """
     coordinator = IrishRailDataUpdateCoordinator(
         hass, mock_api_client, _entry_with(options={"scan_interval": 300})
@@ -315,27 +330,88 @@ async def test_failed_refresh_cycle_reschedules_with_widened_interval(
     # HA only reschedules while something listens (mirrors entity setup).
     remove_listener = coordinator.async_add_listener(lambda: None)
 
-    with (
-        patch.object(
-            mock_api_client,
-            "async_get_station_by_code",
-            side_effect=IrishRailConnectionError,
-        ),
-        patch.object(hass.loop, "call_at", wraps=hass.loop.call_at) as mock_call_at,
+    with patch.object(
+        mock_api_client,
+        "async_get_station_by_code",
+        side_effect=IrishRailConnectionError,
     ):
         await coordinator.async_refresh()
 
     assert coordinator.last_update_success is False
-    assert coordinator._failure_streak == 1
-
-    assert mock_call_at.call_count == 1
-    delta = mock_call_at.call_args.args[0] - hass.loop.time()
-    # Doubled once from 300 s; allow ~1 s slack each way for the base
-    # class's int()-floored deadline and its sub-second stagger.
-    assert 300 * BACKOFF_MULTIPLIER - 1 < delta < 300 * BACKOFF_MULTIPLIER + 1
+    assert coordinator.failure_streak == 1
+    # This is the value the base class reads when arming its timer, so the
+    # widened wait is provably in effect rather than merely computed.
+    assert coordinator.update_interval == timedelta(
+        seconds=300 * BACKOFF_MULTIPLIER
+    )
 
     remove_listener()
     coordinator._unschedule_refresh()
+
+
+async def test_failure_logs_one_debug_per_poll_and_one_recovery(
+    hass: HomeAssistant,
+    mock_api_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Pin the diagnostic volume of the backoff path (log_when_unavailable).
+
+    Every failed poll adds exactly one debug line, and the transition back
+    to success logs exactly one info line -- not one per poll, and not a
+    duplicate recovery line.
+    """
+    coordinator = IrishRailDataUpdateCoordinator(hass, mock_api_client, _entry_with())
+    caplog.clear()
+
+    for _ in range(3):
+        with (
+            patch.object(
+                mock_api_client,
+                "async_get_station_by_code",
+                side_effect=IrishRailConnectionError,
+            ),
+            pytest.raises(UpdateFailed),
+        ):
+            await coordinator._async_update_data()
+
+    failures = [
+        r for r in caplog.records
+        if r.name == "custom_components.irish_rail.coordinator"
+        and r.levelno == logging.DEBUG
+        and "poll failed" in r.getMessage()
+    ]
+    assert len(failures) == 3, "one debug line per failed poll, no more"
+    # The backoff progression is visible in the log trail.
+    assert "backing off to" in failures[0].getMessage()
+
+    caplog.clear()
+    with patch.object(
+        mock_api_client,
+        "async_get_station_by_code",
+        new=AsyncMock(return_value=[]),
+    ):
+        await coordinator._async_update_data()
+
+    recoveries = [
+        r for r in caplog.records
+        if r.name == "custom_components.irish_rail.coordinator"
+        and r.levelno == logging.INFO
+        and "polling restored" in r.getMessage()
+    ]
+    assert len(recoveries) == 1, "exactly one recovery line for the transition"
+
+    # A second success must not re-announce the recovery.
+    caplog.clear()
+    with patch.object(
+        mock_api_client,
+        "async_get_station_by_code",
+        new=AsyncMock(return_value=[]),
+    ):
+        await coordinator._async_update_data()
+    assert not [
+        r for r in caplog.records
+        if "polling restored" in r.getMessage()
+    ], "recovery must be logged only on the transition"
 
 
 async def test_successful_refresh_cycle_reschedules_at_configured_interval(

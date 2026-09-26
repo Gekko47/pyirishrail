@@ -552,21 +552,46 @@ async def test_get_train_stops(aresponses: ResponsesMockServer) -> None:
 
 
 async def test_parse_station_data_non_numeric_values() -> None:
-    """Test defensive handling of non-numeric Duein/Late values."""
+    """Non-numeric Duein becomes None so the sensor can fall back.
+
+    Coercing to 0 reported the service as "due now" and published a
+    confidently wrong state. ``Late`` is unused by the entity and stays
+    coerced to 0.
+    """
     xml = """
     <ArrayOfObjStationData xmlns="http://api.irishrail.ie/realtime/">
         <objStationData>
             <Traincode>E999</Traincode>
             <Duein>due</Duein>
             <Late>late</Late>
+            <Exparrival>14:35</Exparrival>
         </objStationData>
     </ArrayOfObjStationData>
     """
     trains = parse_station_data(fromstring(xml))
 
     assert len(trains) == 1
-    assert trains[0].due_in_mins == 0
+    assert trains[0].due_in_mins is None
     assert trains[0].late_mins == 0
+    # The fallback input the sensor relies on is preserved.
+    assert trains[0].expected_arrival_time == "14:35"
+
+
+async def test_parse_station_data_missing_duein_becomes_none() -> None:
+    """An absent Duein element is unknown, not "due in 0 minutes"."""
+    xml = """
+    <ArrayOfObjStationData xmlns="http://api.irishrail.ie/realtime/">
+        <objStationData>
+            <Traincode>E998</Traincode>
+            <Exparrival>09:10</Exparrival>
+        </objStationData>
+    </ArrayOfObjStationData>
+    """
+    trains = parse_station_data(fromstring(xml))
+
+    assert len(trains) == 1
+    assert trains[0].due_in_mins is None
+    assert trains[0].expected_arrival_time == "09:10"
 
 
 async def test_api_client_error_conversion() -> None:
