@@ -8,6 +8,7 @@ failure rather than something a reviewer has to notice by hand.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -20,12 +21,53 @@ REPO_ROOT = INTEGRATION_DIR.parents[1]
 QUALITY_SCALE = INTEGRATION_DIR / "quality_scale.yaml"
 TEST_DIR = REPO_ROOT / "tests" / "components" / "irish_rail"
 
-# ``module.py::symbol`` or ``module.py`` in an evidence comment. The
+# ``module.py::symbol.path`` or ``module.py`` in an evidence comment. The
 # integration modules are referenced by bare filename throughout, so the
-# pattern deliberately anchors on a real .py name.
-_POINTER = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*\.py)(?:::([A-Za-z_][A-Za-z0-9_]*))?")
+# pattern deliberately anchors on a real .py name. The symbol may be a
+# dotted attribute path (``IrishRailClient.__init__``); every segment of
+# it is verified, not just the leading class.
+_POINTER = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*\.py)"
+    r"(?:::((?:[A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z_][A-Za-z0-9_]*)*))?"
+)
 # Symbols that live in Home Assistant itself, not in this integration.
 _EXTERNAL_MODULES = {"__init__.py"}
+
+
+def _find_named(body: list[ast.stmt], name: str) -> ast.stmt | None:
+    """Return the statement in ``body`` that defines ``name``, if any."""
+    for node in body:
+        if (
+            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+            and node.name == name
+        ):
+            return node
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
+        ):
+            return node
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+        ):
+            return node
+    return None
+
+
+def _symbol_path_exists(source: str, dotted: str) -> bool:
+    """Return whether every segment of a dotted symbol path is defined."""
+    scope: ast.Module | ast.ClassDef | ast.stmt = ast.parse(source)
+    for name in dotted.split("."):
+        if not isinstance(scope, ast.Module | ast.ClassDef):
+            # Only a module or a class owns members; a pointer that digs
+            # into a function body is naming something that cannot exist.
+            return False
+        found = _find_named(scope.body, name)
+        if found is None:
+            return False
+        scope = found
+    return True
 
 
 def _rules() -> dict[str, dict[str, str]]:
@@ -88,16 +130,16 @@ def test_every_evidence_file_pointer_resolves() -> None:
             if not candidates:
                 missing.append(f"{rule_id}: no file named {filename!r}")
                 continue
-            if symbol:
-                # A dotted reference such as ``IrishRailClient.__init__``
-                # names the attribute path; only assert the class exists.
-                root_symbol = symbol.split(".")[0]
-                if not any(
-                    re.search(rf"\b(class|def)\s+{root_symbol}\b", p.read_text(encoding="utf-8"))
-                    for p in candidates
-                    if p.suffix == ".py"
-                ):
-                    missing.append(f"{rule_id}: {filename} has no {root_symbol!r}")
+            # A dotted reference such as ``IrishRailClient.__init__``
+            # names the attribute path, so every segment of it has to
+            # land: a pointer to a method the class does not define is
+            # as stale as a pointer to a deleted module.
+            if symbol and not any(
+                _symbol_path_exists(p.read_text(encoding="utf-8"), symbol)
+                for p in candidates
+                if p.suffix == ".py"
+            ):
+                missing.append(f"{rule_id}: {filename} has no {symbol!r}")
     assert not missing, "stale quality-scale evidence:\n" + "\n".join(missing)
 
 

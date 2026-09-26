@@ -616,8 +616,13 @@ class IrishRailOptionsFlow(OptionsFlow):
         current_interval = int(
             entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL.total_seconds())
         )
-        current_stops_at = entry.options.get(
-            CONF_STOPS_AT, entry.data.get(CONF_STOPS_AT) or "All"
+        # Options take precedence over data because ``resolve_stops_at``
+        # reads them in that order, including when the stored value is an
+        # explicit ``None`` that cleared a data-level filter. A ``None``
+        # cannot be a dropdown default, so it renders as "All".
+        current_stops_at = (
+            entry.options.get(CONF_STOPS_AT, entry.data.get(CONF_STOPS_AT))
+            or NO_FILTER_SENTINEL
         )
 
         try:

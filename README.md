@@ -153,8 +153,9 @@ with a template trigger instead:
   triggers:
     - trigger: template
       value_template: >-
-        {{ states('sensor.dublin_pearse_northbound_next_train_due')
-           | float(9999) < 600 }}
+        {% set eta = state_attr('sensor.dublin_pearse_northbound_next_train_due',
+           'time_until_arrival') | float(0) %}
+        {{ eta > 0 and eta < 600 }}
       for: "00:01:00"
   conditions:
     - condition: time
@@ -185,9 +186,9 @@ Notify when the following train is due within 15 minutes:
   triggers:
     - trigger: template
       value_template: >-
-        {{ as_datetime(states('sensor.dublin_pearse_northbound_following_train_due'))
-           | as_timestamp | as_local
-           | float(0) > (as_timestamp(now()) + 900) }}
+        {% set arrival = as_timestamp(as_datetime(states(
+           'sensor.dublin_pearse_northbound_following_train_due'))) | float(0) %}
+        {{ arrival > as_timestamp(now()) and arrival <= (as_timestamp(now()) + 900) }}
       for: "00:01:00"
   actions:
     - action: notify.mobile_app_phone

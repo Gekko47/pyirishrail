@@ -1,6 +1,6 @@
 ---
 name: roadmap-execution
-description: How to execute increments against the active Streamline Roadmap, plus the review order, acceptance criteria, and phase-specific discipline. Load before starting any multi-step work, when picking the next roadmap checkbox, when deciding how to refactor a module, when a PR needs review, or when any question touches the active plan, phases A-E, docstring density, RuntimeRegistry, module boundaries, sensor consolidation, or acceptance.
+description: How to execute increments against the active Streamline Roadmap, plus the review order, acceptance criteria, and phase-specific discipline. Load before starting any multi-step work, when picking the next roadmap checkbox, when deciding how to refactor a module, when a PR needs review, or when any question touches the active plan, phases A-F, docstring density, RuntimeRegistry, module boundaries, sensor consolidation, audit remediation, or acceptance.
 ---
 
 # Roadmap Execution and Acceptance
@@ -14,7 +14,7 @@ are completion records.
 
 | Plan | Status |
 |---|---|
-| **`.cline/streamline-roadmap.md`** | **ACTIVE** — maintainability pass, five phases |
+| **`.cline/streamline-roadmap.md`** | **ACTIVE** — maintainability pass (A–E) plus Phase F audit remediation |
 | `.cline/clean-cut-baseline-plan.md` | complete (v0.3.0 Clean Baseline) |
 | `.cline/irish-rail-improvement-roadmap.md` | complete (pre-v0.3.0) |
 

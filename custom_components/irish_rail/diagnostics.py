@@ -7,12 +7,11 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
-from ._runtime import get_health_monitor
+from ._runtime import get_health_monitor, get_session_value
 from .const import (
     CONF_STATION,
     CONF_STATION_CODE,
     CONF_STATION_FILTER,
-    DOMAIN,
     GLOBAL_LAST_REBUILD_KEY,
 )
 from .types import IrishRailConfigEntry, IrishRailRuntimeData
@@ -93,7 +92,7 @@ async def async_get_config_entry_diagnostics(
 
     monitor = get_health_monitor(hass)
     health_info = monitor.as_dict() if monitor is not None else None
-    rebuild_result = hass.data.get(DOMAIN, {}).get(GLOBAL_LAST_REBUILD_KEY)
+    rebuild_result = get_session_value(hass, GLOBAL_LAST_REBUILD_KEY)
     rebuild_info = rebuild_result.as_dict() if rebuild_result is not None else None
 
     return {

@@ -735,11 +735,7 @@ async def test_gate_repeated_cancellation_never_strands_a_slot() -> None:
     async with asyncio.timeout(1.0):
         await asyncio.gather(holder_task, return_exceptions=True)
 
-    assert gate._in_flight in (0, 1), "counter corrupted by repeat cancellation"
-    if gate._in_flight == 1:
-        # A leaked slot would wedge the gate for good; make the test
-        # deterministic about it by requiring the gate still serves.
-        gate._in_flight = 0
+    assert gate._in_flight == 0, "slot leaked by repeat cancellation"
     assert not gate._waiters
 
     async with asyncio.timeout(1.0):

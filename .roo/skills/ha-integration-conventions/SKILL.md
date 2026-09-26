@@ -125,19 +125,21 @@ When uncertain:
 ### Scope discipline
 
 New work is governed by the **Streamline Roadmap**
-(`.cline/streamline-roadmap.md`), a maintainability pass with five phases:
+(`.cline/streamline-roadmap.md`). It is the only source of truth for what
+is planned, in what order, and what is already done — read it rather than
+relying on any phase summary copied here, which drifts out of date as
+increments land. The roadmap carries:
 
-- **Phase A** — Docstring pass (lift design history to
-  `docs/architecture.md`; target 0.15 docstring lines per source LOC).
-- **Phase B** — Module consolidation (fold `pyirishrail/` into the
-  integration; merge `gate.py` + `health.py` into a single `_runtime.py`
-  `RuntimeRegistry`; unify the two stops-matrix rebuild implementations).
-- **Phase C** — Sensor consolidation (collapse the per-station sensors into
-  rich sensors; trim the attribute surface from 18 to ~7 keys).
-- **Phase D** — Cosmetics (tighten README; compress `quality_scale.yaml`
-  from 21 KB to ~7 KB without losing evidence; rename for clarity; changelog
-  entry).
-- **Phase E** — Test deduplication (optional, low priority).
+- **Phases A–E** — the maintainability pass: docstrings (A), module
+  consolidation (B), sensor consolidation (C), cosmetics (D), test
+  deduplication (E).
+- **Phase F** — correctness remediation from the 0.4.0 audit: options-flow
+  `stops_at` preservation and dropdown merge, malformed `Duein` handling,
+  reconfigure registry migration, the `RuntimeRegistry` single-writer
+  invariant with a CI grep gate, the public
+  `async_set_update_interval` migration, and the test-only and repository
+  hygiene tracks. Phase F's decisions are recorded as S9–S13 in the
+  roadmap's decision table.
 
 Platinum compliance is preserved through every phase: no `done` or `exempt`
 rule loses its file/function pointer. The 100% line coverage gate does not

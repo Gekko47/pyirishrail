@@ -221,7 +221,7 @@ current Home Assistant conventions.
   (`cannot_connect`, `invalid_station`, `unknown`).
 - Add a `reconfigure` step to `strings.json` and `translations/en.json`.
 
-### Options flow (scan interval)
+### Options flow (scan interval, stops-at filter)
 
 - Single `init` step with a `scan_interval` field bounded by
   `vol.All(vol.Coerce(int), vol.Range(min=30, max=600))` (30s–10min),
@@ -232,6 +232,25 @@ current Home Assistant conventions.
   The listener either reloads the entry (simplest correct approach) or
   updates `coordinator.update_interval` in place.
 - Add the `init` step to strings/translations with `data_description`.
+
+**Stops-at selection contract.** The filter is a second, optional field in
+the same step. Its rules are not negotiable:
+
+- **Preserve the saved selection.** Read the current value from
+  `entry.options` first, then `entry.data` — the same order
+  `coordinator.resolve_stops_at` uses. A user who changes only the scan
+  interval must not lose a filter set during setup.
+- **Never let a `None` be a form default.** The flow stores an explicit
+  `None` to mean "no filter" and it deliberately writes that `None` into
+  `entry.options` so it overrides a data-level value. A `None` cannot be a
+  `vol.In` default, so map it to the "All" sentinel when building the form.
+- **Merge the stored value into the choices.** Add the current filter to the
+  dropdown options even when the fetched station list does not contain it
+  (transiently short list). Otherwise the rendered default is not one of the
+  options and submitting drops the filter.
+- **"All" clears the filter.** Selecting the sentinel writes `None` (or drops
+  the key when it is byte-identical to `entry.data`), which is what makes a
+  clear take effect instead of resurrecting the data-level value.
 
 ### Config-flow anti-patterns
 
@@ -355,9 +374,17 @@ https://developers.home-assistant.io/docs/core/integration-quality-scale/rules/l
 
 ### Parallel updates (`parallel-updates`)
 
-Declare a `PARALLEL_UPDATES` constant in the sensor platform. Choose a small
-value appropriate to how many entities share one coordinator refresh; justify
-the choice in code review / PR description.
+Declare a `PARALLEL_UPDATES` constant in the sensor platform.
+
+- `0` is the correct value for a read-only coordinator platform: `sensor`
+  and `binary_sensor` entities only read coordinator data, so there is
+  nothing to serialize and no artificial limit should be imposed. This
+  integration declares `0`.
+- Reserve a positive limit for platforms whose entities perform action
+  calls (button, number, select, switch), where a positive cap prevents a
+  burst of entity actions from saturating the network. Choose the smallest
+  value that still covers the realistic burst and justify it in the PR
+  description.
 
 ---
 

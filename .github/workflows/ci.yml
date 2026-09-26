@@ -79,7 +79,7 @@ jobs:
       # enforced by the build rather than by convention.
       - name: Guard the hass.data[DOMAIN] single-writer invariant
         run: |
-          offenders=$(grep -rnE 'hass\.data(\.setdefault\(|\[)[^)]*DOMAIN' \
+          offenders=$(grep -rnE 'hass\.data(\.setdefault\(|\.get\(|\[)[^)]*DOMAIN' \
             custom_components/irish_rail \
             --include='*.py' \
             | grep -v '_runtime\.py' \
