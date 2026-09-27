@@ -27,7 +27,7 @@ taken during execution are recorded in
   reload left you with nothing. Customisations are now captured first
   and swapped in only once the new identity is up. This also removes
   the ten-second stall the old restore path could hit, and carries your
-  entity names, ids, icons and disabled states across reliably.
+  entity names, icons and disabled states across reliably.
   Re-submitting the direction you already have is a no-op, as before.
 - **The "stops at" dropdown only offers reachable stops.** It listed
   every station in Ireland, so you could pick one upstream of your own;

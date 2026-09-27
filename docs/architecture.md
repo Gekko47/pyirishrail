@@ -223,11 +223,12 @@ Each exposes the same fixed attribute surface:
 | `train_code` | Irish Rail train identifier. |
 | `api_reachable` | Always `true` when readable; absence means the coordinator marked the sensor `unavailable`. |
 
-`next_train_due` additionally carries the live countdown pair
+`next_train_due` additionally carries the countdown pair
 `expected_arrival` (ISO 8601 mirror of its own state) and
-`time_until_arrival` (whole seconds until arrival, recomputed on every
-read so it is genuinely live while the state is frozen at the last poll
-instant). **Both appear together or not at all**: the two are derived
+`time_until_arrival` (whole seconds until arrival, refreshed on each
+poll — Home Assistant does not re-read the attributes between state
+writes, so the countdown ticks with the polling cadence rather than
+continuously). **Both appear together or not at all**: the two are derived
 from the same optional arrival, so a template reading one never has to
 guard on the other. A service the API reports with neither `Duein` nor
 `HH:MM` resolves to no arrival and therefore carries neither key — the
@@ -238,14 +239,15 @@ The sensor state itself is a `datetime` under the `TIMESTAMP` device
 class, resolved from the signed `due_in_mins` offset rather than from
 `HH:MM` (see §15).
 
-**Why one sensor, not three:** the previous design had three
+**Why two sensors, not three:** the previous design had three
 near-identical sensors (`next_train_due`, `next_train_destination`,
 `next_train_delay`) and 18 attributes on the primary. Three sensors
 duplicated state for no dashboard benefit, and the duplicate
 `due_in_mins` + `late_mins` attributes were redundant with
-`extra_state_attributes`. One sensor with rich attributes is the
-idiomatic HA pattern (see the `weather` integration) and lets
-templates read a single attribute key for any arrival detail.
+`extra_state_attributes`. The next and following train as two
+timestamp sensors match the idiomatic HA pattern (see the `weather`
+integration) and let templates read a single attribute key for any
+arrival detail.
 
 The integration also exposes two **service** entities on a fixed
 "Irish Rail Services" device — see §11 for the invariant governing when

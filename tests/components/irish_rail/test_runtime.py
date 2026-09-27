@@ -589,6 +589,11 @@ async def test_a_disabled_owner_promotes_a_survivor_immediately(
     assert registry is not None
     assert entry_one.entry_id not in registry.pending_promotions
 
+    # The global registry tracks no row for the departed entry any more: it
+    # is out of the loaded-entry set ownership is derived from, leaving only
+    # the survivor.
+    assert registry.loaded_entry_ids == {entry_two.entry_id}
+
 
 async def test_a_vanished_owner_promotes_a_survivor_immediately(
     hass: HomeAssistant,

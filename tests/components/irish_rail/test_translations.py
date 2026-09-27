@@ -14,6 +14,7 @@ stay structurally aligned (standing requirement, Skill 09).
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from collections.abc import Iterator
@@ -51,23 +52,80 @@ def _flatten_keys(value: Any, prefix: str = "") -> set[str]:
     return keys
 
 
+def _ha_error_names(tree: ast.AST) -> set[str]:
+    """Return the Home Assistant error names a module imports.
+
+    Home Assistant exception bases (``HomeAssistantError`` and subclasses
+    such as ``ServiceValidationError``) all come from ``homeassistant.*``,
+    so the imported aliases identify them without executing anything. The
+    module's own ``errors.py`` types are excluded: they are internal and
+    never reach a user.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or node.level:
+            continue
+        if not (node.module or "").startswith("homeassistant"):
+            continue
+        names.update(
+            alias.asname or alias.name
+            for alias in node.names
+            if alias.name.endswith("Error")
+        )
+    return names
+
+
+def _exception_name(exc: ast.expr) -> str | None:
+    """Return the raised exception's class name, if it is resolvable."""
+    if isinstance(exc, ast.Call):
+        exc = exc.func
+    if isinstance(exc, ast.Name):
+        return exc.id
+    if isinstance(exc, ast.Attribute):
+        return exc.attr
+    return None
+
+
+def _names_translation_key(node: ast.Raise) -> bool:
+    """Return True when a raise passes ``translation_key`` somewhere.
+
+    The keyword is searched across the whole raise subtree, so a call
+    nested inside another argument counts; the ``from`` cause is a
+    separate node and is walked on its own.
+    """
+    if node.exc is None:
+        return False
+    return any(
+        keyword.arg == "translation_key"
+        for sub in ast.walk(node.exc)
+        if isinstance(sub, ast.Call)
+        for keyword in sub.keywords
+    )
+
+
 def test_exception_keys_raised_toward_users_resolve() -> None:
     """Every ``HomeAssistantError`` a module raises is translation-keyed.
 
     Behavioural counterpart to Gold rule ``exception-translations``: a
     raised exception must name a ``translation_key`` that resolves in
     both translation files, so a user never sees a bare English message
-    from a service or an entity press.
+    from a service or an entity press. The scan walks ``Raise`` nodes in
+    the parsed module, so subclasses of the base, chained raises and
+    nested argument expressions are covered too.
     """
     offenders: list[str] = []
     for py_file in sorted(INTEGRATION_DIR.glob("*.py")):
-        source = py_file.read_text(encoding="utf-8")
-        for match in re.finditer(
-            r"raise HomeAssistantError\((?P<args>[^)]*)\)", source, re.DOTALL
-        ):
-            args = match.group("args")
-            if "translation_key=" not in args:
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+        ha_errors = _ha_error_names(tree)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Raise)
+                and node.exc is not None
+                and _exception_name(node.exc) in ha_errors
+                and not _names_translation_key(node)
+            ):
                 offenders.append(py_file.name)
+                break
     assert offenders == []
 
     for file_name in ("strings.json", "translations/en.json"):

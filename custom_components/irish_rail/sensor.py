@@ -168,11 +168,11 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
         Every per-station sensor exposes the four per-train keys below
         plus ``api_reachable`` (``True`` means "the API answered"; absence
         means the coordinator marked the sensor unavailable). The
-        ``next_train_due`` sensor additionally carries the live countdown:
+        ``next_train_due`` sensor additionally carries the countdown pair:
         ``expected_arrival`` (ISO 8601 mirror of its state) and
-        ``time_until_arrival`` (whole seconds until arrival, recomputed on
-        every read) so a "5 min" countdown chip works without a custom
-        template.
+        ``time_until_arrival`` (whole seconds until arrival, refreshed on
+        each poll) so a "5 min" countdown chip works without a custom
+        template. See docs/architecture.md §6.
         """
         data = self.coordinator.data
         if data is None:
@@ -200,9 +200,9 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
         next_train = data[0]
         now = dt_util.utcnow()
         expected_arrival = _parse_expected_arrival(next_train, now)
-        # Only meaningful when the arrival resolved; ``time_until_arrival`` is
-        # recomputed on every read, so the countdown is genuinely live even
-        # though the sensor state is frozen at the last poll instant.
+        # Only meaningful when the arrival resolved; the countdown ticks with
+        # the polling cadence because HA does not re-read the attributes
+        # between state writes. See docs/architecture.md §6.
         time_until_arrival: timedelta | None = (
             expected_arrival - now if expected_arrival is not None else None
         )
@@ -214,10 +214,6 @@ class IrishRailDueTrainSensor(IrishRailEntity, SensorEntity):
             "api_reachable": True,
         }
 
-        # The full datetime of expected arrival (the sensor's primary
-        # state on the ``next_train_due`` entity) is mirrored here as
-        # ``expected_arrival`` so device-level attribute readers and
-        # string-rendering widgets have a single canonical key.
         # The full datetime of expected arrival (the sensor's primary
         # state on the ``next_train_due`` entity) is mirrored here as
         # ``expected_arrival`` so device-level attribute readers and

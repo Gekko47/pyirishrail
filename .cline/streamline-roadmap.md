@@ -584,8 +584,8 @@ a test that pins it.
       test; move the docstring-density gate into `scripts/`.
       **Landed with two recorded exceptions**: the
       `home-assistant/actions/hassfest` SHA pin is still open (see
-      D19), and enabling branch coverage exposed a real
-      docstring-density breach that had to be fixed first (D20).
+      S22), and enabling branch coverage exposed a real
+      docstring-density breach that had to be fixed first (S20).
 - [x] **G11 — Documentation and evidence pass**: `docs/architecture.md`
       §§2/6/7/8/9/10/11/12/13, `README.md`, `quality_scale.yaml` evidence
       pointers, and a `CHANGELOG.md` v0.5.1 entry. `manifest.json` bumped
@@ -1200,5 +1200,29 @@ a test that pins it.
   §10 and §11 carry the three changed invariants.
   Gates: ruff 0 · strict mypy 0 across 38 source files ·
   **360 passed · 100.00% line and branch coverage** · source-hygiene
+  gate clean (density 0.203).
+- 2026-09-07 — Second review pass, all six findings verified against the
+  code as it stands. Documentation accuracy: the G10 note referenced
+  non-existent decisions `D19` / `D20` and now cites the real ids
+  (`S22` hassfest SHA pin, `S20` docstring density); the v0.5.1
+  CHANGELOG entry dropped "ids" from the carried-across list, matching
+  the README's own statement that entity IDs are regenerated from the
+  new unique ID; `README.md`'s reconfigure row and paragraph both list
+  the same four customisation fields (`name`, `icon`, `area_id`,
+  `disabled_by` — exactly what `_async_capture_identity_customisations`
+  captures), and `sensor.py`'s countdown comment block was deduplicated
+  with the all-or-nothing note kept. §6's `time_until_arrival` wording
+  and the "Why one sensor, not three" heading were corrected to match
+  the two-sensor model and the per-poll (not per-read) refresh that S11
+  and F14 already established, with the same correction applied to the
+  two remaining stale copies in `sensor.py`. Test hardening:
+  `test_exception_keys_raised_toward_users_resolve` now walks the AST's
+  `Raise` nodes instead of grepping source, so a subclass such as
+  `ServiceValidationError`, a chained raise, or a `translation_key`
+  nested inside another argument is covered; the promotion test for a
+  disabled owner now also asserts the departed entry holds no row in
+  the global registry's loaded set. No behaviour changed.
+  Gates: ruff 0 · strict mypy 0 across 38 source files ·
+  **344 passed · 100.00% line and branch coverage** · source-hygiene
   gate clean (density 0.203).
 
