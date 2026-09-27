@@ -1,6 +1,8 @@
 {
   "exceptions": {
-    "rebuild_already_running": "The Irish Rail stops-matrix rebuild is already running. Wait for it to finish before starting another."
+    "rebuild_already_running": {
+      "message": "The Irish Rail stops-matrix rebuild is already running. Wait for it to finish before starting another."
+    }
   },
   "config": {
     "step": {

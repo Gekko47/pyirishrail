@@ -1225,4 +1225,16 @@ a test that pins it.
   Gates: ruff 0 · strict mypy 0 across 38 source files ·
   **344 passed · 100.00% line and branch coverage** · source-hygiene
   gate clean (density 0.203).
+- 2026-09-07 — CI translation-check failure fixed. The hassfest
+  `[TRANSLATIONS]` check rejects `exceptions` entries that are bare
+  strings: HA resolves a raised `translation_key` to
+  `exceptions.<key>.message`, so `strings.json` and
+  `translations/en.json` now nest the text under `message` for
+  `rebuild_already_running`. `button.py`'s raise is unchanged — the key
+  it passes already matches the nested path. The reason the shape
+  slipped through locally: `test_exception_keys_raised_toward_users_resolve`
+  only checked key *presence*, so the guard now also asserts every
+  `exceptions` entry is a mapping with a non-empty `message` string in
+  both files. Gates: ruff 0 · strict mypy 0 across 38 source files ·
+  **344 passed · 100.00% line and branch coverage**.
 

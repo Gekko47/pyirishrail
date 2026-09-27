@@ -123,6 +123,12 @@ taken during execution are recorded in
 - Two gate checks that could pass on an unrelated failure are now
   asserted directly by their own tests, and a source-hygiene pattern
   that missed lettered phases (`Phase A`, `Phase B1`) now matches them.
+- The translated "rebuild already running" message was written as a
+  bare string, but Home Assistant resolves a raised `translation_key` to
+  `exceptions.<key>.message`. The entry is now nested correctly in both
+  translation files, and the guard that missed it asserts the shape
+  rather than only the key's presence. Without this the 0.5.1 release
+  build failed its translation check.
 
 ### Known limitations
 

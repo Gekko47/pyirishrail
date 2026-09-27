@@ -129,8 +129,14 @@ def test_exception_keys_raised_toward_users_resolve() -> None:
     assert offenders == []
 
     for file_name in ("strings.json", "translations/en.json"):
-        defined = set(_load_json(file_name)["exceptions"])
+        defined = _load_json(file_name)["exceptions"]
         assert "rebuild_already_running" in defined, file_name
+        # HA resolves the raised key to ``exceptions.<key>.message``; a bare
+        # string here is rejected by the hassfest translation check.
+        for key, entry in defined.items():
+            assert isinstance(entry, dict), key
+            assert isinstance(entry.get("message"), str), key
+            assert entry["message"].strip(), key
 
 
 def test_strings_and_translations_are_structurally_aligned() -> None:
