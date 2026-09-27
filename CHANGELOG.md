@@ -22,6 +22,26 @@ taken during execution are recorded in
   entry set and transferred to a survivor automatically. The device,
   its two entities and the service now exist **if and only if at least
   one station entry is loaded**.
+- **Disabling or deleting the owning station no longer leaves the
+  service stranded.** Disabling an entry sets a flag and reloads it
+  out, so the entry is gone for good but Home Assistant never
+  dispatches the "entry removed" signal the promotion was waiting for.
+  The globals are now handed to a surviving station as soon as the
+  owner unloads in either case, rather than staying ownerless for the
+  rest of the session. A plain **Reload** still waits, so a station
+  that is only restarting does not lose its own globals to a sibling
+  mid-reload.
+- **The learned stops matrix is no longer taught stops that were never
+  observed.** The unfiltered station lookups reused the caller's set of
+  observed stops, so a set carried across polls could merge a previous
+  filtered pass into an unfiltered one and record stops this station
+  never actually calls at. The unfiltered path now clears it, the way
+  the filtered path already did.
+- **A failed seed dump no longer reports a finished rebuild that never
+  landed.** An error writing the offline seed file was swallowed by the
+  per-station guard, so the sweep could report itself complete while
+  nothing had been saved to disk. The failure is now reported on the
+  result, with the sampled and added counts cleared.
 - **Reconfigure is transactional.** A direction change used to delete
   the previous identity's entities before the reload ran, so a failed
   reload left you with nothing. Customisations are now captured first
@@ -60,7 +80,12 @@ taken during execution are recorded in
 - `stops_at` is masked in downloaded diagnostics alongside the station
   fields.
 - The rebuild progress counters no longer count re-observed stops as
-  new knowledge.
+  new knowledge, and a stop already known under a different capitalisation
+  (`BRAY` against a stored `Bray`) is one stop, not a new one.
+- A failed poll no longer restarts polling for a station nobody is
+  watching. The retry backoff gave up its reschedule once the last
+  listener went away, so a failure could bring an unmonitored entry
+  back to life.
 - A reconfigure no longer risks dropping an entry key added later: the
   new data is merged from the existing entry data.
 
@@ -95,6 +120,9 @@ taken during execution are recorded in
   and Dependabot now watches the Python tooling as well as the actions.
 - The docstring-density gate was found to be **failing on master** once
   it became runnable; `client.py` was brought back inside the budget.
+- Two gate checks that could pass on an unrelated failure are now
+  asserted directly by their own tests, and a source-hygiene pattern
+  that missed lettered phases (`Phase A`, `Phase B1`) now matches them.
 
 ### Known limitations
 
