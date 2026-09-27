@@ -360,6 +360,44 @@ async def test_configured_interval_update_rearms_scheduler(
     coordinator._unschedule_refresh()
 
 
+async def test_polling_stays_stopped_once_the_last_listener_leaves(
+    hass: HomeAssistant, mock_api_client: MagicMock
+) -> None:
+    """A failure after the last listener leaves does not re-arm the timer.
+
+    HA unschedules the coordinator when its final listener is removed so
+    nothing keeps polling an entry nobody is watching. The backoff path
+    must respect that: it records the widened interval but must not
+    restart the schedule.
+    """
+    coordinator = IrishRailDataUpdateCoordinator(
+        hass, mock_api_client, _entry_with(options={"scan_interval": 300})
+    )
+    remove_listener = coordinator.async_add_listener(lambda: None)
+    remove_listener()
+
+    with patch.object(
+        mock_api_client,
+        "async_get_station_by_code",
+        side_effect=IrishRailConnectionError,
+    ):
+        await coordinator.async_refresh()
+
+    assert coordinator.failure_streak == 1
+    assert coordinator.update_interval == timedelta(
+        seconds=300 * BACKOFF_MULTIPLIER
+    )
+    # The widened value is recorded, but the base class still has no
+    # armed refresh and no listener to notify.
+    assert coordinator._unsub_refresh is None
+    assert coordinator._listeners == {}
+
+    # A returning listener re-arms from the value the backoff left behind.
+    remove_again = coordinator.async_add_listener(lambda: None)
+    assert coordinator._unsub_refresh is not None
+    remove_again()
+
+
 async def test_failed_refresh_cycle_reschedules_with_widened_interval(
     hass: HomeAssistant, mock_api_client: MagicMock
 ) -> None:

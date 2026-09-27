@@ -347,6 +347,12 @@ the configured interval immediately.
   the base class' own `_unschedule_refresh` / `_schedule_refresh` pair —
   the same two calls its add/remove-listener paths make. This is what
   makes "applies immediately" true for an options change.
+- **…but only while something is listening.** The base class
+  unschedules when its last listener is removed, precisely so nothing
+  keeps polling an entry nobody is watching. The backoff path must not
+  undo that, so `_async_apply_effective_interval` still records
+  `update_interval` but skips the reschedule pair with no listeners; a
+  coordinator that gains one again re-arms from the recorded value.
 - `_schedule_refresh()` mirrors the property into
   `_update_interval_seconds` before calling the base method,
   because HA 2026.8+ schedules from the cached value, not by
@@ -408,7 +414,10 @@ Two guards on the write path:
 - `async_record` returns the count of **newly added** stops, so a poll
   that re-observes what the matrix already holds flushes its batch
   (otherwise the same stops would be rewritten every poll forever) but
-  reports no progress.
+  reports no progress. The comparison is **case-insensitive** — the same
+  convention `lookup_in_matrix` reads back with — so a stop re-reported
+  as `BRAY` against a stored `Bray` is one stop, not a new one, and the
+  first-seen casing survives.
 - A `CancelledError` at the storage `await` restores the batch to
   `_pending_stops` and re-raises. The batch was already taken out of
   the pending set, so without this an unload or shutdown mid-write
@@ -546,6 +555,19 @@ self-healing.
   order — and re-adds the two entities to that entry's *already
   running* platforms. Reloading the survivor instead would make its
   own sensors blink out and back on an entry that did nothing wrong.
+- An unload is the first half of a reload, so a departing owner is not
+  promoted from the unload path unconditionally. `async_note_entry_unloaded`
+  clears `GLOBAL_REBUILD_ENTITY_KEY` either way (the handle would point
+  at an entity going away with its owner's platform), then branches:
+  * the entry can still come back (`_entry_will_reload`: present in the
+    store and not `disabled_by`) — the id is parked in
+    `pending_promotions`;
+  * it cannot — a **disabled** entry, which HA unloads and never sets
+    up again without ever dispatching `ConfigEntryChange.REMOVED`, or
+    one already gone from the store. Waiting on the removal signal here
+    would strand the globals unowned for the rest of the session, so a
+    survivor is elected immediately (as a task, so the departing entry
+    finishes its own teardown first).
 - `async_promote_on_removal` is driven by `ConfigEntryChange.REMOVED`,
   which HA dispatches only once the entry has left the store, so it
   never races a reload. It is a no-op unless the removed entry was the

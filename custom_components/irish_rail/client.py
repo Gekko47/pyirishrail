@@ -313,6 +313,12 @@ class IrishRailClient:
                 observed_stops=observed_stops,
             )
 
+        # Unfiltered: nothing downstream was resolved, but the set must
+        # still be emptied so a caller reusing it across polls cannot
+        # merge a previous filtered pass into this one.
+        if observed_stops is not None:
+            observed_stops.clear()
+
         return trains
 
     async def async_get_station_by_code(
@@ -352,6 +358,11 @@ class IrishRailClient:
                 observed_stops=observed_stops,
                 service_date=service_date,
             )
+
+        # Unfiltered: see async_get_station_by_name - the set is emptied
+        # so it describes this poll only, whether or not it was filled.
+        if observed_stops is not None:
+            observed_stops.clear()
 
         return trains
 

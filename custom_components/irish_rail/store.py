@@ -127,6 +127,11 @@ class StopsMatrixStore:
         "stops added", so a batch that only re-observed known stops does
         not over-report progress. ``0`` means nothing changed, and the
         save is skipped.
+
+        Stops are compared case-insensitively - the same convention
+        :func:`lookup_in_matrix` reads back with - and the first-seen
+        casing wins, so a stop re-reported as ``Bray`` against a stored
+        ``bray`` is one stop, not a new one.
         """
         if not stops:
             return 0
@@ -143,13 +148,23 @@ class StopsMatrixStore:
                 if isinstance(existing_raw, list)
                 else set()
             )
-            incoming = {stop for stop in stops if stop}
-            merged = existing | incoming
-            if merged == existing:
+            merged: dict[str, str] = {}
+            for stop in existing:
+                merged.setdefault(stop.casefold(), stop)
+            added = 0
+            for stop in stops:
+                if not stop:
+                    continue
+                folded = stop.casefold()
+                if folded in merged:
+                    continue
+                merged[folded] = stop
+                added += 1
+
+            if not added:
                 return 0
 
-            added = len(merged - existing)
-            directions[key] = sorted(merged, key=str.casefold)
+            directions[key] = sorted(merged.values(), key=str.casefold)
             entry["updated"] = dt_util.utcnow().isoformat()
             await self._store.async_save(data)
             return added

@@ -79,7 +79,7 @@ station list is fetched live.
 |---|---|---|
 | Scan interval (30 s – 10 min, default 60 s) | **Configure** | Applies immediately, no reload — the polling timer is re-armed, not left on the old spacing until the next tick |
 | Stops-at filter | **Configure** | Applies immediately; `All` disables it. The dropdown offers only stops your station and direction actually reach. |
-| Direction filter | **Reconfigure** | Rewrites the entry identity; one reload. Transactional: your entity names, ids, icons and disabled states carry across, and a reload that fails leaves the old entry untouched. |
+| Direction filter | **Reconfigure** | Rewrites the entry identity; one reload. Transactional: your entity names, icons and disabled states carry across, and a reload that fails leaves the old entry untouched. |
 
 Reconfiguring the direction changes the entry's identity: combinations
 another entry already monitors are rejected, the previous direction's

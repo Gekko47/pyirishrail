@@ -151,16 +151,20 @@ def test_docstring_budget_breach_is_reported(
     [
         "    # see Skill 10 for the rules",
         "    # see Phase A for the rules",
+        "    # see Phase B1 for the rules",
         "    # see the roadmap for the rules",
     ],
 )
 def test_project_internal_cross_references_are_rejected(
     hygiene: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, line: str
 ) -> None:
-    """``Skill N`` / ``Phase N`` / ``roadmap`` breadcrumbs never reach source."""
+    """``Skill N`` / ``Phase X`` / ``roadmap`` breadcrumbs never reach source."""
     root = _source_tree(tmp_path, f'"""Module."""\n\n{line}\n')
     _point(hygiene, monkeypatch, ROOT=root)
-    assert hygiene.main() == 1
+    # Assert the check itself, not main(): a one-line fixture is dense
+    # enough to breach the docstring budget, so main() would report a
+    # failure for an unrelated reason.
+    assert hygiene.check_cross_references([root / "clean.py"])
 
 
 def test_a_pointer_to_a_deleted_module_is_rejected(
@@ -172,7 +176,7 @@ def test_a_pointer_to_a_deleted_module_is_rejected(
         '"""Module.\n\n    See ``gone.py`` for the invariant.\n    """\n\nVALUE = 1\n',
     )
     _point(hygiene, monkeypatch, ROOT=root)
-    assert hygiene.main() == 1
+    assert hygiene.check_module_pointers([root / "clean.py"])
 
 
 def _release_files(tmp_path: Path, version: str, released: str) -> tuple[Path, Path]:

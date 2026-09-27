@@ -168,8 +168,16 @@ class IrishRailDataUpdateCoordinator(DataUpdateCoordinator[list[TrainDueTime]]):
         poll. HA 2026.8 exposes no public re-arm, so the base class' own
         reschedule pair is used here - the same two calls its
         add/remove-listener paths make.
+
+        Re-arming is skipped once the last listener is gone: the base
+        class unschedules on that transition precisely so nothing keeps
+        polling an entry nobody is watching, and re-arming here would
+        undo it. The interval is still recorded, so a coordinator that
+        gains a listener again starts from the current value.
         """
         self.update_interval = self._effective_interval()
+        if not self._listeners:
+            return
         self._unschedule_refresh()
         self._schedule_refresh()
 

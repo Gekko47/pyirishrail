@@ -446,7 +446,9 @@ async def async_note_entry_unloaded(hass: HomeAssistant, entry_id: str) -> bool:
     When the departing entry was the global-entity provider but others
     remain, the globals are re-elected onto a survivor so the
     connectivity sensor, the rebuild button and the service survive the
-    owner's removal. See docs/architecture.md §11.
+    owner's departure. A reload re-claims the globals on the way back in,
+    so promotion is deferred until the departure is known to be final.
+    See docs/architecture.md §11.
     """
     registry = get_runtime(hass)
     if registry is None:
@@ -464,14 +466,31 @@ async def async_note_entry_unloaded(hass: HomeAssistant, entry_id: str) -> bool:
         await registry.async_release()
     elif disown_provider_if(hass, entry_id):
         # The provider left while siblings are still loaded. Disowning
-        # alone would leave the globals with nobody, so remember the
-        # departed id; ``async_promote_on_removal`` re-elects a
-        # survivor when (and only when) the entry is actually removed.
-        # Promotion is deliberately *not* attempted here: an unload is
-        # also the first half of a reload, and re-electing during that
-        # window would hand the globals to a sibling for the duration
-        # of a routine reload.
-        registry.pending_promotions.add(entry_id)
+        # alone would leave the globals with nobody and the rebuild
+        # button handle pointing at an entity that is going away with
+        # its owner's platform, so the handle is dropped here; the
+        # promotion below (or the owner's own re-setup) installs the
+        # replacement.
+        pop_session_value(hass, GLOBAL_REBUILD_ENTITY_KEY)
+        if _entry_will_reload(hass, entry_id):
+            # The departing id is remembered and
+            # ``async_promote_on_removal`` re-elects a survivor when
+            # (and only when) the entry is actually removed. Promotion is
+            # deliberately *not* attempted here: an unload is also the
+            # first half of a reload, and re-electing during that window
+            # would hand the globals to a sibling for the duration of a
+            # routine reload.
+            registry.pending_promotions.add(entry_id)
+        else:
+            # Nothing will re-claim the globals, and no REMOVED signal is
+            # coming either, so a survivor is elected right away - off the
+            # unload path so the departing entry's own teardown finishes
+            # first. Declines when there is no survivor to elect.
+            hass.async_create_task(
+                async_promote_provider(hass),
+                name=f"irish_rail_promote_provider_{entry_id}",
+                eager_start=False,
+            )
 
     return not registry.loaded_entry_ids
 
@@ -623,6 +642,24 @@ def disown_provider_if(hass: HomeAssistant, entry_id: str) -> bool:
         return False
     pop_session_value(hass, GLOBAL_PROVIDER_KEY)
     return True
+
+
+@callback
+def _entry_will_reload(hass: HomeAssistant, entry_id: str) -> bool:
+    """Return True when an unloaded entry can still be set up again.
+
+    An unload is also the first half of a reload, so the two departures
+    are told apart by whether the entry can come back. HA disables an
+    entry by setting ``disabled_by`` *before* reloading it out, so a
+    disabled entry unloads and then stops: it ends up NOT_LOADED, is
+    never set up again, and no ``ConfigEntryChange.REMOVED`` follows to
+    confirm a deferred promotion. An entry that is already gone from the
+    store cannot return either. See docs/architecture.md §11.
+    """
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None:
+        return False
+    return entry.disabled_by is None
 
 
 @callback

@@ -629,6 +629,64 @@ async def test_sample_stops_matrix_atomic_dump_is_atomic(
     assert not output.with_suffix(output.suffix + ".tmp").exists()
 
 
+async def test_sample_stops_matrix_reports_an_unsaved_output(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failed dump ends the run and clears the progress it could not save.
+
+    A write failure is not a station-sampling failure: continuing the
+    sweep would re-dump an output nobody can read while reporting
+    stations and stops that never reached disk.
+    """
+    stations = [MagicMock(code="PEARS", name="Dublin Pearse")]
+    client = _client_mock(stations)
+    client.async_get_station_by_code = AsyncMock(
+        return_value=[
+            MagicMock(code="E001", destination="Bray", direction="Northbound"),
+        ]
+    )
+
+    def fake_scoped(
+        movements: list[TrainMovement],
+        destination: str | None,
+        station_code: str | None,
+        station_name: str | None,
+    ) -> list[TrainMovement]:
+        return [MagicMock(location="Bray")]
+
+    output = tmp_path / "seed.json"
+
+    with (
+        patch(
+            "custom_components.irish_rail.client.IrishRailClient.scope_journey_stops",
+            side_effect=fake_scoped,
+        ),
+        patch(
+            "custom_components.irish_rail.matrix_rebuild._dump_document",
+            side_effect=OSError("disk full"),
+        ),
+        caplog.at_level(logging.ERROR),
+    ):
+        result = await sample_stops_matrix(
+            client,
+            gap_fill=False,
+            atomic_dump=True,
+            priority="normal",
+            output_path=output,
+        )
+
+    assert result.error is not None
+    assert "disk full" in result.error
+    # Nothing reached disk, so nothing is reported as learned.
+    assert result.sampled == 0
+    assert result.buckets_updated == 0
+    assert result.stops_added == 0
+    assert result.skipped == 0
+    assert "Could not write" in caplog.text
+
+
 def test_evict_movement_cache_drops_other_dates_first() -> None:
     """Other-date entries go before today's, mirroring the client policy."""
     today = "02 Jan 2026"

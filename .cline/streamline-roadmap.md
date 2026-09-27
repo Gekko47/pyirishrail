@@ -1176,4 +1176,29 @@ a test that pins it.
   **353 passed · 100.00% line and branch coverage** · source-hygiene
   gate clean (density 0.201) · release-version gate clean against
   `v0.5.1`.
+- 2026-09-07 — Review findings applied, all eight verified against the
+  code as it stands. Four behaviour fixes: a disabled (or already
+  removed) global-provider entry is now promoted on unload rather than
+  waiting for a `ConfigEntryChange.REMOVED` that never arrives, and its
+  rebuild-button handle is dropped in the same branch (`_runtime.py`,
+  new `_entry_will_reload`); the unfiltered station lookups clear the
+  caller's `observed_stops` like the filtered path already did
+  (`client.py`); the adaptive-backoff re-arm is skipped once the last
+  listener is gone, so a failure can no longer restart polling for an
+  entry nobody is watching (`coordinator.py`); a failed seed dump is
+  reported on `result.error` with the sampled/added counts cleared
+  rather than being swallowed by the per-station guard
+  (`matrix_rebuild.py`); `StopsMatrixStore.async_record` counts `added`
+  case-insensitively, matching `lookup_in_matrix` (`store.py`).
+  Two gate/test fixes: the source-hygiene `CROSS_REF` pattern now
+  recognises lettered phases with numeric suffixes (`Phase A`,
+  `Phase B1`) and `test_scripts.py` asserts `check_cross_references` /
+  `check_module_pointers` directly so those two tests can no longer pass
+  on an unrelated density failure. `README.md`'s direction-filter row
+  drops "ids" (entity IDs are regenerated from the new unique ID, as
+  the following paragraph already said) and `docs/architecture.md` §9,
+  §10 and §11 carry the three changed invariants.
+  Gates: ruff 0 · strict mypy 0 across 38 source files ·
+  **360 passed · 100.00% line and branch coverage** · source-hygiene
+  gate clean (density 0.203).
 

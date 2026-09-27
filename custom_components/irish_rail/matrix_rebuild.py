@@ -288,7 +288,22 @@ async def sample_stops_matrix(
                 )
 
                 if atomic_dump and document is not None and output_path is not None:
-                    await asyncio.to_thread(_dump_document, output_path, document)
+                    try:
+                        await asyncio.to_thread(
+                            _dump_document, output_path, document
+                        )
+                    except OSError as err:
+                        # A failed write is not a station-sampling failure:
+                        # the sweep would keep re-dumping an output nobody
+                        # can read, so the run ends here with the sampled
+                        # and added-stop counts cleared - they describe a
+                        # document that is absent or stale on disk.
+                        result.error = f"Could not write {output_path}: {err}"
+                        _LOGGER.error(result.error)
+                        result.sampled = 0
+                        result.buckets_updated = 0
+                        result.stops_added = 0
+                        return result
         except Exception:
             # A single station must never end the sweep: an unexpected
             # failure on one row would otherwise discard the ~150 already

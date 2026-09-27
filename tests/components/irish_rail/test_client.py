@@ -139,6 +139,40 @@ async def test_get_station_by_code(aresponses: ResponsesMockServer) -> None:
         assert trains[0].late_mins == 2
 
 
+async def test_unfiltered_lookups_clear_observed_stops(
+    aresponses: ResponsesMockServer,
+) -> None:
+    """An unfiltered poll still empties the caller's observation set.
+
+    The clear-and-fill contract is unconditional: a set left over from a
+    filtered poll must never be merged into a later unfiltered one, or
+    the matrix would learn stops the entry no longer selects.
+    """
+    for endpoint in (
+        "getStationDataByCodeXML",
+        "getStationDataByNameXML",
+    ):
+        aresponses.add(
+            "api.irishrail.ie",
+            f"/realtime/realtime.asmx/{endpoint}",
+            "GET",
+            aresponses.Response(text=SAMPLE_STATION_DATA_XML, status=200),
+        )
+
+    async with aiohttp.ClientSession() as session:
+        client = IrishRailClient(session)
+
+        by_code: set[str] = {"STALE"}
+        assert await client.async_get_station_by_code("PEARS", observed_stops=by_code)
+        assert by_code == set()
+
+        by_name: set[str] = {"STALE"}
+        assert await client.async_get_station_by_name(
+            "Dublin Pearse", observed_stops=by_name
+        )
+        assert by_name == set()
+
+
 async def test_api_connection_error(aresponses: ResponsesMockServer) -> None:
     """Test handling of connection errors."""
     aresponses.add(

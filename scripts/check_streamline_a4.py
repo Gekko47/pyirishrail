@@ -27,7 +27,10 @@ ROOT = Path("custom_components/irish_rail")
 # moved since, so the prose gate and the enforced gate agree.
 MAX_DENSITY = 0.21
 
-CROSS_REF = re.compile(r"\b(Skill\s+\d+|Phase\s+\d|\broadmap\b)")
+# ``Phase`` is lettered in the active plan (``Phase A`` .. ``Phase G``) and
+# may carry a numeric suffix (``Phase B1``), so a bare digit after it is not
+# enough to catch the breadcrumb.
+CROSS_REF = re.compile(r"\b(Skill\s+\d+|Phase\s+(?:[A-Z]\d*|\d)|\broadmap\b)")
 MODULE_REF = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*\.py)`")
 DOCSTRING = re.compile(r'"""(.*?)"""', re.DOTALL)
 

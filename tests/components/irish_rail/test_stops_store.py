@@ -132,7 +132,33 @@ async def test_store_ignores_empty_observations(hass: HomeAssistant) -> None:
     store = StopsMatrixStore(hass)
     with patch.object(store._store, "async_save") as mock_save:
         assert await store.async_record("PEARS", None, []) == 0
+        assert await store.async_record("PEARS", None, ["", "Howth"]) == 1
+        mock_save.assert_called_once()
+
+
+async def test_store_counts_casing_variants_as_one_stop(hass: HomeAssistant) -> None:
+    """``added`` is case-insensitive, matching the lookup convention.
+
+    ``lookup_in_matrix`` reads the bucket back case-insensitively, so a
+    stop re-reported as ``BRAY`` against a stored ``Bray`` is the same
+    stop: it must not be counted as new, and the stored casing must not
+    change.
+    """
+    store = StopsMatrixStore(hass)
+    assert await store.async_record("PEARS", "Northbound", ["Bray", "Howth"]) == 2
+
+    with patch.object(store._store, "async_save") as mock_save:
+        assert await store.async_record("PEARS", "Northbound", ["BRAY"]) == 0
         mock_save.assert_not_called()
+        # A genuinely new stop alongside a casing variant counts once.
+        assert await store.async_record("PEARS", "Northbound", ["bray", "Malahide"]) == 1
+
+    # First-seen casing survives, and the bucket holds no duplicate.
+    assert await store.async_lookup("PEARS", "Northbound") == [
+        "Bray",
+        "Howth",
+        "Malahide",
+    ]
 
 
 async def test_store_survives_corrupt_storage_file(hass: HomeAssistant) -> None:

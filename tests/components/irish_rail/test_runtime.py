@@ -31,6 +31,7 @@ from __future__ import annotations
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from homeassistant.config_entries import ConfigEntryDisabler
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -548,6 +549,67 @@ async def test_promotion_on_removal_ignores_unrelated_and_unknown_entries(
     # The pending marker is consumed, so a repeat is inert.
     async_promote_on_removal(hass, entry_one.entry_id)
     await hass.async_block_till_done()
+    assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_two.entry_id
+
+
+async def test_a_disabled_owner_promotes_a_survivor_immediately(
+    hass: HomeAssistant,
+) -> None:
+    """Disabling the owner elects a survivor without a REMOVED signal.
+
+    HA disables an entry by setting ``disabled_by`` and reloading it out,
+    so the entry is gone for good but never dispatches
+    ``ConfigEntryChange.REMOVED``. Relying on that signal alone would
+    strand the globals with no owner for the rest of the session, and the
+    rebuild-button handle would still point at the departed entry.
+    """
+    entry_one = _entry(hass)
+    entry_two = _entry(hass, unique_id="KENT_all")
+    client = _client()
+    assert await async_note_entry_loaded(hass, entry_one.entry_id, client) is True
+    assert await async_note_entry_loaded(hass, entry_two.entry_id, client) is False
+    assert elect_provider(hass, entry_one) is True
+    set_session_value(hass, GLOBAL_REBUILD_ENTITY_KEY, MagicMock())
+
+    # HA marks the entry disabled *before* the unload runs, and the entry
+    # stays in the store afterwards - only a reload is skipped.
+    object.__setattr__(entry_one, "disabled_by", ConfigEntryDisabler.USER)
+    assert entry_one.disabled_by is ConfigEntryDisabler.USER
+    still_stored: list[bool] = [
+        hass.config_entries.async_get_entry(entry_one.entry_id) is entry_one
+    ]
+    assert still_stored == [True]
+
+    await async_note_entry_unloaded(hass, entry_one.entry_id)
+    await hass.async_block_till_done()
+
+    # Elected straight away - nothing is waiting on a removal signal.
+    assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_two.entry_id
+    registry = get_runtime(hass)
+    assert registry is not None
+    assert entry_one.entry_id not in registry.pending_promotions
+
+
+async def test_a_vanished_owner_promotes_a_survivor_immediately(
+    hass: HomeAssistant,
+) -> None:
+    """An owner already gone from the store also promotes straight away.
+
+    Defensive counterpart to the disabled case: if the departing id is
+    no longer a config entry, it cannot be re-loaded, so the deferred
+    promotion could never be confirmed.
+    """
+    entry_one = _entry(hass)
+    entry_two = _entry(hass, unique_id="KENT_all")
+    client = _client()
+    assert await async_note_entry_loaded(hass, entry_one.entry_id, client) is True
+    assert await async_note_entry_loaded(hass, entry_two.entry_id, client) is False
+    assert elect_provider(hass, entry_one) is True
+
+    await hass.config_entries.async_remove(entry_one.entry_id)
+    await async_note_entry_unloaded(hass, entry_one.entry_id)
+    await hass.async_block_till_done()
+
     assert hass.data[DOMAIN][GLOBAL_PROVIDER_KEY] == entry_two.entry_id
 
 
